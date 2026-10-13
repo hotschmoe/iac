@@ -67,7 +67,7 @@ void main() {
     final c = await _boot(tester);
     expect(find.byKey(const Key('card-slot-a')), findsOneWidget);
     expect(find.text('BUILD SLOT B'), findsOneWidget);
-    expect(find.textContaining('Needs Modular Fabrication'), findsOneWidget);
+    expect(find.textContaining('Needs Computer Technology level 3 (you have 1)'), findsOneWidget);
     expect(find.text('VIEW TECH'), findsOneWidget);
     expect(find.byKey(const Key('raid-card')), findsOneWidget);
     expect(find.text('COMMS'), findsNothing);
@@ -87,14 +87,14 @@ void main() {
     expect(inCard('card-slot-a', 'queue 3/4'), findsOneWidget);
     expect(inCard('card-research', 'queue 1/4'), findsOneWidget);
 
-    c.learn(proto.ResearchType.modularFabrication, 1);
+    c.learn(proto.ResearchType.computerTechnology, 3);
     await tester.pump(const Duration(seconds: 1));
     expect(find.text('BUILD SLOTS B-C'), findsOneWidget);
     expect(inCard('card-slot-b', 'SLOT C LOCKED'), findsOneWidget);
-    expect(inCard('card-slot-b', 'Needs Modular Fabrication L2'), findsOneWidget);
+    expect(inCard('card-slot-b', 'Needs Computer Technology level 6 (you have 3)'), findsOneWidget);
     expect(inCard('card-slot-b', c.state.hw!.buildQueue[1].buildingType.label.toUpperCase()), findsOneWidget);
 
-    c.learn(proto.ResearchType.modularFabrication, 2);
+    c.learn(proto.ResearchType.computerTechnology, 6);
     await tester.pump(const Duration(seconds: 1));
     expect(c.state.hw!.buildSlots, 3);
     expect(find.text('BUILD SLOTS B-C'), findsOneWidget);
@@ -153,7 +153,10 @@ void main() {
   });
 
   testWidgets('near cap and full lamps carry text, not only colour', (tester) async {
-    final c = await _boot(tester, stock: const proto.Resources(metal: 11200, crystal: 6930, deuterium: 100));
+    final c = await _boot(tester);
+    final cap = c.state.hw!.storage.cap;
+    c.stock(proto.Resources(metal: cap.metal, crystal: cap.crystal * .88, deuterium: 100));
+    await tester.pump(const Duration(milliseconds: 100));
     final crystal = find.byKey(const Key('res-tile-crystal'));
     expect(find.descendant(of: crystal, matching: find.text('NEAR CAP 88%')), findsWidgets);
     final metal = find.byKey(const Key('res-tile-metal'));

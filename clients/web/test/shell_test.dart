@@ -124,12 +124,16 @@ void main() {
 
   testWidgets('a refused order is shown at once in the world\'s own sentence, wherever the player is', (tester) async {
     final c = await pumpShell(tester, screen: Screen.homeworld);
-    c.receive(const proto.ErrorMessage(code: proto.ErrorCode.insufficientResources, message: 'Scout x1 costs 200 metal; the stockpile is short by 60 metal. Nothing was ordered.'));
+    c.receive(const proto.ErrorMessage(
+        code: proto.ErrorCode.insufficientResources, message: 'Light Fighter x1 costs 3000 metal and 1000 crystal; the stockpile is short by 600 metal. Nothing was ordered.'));
     await tester.pump(const Duration(milliseconds: 500));
     final toasts = find.byType(ToastLayer);
     expect(find.descendant(of: toasts, matching: find.text('REFUSED')), findsOneWidget);
-    expect(find.descendant(of: toasts, matching: find.text('Scout x1 costs 200 metal; the stockpile is short by 60 metal. Nothing was ordered.')), findsOneWidget);
-    expect(c.state.events.any((e) => e.message.startsWith('Refused: Scout x1 costs')), isTrue);
+    expect(
+        find.descendant(
+            of: toasts, matching: find.text('Light Fighter x1 costs 3000 metal and 1000 crystal; the stockpile is short by 600 metal. Nothing was ordered.')),
+        findsOneWidget);
+    expect(c.state.events.any((e) => e.message.startsWith('Refused: Light Fighter x1 costs')), isTrue);
     await tester.pump(const Duration(seconds: 6));
     expect(find.descendant(of: toasts, matching: find.text('REFUSED')), findsOneWidget, reason: 'a sentence that long stays up long enough to read');
     await endShell(tester, c);

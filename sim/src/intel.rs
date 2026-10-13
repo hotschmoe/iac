@@ -1,7 +1,7 @@
 // Sector intel: what each player can see this tick and what they remember.
 //
 // A sector is "live" for a player while a fleet of theirs is in it, their
-// sensor array covers it, or an active scan has not expired. Live sectors
+// homeworld's sensors cover it, or an active scan has not expired. Live sectors
 // stream to the client every tick. Every live sector is also written into the
 // player's chart (`KnownSectors`), so when it stops being live the client keeps
 // what was last observed, marked stale with the tick it was seen.
@@ -24,13 +24,13 @@ use iac_shared::constants::ShipClass;
 use iac_shared::hex::Hex;
 use iac_shared::keymap::{KeyMap, KeySet};
 use iac_shared::protocol::{
-    FleetBrief, NpcBehavior, NpcFleetInfo, NpcShipInfo, OutpostBrief, SectorResources, SectorState,
-    ShipClassCounts, SiteBrief,
+    FleetBrief, NpcBehavior, NpcFleetInfo, NpcShipInfo, OutpostBrief, SectorResources, SectorState, ShipCount,
+    SiteBrief,
 };
 use iac_shared::scaling;
 use iac_shared::world::{NpcBehaviorType, NpcTemplate};
 
-use crate::engine::{site_risk_label, template_npc_id, Fleet, GameEngine, NpcFleet, SectorOverride};
+use crate::engine::{site_risk_label, template_npc_id, Fleet, GameEngine, NpcFleet, SectorOverride, Ship};
 use crate::snapshot::KnownRow;
 
 #[derive(Debug, Clone)]
@@ -160,7 +160,7 @@ impl KnownSectors {
 
     fn update_coverage(&mut self, engine: &GameEngine, pid: u64, fleets: Vec<u32>, entered: &mut Vec<(u64, u32)>) {
         let sensor = engine.players.get(&pid).and_then(|p| {
-            let range = scaling::sensor_range(p.buildings.sensor_array);
+            let range = scaling::sensor_range(p.research.espionage_technology);
             (range > 0).then_some((p.homeworld, range))
         });
         let mut scans: Vec<u32> = engine.scan_revealed_coords(pid).into_iter().map(Hex::to_key).collect();
@@ -424,7 +424,7 @@ fn mark_charts(engine: &GameEngine, player_id: u64, sectors: &mut [SectorState])
 }
 
 /// Sectors the server is watching for this player right now: fleet
-/// locations, their outpost, the homeworld sensor array, and unexpired
+/// locations, their outpost, the homeworld's sensors, and unexpired
 /// active scans.
 pub fn live_coords(engine: &GameEngine, player_id: u64) -> Vec<Hex> {
     let mut seen: KeySet<u32> = KeySet::default();
@@ -446,7 +446,7 @@ pub fn live_coords(engine: &GameEngine, player_id: u64) -> Vec<Hex> {
     engine.outposts.get(&player_id).map(|o| o.sector).into_iter().for_each(&mut add);
 
     if let Some(p) = engine.players.get(&player_id) {
-        let range = scaling::sensor_range(p.buildings.sensor_array);
+        let range = scaling::sensor_range(p.research.espionage_technology);
         if range > 0 {
             engine.get_sensor_revealed_coords(p.homeworld, range).into_iter().for_each(&mut add);
         }
@@ -530,6 +530,19 @@ fn live_states(engine: &GameEngine, coords: &[Hex], viewer: u64) -> Vec<SectorSt
 
 /// The sector as it is this tick. Other empires' fleets are listed unless
 /// `viewer` is None (a memory snapshot), and `viewer`'s own fleets never are.
+/// How many of each class `ships` holds, in catalogue order, without the
+/// classes it has none of.
+fn class_counts(ships: &[Ship]) -> impl Iterator<Item = (ShipClass, u16)> {
+    let mut counts = [0u16; ShipClass::COUNT];
+    for ship in ships {
+        counts[ship.ship_class as usize] += 1;
+    }
+    ShipClass::ALL.into_iter().filter_map(move |class| {
+        let count = counts[class as usize];
+        (count > 0).then_some((class, count))
+    })
+}
+
 pub fn build_sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>) -> SectorState {
     let keys = KeySet::from_iter([coord.to_key()]);
     Presence::of(engine, &keys, viewer.is_some()).state(engine, coord, viewer)
@@ -544,14 +557,8 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
 
     let mut hostile_list: Vec<NpcFleetInfo> = Vec::new();
     for npc in npcs {
-        let mut counts = [0u16; ShipClass::ALL.len()];
-        for ship in &npc.ships[0..npc.ship_count as usize] {
-            counts[ship.ship_class as usize] += 1;
-        }
-        let ships = ShipClass::ALL
-            .iter()
-            .filter(|&&c| counts[c as usize] > 0)
-            .map(|&c| NpcShipInfo { ship_class: c, count: counts[c as usize] })
+        let ships = class_counts(&npc.ships[0..npc.ship_count as usize])
+            .map(|(ship_class, count)| NpcShipInfo { ship_class, count })
             .collect();
         hostile_list.push(NpcFleetInfo { id: npc.id, ships, behavior: behavior(npc.behavior) });
     }
@@ -568,16 +575,9 @@ fn sector_state(engine: &GameEngine, coord: Hex, viewer: Option<u64>, npcs: &[&N
     let mut player_fleet_list: Vec<FleetBrief> = Vec::new();
     if let Some(viewer) = viewer {
         for fleet in fleets.iter().filter(|f| f.owner_id != viewer) {
-            let mut counts = ShipClassCounts::default();
-            for ship in &fleet.ships[0..fleet.ship_count] {
-                match ship.ship_class {
-                    ShipClass::Scout => counts.scout += 1,
-                    ShipClass::Corvette => counts.corvette += 1,
-                    ShipClass::Frigate => counts.frigate += 1,
-                    ShipClass::Cruiser => counts.cruiser += 1,
-                    ShipClass::Hauler => counts.hauler += 1,
-                }
-            }
+            let counts = class_counts(&fleet.ships[0..fleet.ship_count])
+                .map(|(ship_class, count)| ShipCount { ship_class, count })
+                .collect();
             player_fleet_list.push(FleetBrief {
                 id: fleet.id,
                 owner_name: engine

@@ -4,10 +4,12 @@
 // into docs/design/economy/numbers.json and fails when the file in the
 // repository is not what it renders. Under "game" is what the simulation
 // reads instead of declaring: the constants under their Rust names, the cost
-// curves, the ships, and the curves it only looks up at whole rings, ratings
-// and levels. Under "tables" is what the Rust formulas give over the ranges
-// the simulation computes for itself, which tools/check_sim_constants.py
-// holds its Python formulas to.
+// curves, what each thing requires, the ships and defences with their fight
+// figures and rapid fire, and the curves it only looks up at whole rings,
+// ratings and levels (the mines, energy and storage among them). Under
+// "tables" is what the Rust formulas give over the ranges the simulation
+// computes for itself, which tools/check_sim_constants.py holds its Python
+// formulas to.
 //
 //   cargo test -p iac-sim --test economy_numbers                     # verify
 //   UPDATE_FIXTURES=1 cargo test -p iac-sim --test economy_numbers   # regenerate
@@ -46,7 +48,7 @@ macro_rules! atoms {
         }
     )*};
 }
-atoms!(f32, f64, u8, u16, u64, usize, &str, String);
+atoms!(f32, f64, u8, u16, u32, i32, u64, usize, &str, String);
 
 impl<T: Into<Json>> From<Vec<T>> for Json {
     fn from(items: Vec<T>) -> Json {
@@ -115,16 +117,29 @@ impl Json {
     }
 }
 
-fn buildings() -> impl Iterator<Item = BuildingType> {
-    (0..BuildingType::COUNT).filter_map(BuildingType::from_usize)
-}
-
 fn pace(value: f64) -> Pace {
     Pace::new(value).unwrap()
 }
 
-fn requirement(kind: &str, name: impl std::fmt::Debug, level: u8) -> Json {
-    list![kind, format!("{name:?}"), level]
+fn requires(prereqs: Prereqs) -> Vec<Json> {
+    prereqs
+        .iter()
+        .map(|(p, level)| match p {
+            PrereqRef::Building(b) => list!["building", format!("{b:?}"), *level],
+            PrereqRef::Research(t) => list!["research", format!("{t:?}"), *level],
+        })
+        .collect()
+}
+
+fn item_name(item: ShipyardItem) -> String {
+    match item {
+        ShipyardItem::Ship(c) => format!("{c:?}"),
+        ShipyardItem::Defence(d) => format!("{d:?}"),
+    }
+}
+
+fn items() -> impl Iterator<Item = ShipyardItem> {
+    ShipClass::ALL.into_iter().map(ShipyardItem::Ship).chain(DefenceKind::ALL.into_iter().map(ShipyardItem::Defence))
 }
 
 /// What `value` gives at every level from 0 to `max`.
@@ -132,72 +147,106 @@ fn at_levels<T: Into<Json>>(max: u8, value: impl Fn(u8) -> T) -> Json {
     Json::List((0..=max).map(|level| value(level).into()).collect())
 }
 
+fn researched(tech: ResearchType, level: u8) -> ResearchLevels {
+    let mut research = ResearchLevels::default();
+    research.set(tech, level);
+    research
+}
+
+/// An empire with nothing but what is named.
+fn built(levels: &[(BuildingType, u8)]) -> BuildingLevels {
+    let mut buildings = BuildingLevels::default();
+    for b in BuildingType::ALL {
+        buildings.set(b, 0);
+    }
+    for &(b, level) in levels {
+        buildings.set(b, level);
+    }
+    buildings
+}
+
+const MINES: [BuildingType; 3] = [BuildingType::MetalMine, BuildingType::CrystalMine, BuildingType::DeuteriumSynthesizer];
+
 /// What the simulation reads in place of constants of its own.
 fn game() -> Json {
     let constants = named![
-        PRODUCTION_PER_HOUR_METAL, PRODUCTION_PER_HOUR_CRYSTAL, PRODUCTION_PER_HOUR_DEUTERIUM, PRODUCTION_GROWTH,
-        BUILD_RATE, RESEARCH_RATE, SHIP_RATE, FABRICATOR_SPEED, LAB_SPEED, SHIPYARD_SPEED,
-        MAX_BUILDING_LEVEL, QUEUE_WAITING,
-        STARTING_RESOURCES, STARTING_SCOUTS, HOMEWORLD_MIN_DIST, HOMEWORLD_MAX_DIST,
-        STORAGE_BASE, STORAGE_GROWTH, CAP_KNEE, CAP_EXPONENT_PAST_KNEE,
-        FUEL_RATE_PER_MASS, FUEL_DEUT_PER_UNIT,
-        NPC_POWER_BASE, NPC_POWER_GROWTH, NPC_MAX_SHIPS, NPC_STAT_MULT_MAX, MAX_THREAT,
+        PRODUCTION_PER_HOUR_METAL, PRODUCTION_PER_HOUR_CRYSTAL, PRODUCTION_PER_HOUR_DEUTERIUM,
+        NATURAL_PER_HOUR_METAL, NATURAL_PER_HOUR_CRYSTAL,
+        ENERGY_PER_MINE, ENERGY_PER_SYNTHESIZER, ENERGY_PER_SOLAR_PLANT, ENERGY_PER_FUSION_REACTOR, FUSION_BURN_PER_HOUR,
+        GRAVITON_ENERGY, GRAVITON_GROWTH, HOME_TEMPERATURE_MAX,
+        BUILD_RATE, RESEARCH_RATE, SHIP_RATE,
+        MAX_BUILDING_LEVEL, MAX_RESEARCH_LEVEL, QUEUE_WAITING,
+        STARTING_RESOURCES, HOMEWORLD_MIN_DIST, HOMEWORLD_MAX_DIST,
+        STORAGE_BASE, STORAGE_STEP, STORAGE_GROWTH, STORAGE_PROTECT_PER_LEVEL, STORAGE_PROTECT_MAX,
+        CAP_KNEE, CAP_EXPONENT_PAST_KNEE,
+        MAP_PAYS, JUMP_SPEED_REF, TANK_PER_DEUT_TANK_LEVEL, FUEL_SAVING_PER_LEVEL, FUEL_SAVING_MAX,
+        HARVEST_YIELD_PER_LEVEL, HARVEST_YIELD_LEVELS, BUILD_SLOT_LEVELS, RECALL_SAVING_PER_LEVEL, SENSOR_HOPS_PER_LEVEL,
+        SMALL_CARGO_IMPULSE_LEVEL, SMALL_CARGO_IMPULSE_SPEED, SMALL_CARGO_IMPULSE_FUEL,
+        BOMBER_HYPERSPACE_LEVEL, BOMBER_HYPERSPACE_SPEED,
+        FUEL_DEUT_PER_UNIT,
+        NPC_POWER_BASE, NPC_POWER_GROWTH, NPC_MAX_SHIPS, NPC_STAT_MULT_MAX, NPC_CRUISER_RING, NPC_BATTLECRUISER_RING,
+        MAX_THREAT, RAPID_FIRE_UNARMED, RAPID_FIRE_UNARMED_DEATHSTAR,
         WRECK_VALUE_K, WRECK_VALUE_EXPONENT, LOOT_SPLIT,
         ORE_RING_GROWTH, ORE_RING_FIRST, ORE_RING_LAST, ORE_REGEN_BASE_HOURS, ORE_REGEN_HOURS_PER_RING,
         DERELICT_SPAWN_PCT, DERELICT_RESPAWN_TICKS, DERELICT_VALUE_BASE, DERELICT_VALUE_GROWTH, DERELICT_VALUE_RING,
         AMBUSH_GUARD_SHARE,
-        RAID_MIN_PLAYER_AGE, RAID_POWER_FLOOR, RAID_POWER_PER_POINT, RAID_POWER_EXPONENT, RAID_POWER_ROLL_MAX,
-        DEFENCE_GRID_BONUS,
+        RAID_MIN_PLAYER_AGE, RAID_MIN_SHIPYARD, RAID_POWER_FLOOR, RAID_POWER_PER_POINT, RAID_POWER_EXPONENT,
+        RAID_POWER_ROLL_MIN, RAID_POWER_ROLL_MAX, RAID_LOST_SHIP_FRACTION, RAID_LOST_STRUCTURE_FRACTION,
         EXTRA_CAP, KILL_SHARE, FULL_PAY_RATIO, MIN_PAY, BOARD_VALUE_SHARE, DISCOVERY_POINTS,
         CHART_BASE_POINTS, CHART_THREAT_POINTS, THREAT_POINTS_EXPONENT, DEFENCE_SHARE,
         RELIC_POINTS, FARM_DECAY, FARM_HALF_LIFE_RESPAWNS,
         EXCHANGE_FEE_MIN, EXCHANGE_FEE_MAX, EXCHANGE_METER_SHARE, EXCHANGE_WINDOW_TICKS,
         OUTPOST_MIN_RING, OUTPOST_MAX_RING, OUTPOST_SPACING, OUTPOST_MAX_LEVEL,
         OUTPOST_COST, OUTPOST_GROWTH, OUTPOST_BUILD_RATE, OUTPOST_STORE_BASE, OUTPOST_YIELD_PER_HOUR,
-        OUTPOST_PLATFORM_POWER, OUTPOST_RAID_FACTOR, OUTPOST_RAID_LOSS, OUTPOST_REPAIR_SHARE,
+        OUTPOST_RAID_FACTOR, OUTPOST_RAID_LOSS, OUTPOST_REPAIR_SHARE,
     ];
 
     let start = BuildingLevels::default();
-    let building_rows = buildings().map(|b| {
+    let building_rows = BuildingType::ALL.into_iter().map(|b| {
         let (cost, growth) = building_cost_curve(b);
-        let requires: Vec<Json> =
-            building_prerequisites(b).into_iter().map(|p| requirement("building", p.building, p.level)).collect();
-        (b, map! {"cost": cost, "growth": growth, "requires": requires, "starts_at": start.get(b)})
+        let row = map! {
+            "label": b.label(), "cost": cost, "growth": growth, "requires": requires(building_prerequisites(b)),
+            "starts_at": start.get(b),
+        };
+        (b, row)
     });
 
     let research_rows = ResearchType::ALL.into_iter().map(|t| {
         let (cost, growth) = research_cost_curve(t);
-        let requires: Vec<Json> = research_prerequisites(t)
-            .into_iter()
-            .flatten()
-            .map(|p| match p {
-                ResearchPrereqKind::Building(b) => requirement("building", b.building, b.level),
-                ResearchPrereqKind::Research { tech, level } => requirement("research", tech, level),
-            })
-            .collect();
-        (t, map! {"cost": cost, "growth": growth, "max_level": research_max_level(t), "requires": requires})
+        let row = map! {
+            "label": t.label(), "cost": cost, "growth": growth, "max_level": research_max_level(t),
+            "requires": requires(research_prerequisites(t)), "energy": research_energy(t, 1),
+        };
+        (t, row)
     });
 
     let ship_rows = ShipClass::ALL.into_iter().map(|c| {
         let s = c.base_stats();
-        let stats = map! {
-            "cost": c.build_cost(), "hull": s.hull, "shield": s.shield, "weapon": s.weapon,
-            "speed": s.speed, "cargo": s.cargo, "fuel": s.fuel,
+        let rapid = Json::Map(rapid_fire(c).map(|(target, shots)| (item_name(target), shots.into())).collect());
+        let row = map! {
+            "label": c.label(), "cost": c.build_cost(), "hull": s.hull, "shield": s.shield, "weapon": s.weapon,
+            "power": ship_power(c), "speed": s.speed, "cargo": s.cargo, "fuel": s.fuel,
+            "drive": c.drive().map_or(String::new(), |d| format!("{d:?}")),
+            "tank_jumps": c.tank_jumps(), "harvest_power": c.harvest_power(), "flies": u8::from(c.flies()),
+            "requires": requires(ship_prerequisites(c)), "rapid_fire": rapid,
         };
-        (c, stats)
+        (c, row)
     });
 
     let defence_rows = DefenceKind::ALL.into_iter().map(|d| {
-        let requires: Vec<Json> = d
-            .prerequisites()
-            .iter()
-            .map(|(p, level)| match p {
-                PrereqRef::Building(b) => requirement("building", b, *level),
-                PrereqRef::Research(t) => requirement("research", t, *level),
-            })
-            .collect();
-        (d, map! {"cost": d.build_cost(), "power": d.power(), "requires": requires})
+        let s = d.base_stats();
+        let row = map! {
+            "label": d.label(), "cost": d.build_cost(), "hull": s.hull, "shield": s.shield, "weapon": s.weapon,
+            "power": d.power(), "max_count": d.max_count().unwrap_or(0), "requires": requires(d.prerequisites()),
+        };
+        (d, row)
     });
+
+    let starting_ships: Vec<Json> = STARTING_SHIPS.iter().map(|&(class, count)| list![format!("{class:?}"), count]).collect();
+
+    let platform = |level: u8| -> Json {
+        outpost_platform(level).iter().map(|&(kind, count)| list![format!("{kind:?}"), count]).collect::<Vec<Json>>().into()
+    };
 
     let density_rows = DENSITIES
         .into_iter()
@@ -223,30 +272,38 @@ fn game() -> Json {
         })
         .collect();
 
-    let researched = |tech: ResearchType, level: u8| {
-        let mut research = ResearchLevels::default();
-        research.set(tech, level);
-        research
-    };
     let unit = ShipStats { hull: 1.0, shield: 1.0, weapon: 1.0, speed: 0, cargo: 0, fuel: 0 };
     let stats = |tech: ResearchType, level: u8| apply_research_to_stats(unit, &researched(tech, level));
-    let top = research_max_level;
+    let (b_top, r_top) = (MAX_BUILDING_LEVEL, MAX_RESEARCH_LEVEL);
+    let p1 = Pace::PERSISTENT;
     let by_level = map! {
-        "defense_grid_scout_units": at_levels(MAX_BUILDING_LEVEL, defense_grid_scout_units),
-        "fuel_depot_modifier": at_levels(MAX_BUILDING_LEVEL, fuel_depot_modifier),
-        "fuel_rate_modifier": at_levels(top(ResearchType::FuelEfficiency), fuel_rate_modifier),
-        "fuel_capacity_modifier": at_levels(top(ResearchType::ExtendedFuelTanks), fuel_capacity_modifier),
-        "harvest_yield": at_levels(top(ResearchType::HarvestingEfficiency), harvest_yield),
-        "hull_modifier": at_levels(top(ResearchType::ReinforcedHulls), |l| stats(ResearchType::ReinforcedHulls, l).hull),
-        "shield_modifier": at_levels(top(ResearchType::AdvancedShields), |l| stats(ResearchType::AdvancedShields, l).shield),
-        "weapon_modifier": at_levels(top(ResearchType::WeaponsResearch), |l| stats(ResearchType::WeaponsResearch, l).weapon),
-        "building_slots": at_levels(top(ResearchType::ModularFabrication), |l| building_slots(&researched(ResearchType::ModularFabrication, l))),
+        "mine_output_per_hour": Json::keyed(MINES.map(|b| (b, at_levels(b_top, |l| mine_output_per_hour(b, l))))),
+        "energy_needed": Json::keyed(MINES.map(|b| (b, at_levels(b_top, |l| energy_needed_by(b, l))))),
+        "solar_plant_energy": at_levels(b_top, solar_plant_energy),
+        "fusion_energy_by_energy_technology": at_levels(r_top, |tech| at_levels(b_top, |l| fusion_energy(l, tech))),
+        "fusion_burn_per_hour": at_levels(b_top, fusion_burn_per_hour),
+        "storage_cap": at_levels(b_top, |l| storage_cap_at(l, &p1)),
+        "storage_protected": at_levels(b_top, |l| storage_protected_at(l, &p1)),
+        "tank_modifier": at_levels(b_top, tank_modifier),
+        "fuel_rate_modifier": at_levels(r_top, fuel_rate_modifier),
+        "harvest_yield": at_levels(r_top, harvest_yield),
+        "recall_damage_reduction": at_levels(r_top, recall_damage_reduction),
+        "sensor_range": at_levels(r_top, sensor_range),
+        "hull_modifier": at_levels(r_top, |l| stats(ResearchType::ArmourTechnology, l).hull),
+        "shield_modifier": at_levels(r_top, |l| stats(ResearchType::ShieldingTechnology, l).shield),
+        "weapon_modifier": at_levels(r_top, |l| stats(ResearchType::WeaponsTechnology, l).weapon),
+        "building_slots": at_levels(r_top, |l| building_slots(&researched(ResearchType::ComputerTechnology, l))),
+        "outpost_platform": at_levels(OUTPOST_MAX_LEVEL, platform),
     };
 
     let classes = [PaceClass::Economy, PaceClass::Attention, PaceClass::Finds, PaceClass::RealTime];
     map! {
         "constants": constants,
+        "satellite_energy": satellite_energy(),
+        "synthesizer_factor": synthesizer_factor(),
+        "starting_ships": starting_ships,
         "resource_weight": Json::Map(ResourceKind::ALL.into_iter().map(|k| (k.label().to_string(), k.weight().into())).collect()),
+        "storage_building": Json::Map(ResourceKind::ALL.into_iter().map(|k| (k.label().to_string(), format!("{:?}", storage_building(k)).into())).collect()),
         "zone_radius": map! {"InnerRing": Zone::INNER_RING_RADIUS, "OuterRing": Zone::OUTER_RING_RADIUS},
         "pace_exponent": Json::keyed(classes.into_iter().map(|c| (c, c.exponent().into()))),
         "presets": Json::Map(PRESETS.iter().map(|p| (p.name.to_string(), p.pace.into())).collect()),
@@ -263,15 +320,25 @@ fn game() -> Json {
 
 /// What the Rust formulas give where the simulation computes for itself.
 fn tables() -> Json {
+    use BuildingType as B;
+    use ResearchType as R;
     let p1 = Pace::PERSISTENT;
+    let none = built(&[]);
+    let robotics_4 = built(&[(B::RoboticsFactory, 4)]);
+    let nanite_1 = built(&[(B::RoboticsFactory, 10), (B::NaniteFactory, 1)]);
+    let lab_5 = built(&[(B::ResearchLab, 5)]);
+    let shipyard_5 = built(&[(B::Shipyard, 5)]);
+    let shipyard_5_nanite_1 = built(&[(B::Shipyard, 5), (B::NaniteFactory, 1)]);
 
-    let building_levels: Vec<Json> = buildings()
+    let building_levels: Vec<Json> = BuildingType::ALL
+        .into_iter()
         .flat_map(|b| (1..=MAX_BUILDING_LEVEL).map(move |level| (b, level)))
         .map(|(b, level)| {
             map! {
                 "building": format!("{b:?}"), "level": level, "cost": building_cost(b, level),
-                "ticks": building_time(b, level, 0, &p1), "ticks_fabricator_4": building_time(b, level, 4, &p1),
-                "per_hour": production_per_tick(b, level, &p1) * 3600.0,
+                "ticks": building_time(b, level, &none, &p1),
+                "ticks_robotics_4": building_time(b, level, &robotics_4, &p1),
+                "ticks_robotics_10_nanite_1": building_time(b, level, &nanite_1, &p1),
             }
         })
         .collect();
@@ -282,29 +349,115 @@ fn tables() -> Json {
         .map(|(t, level)| {
             map! {
                 "tech": format!("{t:?}"), "level": level, "cost": research_cost(t, level),
-                "ticks": research_time(t, level, 0, &p1), "ticks_lab_5": research_time(t, level, 5, &p1),
+                "ticks": research_time(t, level, &none, &p1), "ticks_lab_5": research_time(t, level, &lab_5, &p1),
+                "energy": research_energy(t, level),
             }
         })
         .collect();
 
-    let items = ShipClass::ALL.into_iter().map(ShipyardItem::Ship).chain(DefenceKind::ALL.into_iter().map(ShipyardItem::Defence));
-    let shipyard: Vec<Json> = items
+    let shipyard: Vec<Json> = items()
         .map(|item| {
-            let name = match item {
-                ShipyardItem::Ship(c) => format!("{c:?}"),
-                ShipyardItem::Defence(d) => format!("{d:?}"),
-            };
-            map! {"item": name, "ticks": item.unit_ticks(0, &p1), "ticks_shipyard_5": item.unit_ticks(5, &p1)}
+            map! {
+                "item": item_name(item), "ticks": item.unit_ticks(&none, &p1),
+                "ticks_shipyard_5": item.unit_ticks(&shipyard_5, &p1),
+                "ticks_shipyard_5_nanite_1": item.unit_ticks(&shipyard_5_nanite_1, &p1),
+            }
         })
         .collect();
 
     let storage_caps: Vec<Json> = PACES
         .into_iter()
-        .flat_map(|p| (0..=14u8).map(move |vault| (p, vault)))
-        .map(|(p, vault)| map! {"pace": p, "vault": vault, "cap": storage_cap(vault, &pace(p))})
+        .flat_map(|p| (0..=MAX_BUILDING_LEVEL).map(move |level| (p, level)))
+        .map(|(p, level)| {
+            map! {
+                "pace": p, "level": level, "cap": storage_cap_at(level, &pace(p)),
+                "protected": storage_protected_at(level, &pace(p)),
+            }
+        })
         .collect();
 
-    let raid_power: Vec<Json> = [1.0f32, 10.0, 100.0, 500.0, 1000.0, 2000.0]
+    // Homeworlds as (metal, crystal, deuterium, solar, fusion, Energy Technology, satellites).
+    let homes: [(u8, u8, u8, u8, u8, u8, u32); 9] = [
+        (1, 1, 0, 1, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0),
+        (5, 4, 3, 5, 0, 0, 0),
+        (10, 9, 8, 14, 0, 0, 0),
+        (10, 9, 8, 10, 0, 0, 0),
+        (10, 9, 8, 10, 0, 0, 12),
+        (15, 14, 12, 16, 6, 8, 0),
+        (20, 20, 20, 20, 12, 12, 40),
+        (20, 20, 20, 20, 0, 0, 0),
+    ];
+    let production: Vec<Json> = homes
+        .into_iter()
+        .flat_map(|home| PACES.into_iter().map(move |p| (home, p)))
+        .map(|((metal, crystal, deuterium, solar, fusion, tech, satellites), p)| {
+            let buildings = built(&[
+                (B::MetalMine, metal),
+                (B::CrystalMine, crystal),
+                (B::DeuteriumSynthesizer, deuterium),
+                (B::SolarPlant, solar),
+                (B::FusionReactor, fusion),
+            ]);
+            let pace = pace(p);
+            let power = home_power(&buildings, &researched(R::EnergyTechnology, tech), satellites, true, &pace);
+            let mined = production_per_tick(&buildings, power.fraction(), &pace);
+            map! {
+                "pace": p, "mines": [metal, crystal, deuterium], "solar_plant": solar, "fusion_reactor": fusion,
+                "energy_technology": tech, "satellites": satellites,
+                "energy_made": power.made, "energy_needed": power.needed, "fraction": power.fraction(),
+                "mined_per_hour": mined.scale(3600.0), "fusion_burn_per_hour": power.fusion_burn * 3600.0,
+            }
+        })
+        .collect();
+
+    // Ships as (class, Combustion, Impulse, Hyperspace Drive, Energy Technology, Deuterium Tank).
+    let flights: [(ShipClass, u8, u8, u8, u8, u8); 22] = [
+        (ShipClass::EspionageProbe, 0, 0, 0, 0, 0),
+        (ShipClass::LightFighter, 0, 0, 0, 0, 0),
+        (ShipClass::LightFighter, 9, 0, 0, 5, 3),
+        (ShipClass::HeavyFighter, 0, 0, 0, 0, 0),
+        (ShipClass::HeavyFighter, 0, 2, 0, 0, 0),
+        (ShipClass::Cruiser, 0, 0, 0, 0, 0),
+        (ShipClass::Cruiser, 0, 4, 0, 4, 0),
+        (ShipClass::Cruiser, 0, 12, 0, 12, 8),
+        (ShipClass::Battleship, 0, 0, 0, 0, 0),
+        (ShipClass::Battleship, 0, 0, 4, 0, 0),
+        (ShipClass::Battleship, 0, 0, 14, 0, 0),
+        (ShipClass::Battlecruiser, 0, 0, 5, 0, 0),
+        (ShipClass::LargeCargo, 6, 0, 0, 0, 0),
+        (ShipClass::LargeCargo, 7, 0, 0, 0, 0),
+        (ShipClass::SmallCargo, 0, 0, 0, 0, 0),
+        (ShipClass::SmallCargo, 2, 0, 0, 0, 0),
+        (ShipClass::SmallCargo, 2, 5, 0, 0, 0),
+        (ShipClass::Destroyer, 0, 0, 6, 0, 0),
+        (ShipClass::Bomber, 0, 6, 0, 0, 0),
+        (ShipClass::Bomber, 0, 6, 8, 0, 0),
+        (ShipClass::Recycler, 6, 0, 0, 0, 0),
+        (ShipClass::Deathstar, 0, 0, 7, 0, 0),
+    ];
+    let flight: Vec<Json> = flights
+        .into_iter()
+        .map(|(class, combustion, impulse, hyperspace, energy, tank)| {
+            let research = ResearchLevels {
+                combustion_drive: combustion,
+                impulse_drive: impulse,
+                hyperspace_drive: hyperspace,
+                energy_technology: energy,
+                ..ResearchLevels::default()
+            };
+            let speed = ship_speed(class, &research);
+            map! {
+                "class": format!("{class:?}"), "combustion_drive": combustion, "impulse_drive": impulse,
+                "hyperspace_drive": hyperspace, "energy_technology": energy, "deuterium_tank": tank,
+                "speed": speed, "jump_ticks": jump_ticks(speed),
+                "jump_fuel": ship_burn(class, &research) * fuel_rate_modifier(energy),
+                "tank": ship_tank(class, &research) * tank_modifier(tank),
+            }
+        })
+        .collect();
+
+    let raid_power: Vec<Json> = [1.0f32, 10.0, 100.0, 500.0, 1000.0, 2000.0, 20_000.0]
         .into_iter()
         .map(|econ| map! {"econ": econ, "power": raid_power_base(econ)})
         .collect();
@@ -340,16 +493,13 @@ fn tables() -> Json {
         .into_iter()
         .map(|p| {
             let pace = pace(p);
-            let mines = Resources {
-                metal: production_per_tick(BuildingType::MetalMine, 10, &pace),
-                crystal: production_per_tick(BuildingType::CrystalMine, 9, &pace),
-                deuterium: production_per_tick(BuildingType::DeuteriumSynthesizer, 8, &pace),
-            };
+            let levels = built(&[(B::MetalMine, 10), (B::CrystalMine, 9), (B::DeuteriumSynthesizer, 8)]);
+            let mines = production_per_tick(&levels, 1.0, &pace);
             map! {"pace": p, "mines": [10u8, 9, 8], "window": exchange_window(&pace), "span": exchange_span(&mines, &pace)}
         })
         .collect();
 
-    let exchange_returns: Vec<Json> = [(0.0, 632.0, 4185.0), (1000.0, 5000.0, 4185.0), (9000.0, 300.0, 4185.0), (0.0, 80.0, 0.0)]
+    let exchange_returns: Vec<Json> = [(0.0, 632.0, 11_900.0), (1000.0, 15_000.0, 11_900.0), (25_000.0, 300.0, 11_900.0), (0.0, 80.0, 0.0)]
         .into_iter()
         .map(|(pressure, value, span): (f64, f64, f64)| {
             map! {"pressure": pressure, "value": value, "span": span, "back": exchange_return(pressure, value, span)}
@@ -385,6 +535,8 @@ fn tables() -> Json {
         "research_levels": research_levels,
         "shipyard": shipyard,
         "storage_caps": storage_caps,
+        "production": production,
+        "flight": flight,
         "raid_power": raid_power,
         "rings": rings,
         "ratings": ratings,

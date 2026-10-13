@@ -381,7 +381,7 @@ impl Scheme<'_> {
             let mut args = vec![quote(&v.wire)];
             args.extend(columns.iter().map(|c| format!("{}: {}", c.name, cell(&c.cells[i]))));
             let end = if i + 1 == variants.len() { ';' } else { ',' };
-            out.line(2, &format!("{name}({}){end}", args.join(", ")));
+            out.list(2, &format!("{name}("), &args, &format!("){end}"));
         }
         out.blank();
         let named: Vec<String> = columns.iter().map(|c| format!("required this.{}", c.name)).collect();

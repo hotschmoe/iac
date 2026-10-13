@@ -1,7 +1,7 @@
 {
   "breached": false,
   "defended": false,
-  "defense_power": 80.5,
+  "defense_power": 805.5,
   "kind": "RaidResolved",
   "player_id": 42,
   "protected_kept": {
@@ -9,7 +9,7 @@
     "deuterium": 0.0,
     "metal": 2400.0
   },
-  "raid_power": 120.0,
+  "raid_power": 1200.0,
   "resources_lost": {
     "crystal": 50.0,
     "deuterium": 25.0,
@@ -21,6 +21,7 @@
     "deuterium": 0.0,
     "metal": 10.0
   },
+  "satellites_lost": 2,
   "ships_lost": 3,
   "structures_lost": 6,
   "structures_restored": 0,

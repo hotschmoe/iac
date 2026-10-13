@@ -37,6 +37,20 @@ class DemoController extends GameController {
     receive(world.initial());
   }
 
+  /// Stand a building of the scripted world's empire at [level].
+  void raise(proto.BuildingType building, int level) {
+    final world = _world!;
+    world.raise(building, level);
+    receive(world.initial());
+  }
+
+  /// Put [stock] in the scripted world's stockpile.
+  void stock(proto.Resources stock) {
+    final world = _world!;
+    world.stock(stock);
+    receive(world.initial());
+  }
+
   /// Announce a raid of [power] on the scripted world's outpost, arriving
   /// in [inTicks].
   void raidOutpost(double power, {int inTicks = 10}) => _world!.raidOutpost(power, inTicks: inTicks);

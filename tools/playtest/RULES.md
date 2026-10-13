@@ -7,8 +7,9 @@ once per second, so the world keeps moving while you think. Other players
 
 The session lasts about one hour. Every `play` call prints the minutes left.
 The world runs at a fixed pace (`./play status` shows it): a one-hour session
-normally runs at x600, where a mine upgrade takes seconds to minutes and the
-whole tech tree takes about three hours of play. Check `./play costs` for real
+normally runs at x600, where a mine upgrade takes seconds to minutes, a
+competent player builds a first Cruiser after about 54 minutes and the endgame
+is about two and a half hours of play away. Check `./play costs` for real
 times rather than guessing. Play the whole hour: keep queues busy (they hold
 three items, and waiting items cost nothing until they start), keep fleets
 doing something, spend before a stockpile reaches its cap, and use
@@ -49,7 +50,7 @@ commands. The loop that works:
 1. `./play state` (instant). Look at `idle` (queues with a free slot and nothing waiting), `queues.*.room`
    (items you can still add; each queue holds 3) and `next.*.<name>.ok` (unlocked and payable now).
 2. Send every order you want in ONE call: `./play do '{"action":"build","building_type":"MetalMine"}'
-   '{"action":"research","tech":"Navigation"}' '{"action":"build_ship","ship_class":"Scout","count":1}'`.
+   '{"action":"research","tech":"EnergyTechnology"}' '{"action":"build_ship","ship_class":"LightFighter","count":1}'`.
    You get one line per command (`ok ... -> started, done in 3s`, `queued [0] waiting for 35 metal`, or `ERR ...`) and
    a `queues:` line. Orders are spaced about 0.25 s apart by the tool, so a batch stays polite.
 3. `./play wait --until idle` returns as soon as a queue frees up or becomes payable (an alert returns it too),
@@ -69,10 +70,10 @@ can pick up where you left off if your session is restarted.
 
 ## Valid names (case-sensitive in JSON)
 
-- BuildingType: MetalMine, CrystalMine, DeuteriumSynthesizer, Shipyard, ResearchLab, FuelDepot, SensorArray, DefenseGrid, StorageVault, Fabricator
-- ResearchType: FuelEfficiency, ExtendedFuelTanks, ReinforcedHulls, AdvancedShields, WeaponsResearch, Navigation, HarvestingEfficiency, CorvetteTech, FrigateTech, CruiserTech, HaulerTech, EmergencyJump, ModularFabrication
-- ShipClass: Scout, Corvette, Frigate, Cruiser, Hauler
-- DefenceKind: PulseTurret, LancerBattery, IonBastion
+- BuildingType: MetalMine, CrystalMine, DeuteriumSynthesizer, SolarPlant, FusionReactor, RoboticsFactory, NaniteFactory, Shipyard, MetalStorage, CrystalStorage, DeuteriumTank, ResearchLab
+- ResearchType: EspionageTechnology, ComputerTechnology, WeaponsTechnology, ShieldingTechnology, ArmourTechnology, EnergyTechnology, HyperspaceTechnology, CombustionDrive, ImpulseDrive, HyperspaceDrive, LaserTechnology, IonTechnology, PlasmaTechnology, GravitonTechnology
+- ShipClass: SmallCargo, LargeCargo, LightFighter, HeavyFighter, Cruiser, Battleship, Recycler, EspionageProbe, Bomber, SolarSatellite, Destroyer, Deathstar, Battlecruiser
+- DefenceKind: RocketLauncher, LightLaser, HeavyLaser, GaussCannon, IonCannon, PlasmaTurret, SmallShieldDome, LargeShieldDome
 - HarvestResource: Metal, Crystal, Deuterium, Auto
 - PolicyPreset: manual, prospect, mine_and_return, salvage_and_sites, patrol_home
 - QueueType: Building, Ship, Research
@@ -88,7 +89,7 @@ can pick up where you left off if your session is restarted.
 | action | fields | effect |
 |--------|--------|--------|
 | `move` | `fleet_id`, `target:{q,r}` | jump to a connected sector (fuel, cooldown). The fuel is paid when the jump is ordered. A fight that begins in the sector while the jump is still charging takes the fleet into it: the jump is abandoned and its fuel is not returned, which is told in an `Alert` (warning) with the fuel forfeit |
-| `scan` | `fleet_id` | reveal nearby sectors + faint signal contacts; scouts scan farther |
+| `scan` | `fleet_id` | reveal nearby sectors + faint signal contacts; a fleet with an Espionage Probe scans farther |
 | `harvest` | `fleet_id`, `resource` (`Metal`, `Crystal`, `Deuterium`, `Auto`) | mine the current sector until cargo is full; `Auto` takes everything present, a named resource only that one (`ResourceNotPresent` if the sector lacks it). When the harvest ends by itself an `Alert` (warning) says why, once: the hold is full, or nothing (or none of the named resource) is left to mine there. A fleet under standing orders reports through its doctrine instead |
 | `attack` | `fleet_id`, `target_fleet_id` | engage the NPC fleet listed as HOSTILE in your sector (use its id) |
 | `collect_salvage` | `fleet_id` | scoop wreckage (partial if the hold fills; `CargoFull` if it is already full) |
@@ -98,7 +99,7 @@ can pick up where you left off if your session is restarted.
 | `build` | `building_type`, `reserve` (default false) | upgrade a homeworld building one level: starts at once when a building slot is free and you can pay, otherwise waits in the queue (nothing is charged until it starts). Every order gets a stable `id`, reported in its `Queue` event and in the queue lists. `reserve: true` makes the order hold the line while it is short (see Queues and slots) |
 | `research` | `tech`, `reserve` | research one level, same rules (one lab) |
 | `build_ship` | `ship_class`, `count` | order a ship batch (one shipyard). Unlike a building or a tech, a batch is accepted only if your stockpile covers every unit now, and it is paid in full at that moment; otherwise it is refused with `InsufficientResources` and a message naming the shortfall per resource and how many units the stockpile would cover (5 ordered with money for 2 is refused; order 2). A paid batch starts at once or waits for the yard |
-| `build_defence` | `kind` (`PulseTurret`, `LancerBattery`, `IonBastion`), `count` | order home defence structures in the shipyard queue, paid in full when ordered like ships; `DefenceLocked` until the Defense Grid and research it needs are in place |
+| `build_defence` | `kind` (see Valid names), `count` | order home defence structures in the shipyard queue, paid in full when ordered like ships; `DefenceLocked` until the Shipyard level and research it needs are in place, `MaxLevelReached` for a second dome of a kind |
 | `cancel_build` | `queue_type`, `id` | cancel the item with that `id` once it has started. A building or tech refunds 50% of its cost, and waiting items of the same building or tech move up a level. A ship or defence batch keeps the units already built and refunds 50% of the price of every unit not yet delivered, the one under way included. A `Queue` event confirms what was refunded. `InvalidTarget` names where the id actually is (another queue, still waiting, or gone) |
 | `cancel_queued` | `queue_type`, `id` | remove the item with that `id` while it still waits. A waiting building or tech paid nothing, so nothing comes back; a waiting batch paid when it was ordered and gets 50% back. A `Queue` event confirms it. Refused, not redirected, when the id is not waiting in the named queue |
 | `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home` (shortest real route home, charted or not), `charted_hops_home` (shortest route over sectors you have entered, null when there is none), `route_unexplored` (the `hops_home` route crosses sectors you have never entered), `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, and the odds `ratio` and `label` (`safe`, `favourable`, `even`, `risky`, `deadly`), all for the fleet you name, not your strongest. `ratio` is not `fleet_power / est_power`: see Threat |
@@ -183,7 +184,7 @@ Presets:
 What every doctrine does:
 - No doctrine moves a fleet into a sector where its odds (as `preview_move`
   and `odds` show them) are below `engage_ratio_x10`; the setting is the bar
-  whether or not hostiles sit there, so lower it to push a scout through,
+  whether or not hostiles sit there, so lower it to push a probe through,
   raise it to be careful.
 - It picks its work among the sectors it may reach. A seam, wreck, derelict
   or contact behind a refused sector is passed over for the next one; only
@@ -230,30 +231,59 @@ What every doctrine does:
   before. No hostile group lives on a seat or on the six sectors beside one
   (convoys, which never shoot first, still do), and no derelict lies on a
   seat. Lanes are drawn from the world seed: every world has its own maze.
+- **The catalogue is classic OGame's** — the buildings, the research, the
+  ships and the defences are those of OGame 0.84, with its names and its
+  numbers (`docs/design/ogame.md`): 12 buildings, 14 researches, 13 ships
+  and 8 defences. The game around them is this game's: the hex map, fuel
+  tanks, mining, derelicts, pirates and raids, outposts, standing orders,
+  the hub and pace. The fight is still this game's too (below); OGame's
+  round, fleets of hundreds and raids fought as battles are later work.
+  A new empire has a Metal Mine, a Crystal Mine and the Solar Plant that
+  powers them, all at level 1, and two Light Fighters.
 - **Economy** — metal / crystal / deuterium from homeworld mines and fleet
-  harvesting. A mine makes `base x L x 1.1^L` per game hour (metal 10,
-  crystal 7, deuterium 5, times P); costs grow x1.5 to x1.9 per level and
-  times follow cost, so the late levels are slow in both money and time.
+  harvesting. A mine makes `floor(base x L x 1.1^L)` per game hour (metal
+  30, crystal 20, deuterium 10 times 1.2 for the homeworld's temperature;
+  all times P), and 20 metal and 10 crystal an hour come with no mine at
+  all. Costs double per level, or grow x1.5 and x1.6 for the mines and the
+  Solar Plant and x1.8 for the Fusion Reactor; times follow cost (below).
   Sector deposits are small nuggets (see Ore and loot below).
-- **Ore** — an ore tile holds 3 / 10 / 22 / 42 raw units (Sparse to Pristine)
+- **Energy** — the mines need it: `ceil(10 x L x 1.1^L)` each for the Metal
+  and the Crystal Mine, twice that for the Deuterium Synthesizer. The Solar
+  Plant makes `floor(20 x L x 1.1^L)`, each Solar Satellite 30, and the
+  Fusion Reactor `floor(30 x L x (1.05 + 0.01 x Energy Technology)^L)` while
+  it burns `ceil(10 x L x 1.1^L)` deuterium an hour. Energy is not stored.
+  When less is made than needed, all three mines run at made over needed
+  (`homeworld.energy`: `made`, `needed`, `fraction`); the natural production
+  is not touched. `homeworld.production` is what the stockpile gains a tick
+  with the energy there is, less the reactor's burn, so its deuterium may be
+  negative; a reactor with no deuterium to burn stands still
+  (`fusion_starved`). Solar Satellites are built in the shipyard as ships,
+  stay at the homeworld (`homeworld.satellites`), never join a fleet, stand
+  in its defence for 21 power each and are what a lost raid shoots first
+  (a quarter of them). Raise the Solar Plant before a mine, not after.
+- **Ore** — an ore tile holds 9 / 30 / 66 / 126 raw units (Sparse to Pristine)
   times 1.10 per ring from ring 3 (x5 from ring 20), and the further out the
   richer the density rolls. Harvesting takes units out of the tile (depletion
-  counts raw units; Harvesting Efficiency raises what lands in the hold, not
-  how fast the tile empties) and the density drops a level at a time.
+  counts raw units; Laser Technology raises what lands in the hold, +20% a
+  level for its first five, not how fast the tile empties) and the density
+  drops a level at a time. A Recycler mines 5 units a tick, a cargo ship 1,
+  any other ship 0.5, times the density's multiplier.
   A stripped tile refills completely in `120 + 24 x ring` game hours divided
   by P, but not while a fleet sits on it, and never above its generated
   density. Sector views carry `ore_reserve` per resource: `units`,
   `max_units` and `refills_in_s`. Ore is a bonus on top of the mines, not a
   living.
-- **Threat** — NPC group power grows 1.22x per ring (`4 x 1.22^(ring-1)`),
-  and a group's ships add up to exactly that (to the 32-ship limit at ring
-  37), so the ring estimate is the real strength of an unscouted lair. The
-  Inner Ring is scout country: scouts to ring 8, corvettes to 12, frigates to
-  20, cruisers beyond. The step in danger is at ring 9, where rapid fire
-  starts: the two starting scouts win every lair through ring 8 (keeping
-  about 40% of their hull there) and lose every one from ring 9. Every
+- **Threat** — NPC group power grows 1.22x per ring (`40 x 1.22^(ring-1)`;
+  a Light Fighter is 91 on that scale), and a group's ships add up to exactly
+  that, so the ring estimate is the real strength of an unscouted lair. The
+  Inner Ring is Light Fighter country: one or two of them to ring 8, then a
+  Cruiser to ring 12, a Battlecruiser to ring 20 and a Destroyer beyond, each
+  weakened or strengthened to its ring's power. The step in danger is at
+  ring 9, where rapid fire starts: the two starting Light Fighters win every
+  lair through ring 8 (keeping about 60% of their hull at ring 7 and a third
+  at ring 8) and lose every one from ring 9. Every
   sector carries `threat`:
-  `rating` T1 to T9 (one step per doubling of power over 4), `est_power` and
+  `rating` T1 to T9 (one step per doubling of power over 40), `est_power` and
   `basis` (`observed`: a group is there, its own power, Aggressive and Swarm
   +25%; `template`: a lair that is away or cleared; `estimate`: ring only).
   A sector an outpost stands in is rated 0, power 0, `observed`: there is
@@ -273,24 +303,42 @@ What every doctrine does:
   sure win, 1-15% of the hull lost), EVEN from 1.1 (a win in practice,
   15-50% lost), RISKY from 0.9 (anything from a lost fleet to a win that
   keeps half), DEADLY below (lost, or one win in six at best). Power against
-  power is not it: four scouts are 1.8x the power of the ring-9 corvette and
-  rate 1.06x RISKY against it (three fights in four won, 41% of the hull
-  kept on average); one corvette is 1.4x the power of the two ring-8 scouts
-  and rates 3.5x SAFE. A sector with nothing in sight is rated against the
+  power is not it: four Light Fighters are 1.9x the power of the ring-9
+  Cruiser and rate 0.88x DEADLY against it (one fight in four won, 5% of the
+  hull kept on average), because a Cruiser fires again five times in six
+  at a Light Fighter; two Heavy Fighters, which it has no rapid fire
+  against, rate 1.62x FAVOURABLE (90% kept). OGame's ships carry a shield a
+  fifth of their weapon, so every volley that lands costs hull, and SAFE
+  takes a fleet that ends the fight almost before the other side fires: ten
+  Light Fighters at ring 7, two Cruisers at ring 9. A sector with nothing
+  in sight is rated against the
   group its ring spawns, a remembered one against what was last seen there.
   The ratio is the expected result; rapid fire comes in streaks, so a
   FAVOURABLE fight can still go badly once in a long while.
-- **Buildings** — 10 types incl. Shipyard, Research Lab, Sensor Array (passive
-  reveal around home), Defense Grid (see raids), Storage Vault (stockpile
-  caps) and Fabricator (building time / (1 + 0.15 x level)).
-- **Storage** — every stockpile is capped at 5000 / 3500 / 2500 x 1.5^Vault
-  x P^0.75 up to pace 10, then growing as P^0.25 (a blitz Vault 0 holds 78k
-  metal, not 606k) (`homeworld.storage`: `cap`, `protected`, `full_in_s`, `capped`).
+- **Buildings** — OGame's twelve: the three mines, Solar Plant, Fusion
+  Reactor (Deuterium Synthesizer 5, Energy Technology 3), Robotics Factory
+  (building time / (1 + level)), Nanite Factory (Robotics Factory 10,
+  Computer Technology 10; halves building, ship and defence time a level),
+  Shipyard (Robotics Factory 2; ship and defence time / (1 + level)), Metal
+  Storage, Crystal Storage, Deuterium Tank (which also adds 25% a level to
+  every fleet's tank) and Research Lab (research time / (1 + level)). Time
+  is `(metal + crystal) / 2500` game hours for a building, a ship or a
+  defence and `/ 1000` for research, before those divisors and divided by P;
+  deuterium in a cost adds no time. Levels stop at 20. Every entry of
+  `homeworld.catalog` carries `effects`: what the thing does at its level
+  and at the next (`kind`, `now`, `next`), so no client has to know a
+  formula.
+- **Storage** — each resource is capped by its own building:
+  `100000 + 50000 x ceil(1.6^level - 1)` (100k with none, then 150k, 200k,
+  300k, 400k, 600k ...), times P^0.75 up to pace 10, then growing as P^0.25
+  (`homeworld.storage`: `cap`, `protected`, `full_in_s`, `capped`).
   Mines stop at the cap and the surplus is lost; a payment bigger than a cap
-  is refused (`StorageTooSmall`, naming the Vault level it needs); docked
+  is refused (`StorageTooSmall`, naming the building and the level it
+  needs); docked
   cargo unloads only what fits and the rest waits aboard
   (`cargo_blocked: true`). `StorageNearCap` (85%) and `StorageFull` events
-  warn you. A Vault also protects 8% of the cap per level (to 60%) from raids.
+  warn you. A storage building also protects 8% of its cap per level (to
+  60%) from raids.
   A full stockpile has a way out: `load` the surplus into a hold and sell it
   at the hub (Loading a hold, below).
 - **Queues and slots** — buildings and research queue ahead of resources;
@@ -306,26 +354,28 @@ What every doctrine does:
   an order wait its turn instead, send it with `reserve: true`: while it is
   ready but short of resources, nothing behind it in the same queue starts
   (orders ahead of it still do). An order that waits only on a prerequisite,
-  such as a Shipyard behind the Metal Mine it needs, never holds the line.
+  such as a Shipyard behind the Robotics Factory it needs, never holds the line.
   Research and buildings can both be queued behind a prerequisite that is
   itself still queued, and a tech that is running can be queued again for its
   next level. A ship or defence batch is one order under a different rule: it
   is accepted only if the stockpile covers the whole batch now, pays for every
   unit at that moment, and is otherwise refused with `InsufficientResources`
-  ("Scout x5 costs 1000 metal, 250 crystal and 150 deuterium; the stockpile is
-  short by 120 metal and 30 deuterium. Nothing was ordered: a batch is paid in
+  ("Light Fighter x5 costs 15000 metal and 5000 crystal; the stockpile is
+  short by 1200 metal. Nothing was ordered: a batch is paid in
   full when it is ordered. The stockpile covers 4."). Nothing in the yard ever
   waits on resources: a paid batch waits only for the yard to be free or for a
   queued Shipyard level or tech it needs, takes no `reserve`, and once started
   builds every unit without stopping (`shipyard_queue` shows `built` of
   `count`). Buildings run in `build_slots` parallel
-  slots (1, plus one per Modular Fabrication level, max 3); research and the
+  slots (1, plus one at Computer Technology 3 and one at 6;
+  `build_slot_unlock` says what opens the next); research and the
   shipyard have one.
   Each queue holds its running items plus `queue_waiting_max` (3) waiting ones,
   so the building queue holds `build_slots + 3` and the others 4; a full queue
   refuses with `QueueFull`. Orders that can never start are refused with a
   specific error: `PrerequisitesNotMet` (naming what is missing),
-  `MaxLevelReached`, `StorageTooSmall` (naming the Vault level it needs),
+  `MaxLevelReached` (also a second dome of a kind), `StorageTooSmall`
+  (naming the storage level it needs),
   `NoShipyard`, `NoResearchLab`, `ShipLocked`, `DefenceLocked`. For a batch,
   `StorageTooSmall` means the whole batch costs more than a stockpile cap and
   says how many units fit; it is asked before the stockpile is, so a batch
@@ -347,20 +397,44 @@ What every doctrine does:
   and gives back nothing; a batch, waiting or running, gives back half the
   price of every unit not yet delivered (the one under way included) and keeps
   the units already built. The refund is added to the stockpile past the
-  Storage Vault cap: none of it is lost when the stockpile is full, the mines
+  storage cap: none of it is lost when the stockpile is full, the mines
   add nothing while a resource stands at or over its cap, and what is over the
   cap is spent like the rest (a raid counts it too).
   `paid` on the event is what it took from the stockpile: a building or tech
   pays on `Started`; a batch pays on the event that answers the order
   (`Started`, or `Waiting` when the yard is busy) and nothing when it starts
   later. A queue with nothing running but orders waiting is not idle.
-- **Research** — 13 techs: hulls, shields, weapons, fuel, navigation, ship
-  class unlocks (Corvette Tech needs only Shipyard 1, Frigate and Cruiser
-  Tech need more), emergency jump, Modular Fabrication (building slots). The Research
-  Lab divides research time by (1 + 0.10 x level).
+- **Research** — OGame's fourteen, each level twice the price of the last.
+  What OGame's requirement tree asks is in each catalogue entry's `requires`.
+  Weapons, Shielding and Armour Technology add 10% a level to attack, shield
+  and hull, for ships built from then on (a ship keeps what it was built
+  with) and for defences at once. The three drives add 10, 20 and 30% a
+  level to the speed of the ships that fly on them. Five do this game's own
+  jobs: Energy Technology takes 5% a level off what a jump burns (to a half)
+  and raises the Fusion Reactor's output; Espionage Technology is how many
+  hops around the homeworld are seen; Computer Technology 3 and 6 open
+  building slots; Laser Technology's first five levels raise ore yield;
+  Hyperspace Technology takes 5 points a level off the emergency jump's
+  risk. Ion and Plasma Technology are requirements only. Graviton costs no
+  resources: the homeworld must be making 300,000 energy when it is ordered.
+  Levels stop at 20.
+- **Ships** — a ship is unlocked by its Shipyard level and research
+  (`requires`), not by a tech of its own. Light Fighter (Shipyard 1,
+  Combustion Drive 1), Small Cargo, Heavy Fighter, Espionage Probe, Large
+  Cargo, Recycler, Cruiser, Battleship, Battlecruiser, Bomber, Destroyer,
+  Deathstar and the Solar Satellite. Hull in a fight is a tenth of OGame's
+  structure. This game gives each class three things OGame has no use for:
+  a tank (a number of jumps of its own fuel figure: 20 for the Probe, 12 for
+  the cargo ships and the Recycler, 10 for the fighters, 8 for the Cruiser
+  and the Battlecruiser, 6 for the heaviest), a harvest power (above), and
+  two roles: an Espionage Probe aboard widens a scan to 2 hops and reads a
+  derelict before boarding, a Recycler aboard doubles what a boarding
+  strips. The enum columns of the generated wire types and
+  `homeworld.catalog.ships` carry every figure; `world.rapid_fire` is the
+  whole rapid-fire table.
 - **Fleets** — up to 3 away from your homeworld and your finished outpost (8
-  in all), 64 ships each, hex movement with
-  fuel mass costs. Docking at home unloads cargo and refuels but never merges
+  in all), 64 ships each, hex movement paid in
+  fuel. Docking at home unloads cargo and refuels but never merges
   fleets: use `split` and `merge`. New ships join an idle fleet at home that
   has no standing orders, or form their own. Each fleet reports its `power`
   (the scale raids use) and `range_hops`: how many more hops out it can fly
@@ -368,9 +442,15 @@ What every doctrine does:
 - **Fuel and stranding** — each fleet reports `jump_fuel` (one jump),
   `hops_home` (the fewest hops home over the real lanes, charted or not)
   and `home_fuel` (the fuel for those hops) next to `fuel`, and `jump_ticks`: the
-  ticks one jump takes it from the order to the arrival, which its slowest
-  ship and Navigation set. Refuelling at the
-  homeworld costs 0.08 deuterium per fuel unit (the Fuel Depot adds +25% tank
+  ticks one jump takes it from the order to the arrival. A jump burns the
+  sum of its ships' OGame fuel figures (20 for a Light Fighter, 300 for a
+  Cruiser, 1000 for a Destroyer), less Energy Technology's saving, and takes
+  `max(1, ceil(sqrt(50000 / speed)))` ticks at the speed of its slowest
+  ship with the owner's drive research: 2 for Light Fighters and Cruisers, 3
+  for a Heavy Fighter until Impulse Drive 2, 4 for a Small Cargo until
+  Combustion Drive 2, 1 for Probes. Drive, fuel and tank research reach
+  every fleet at once. Refuelling at the
+  homeworld costs 0.08 deuterium per fuel unit (the Deuterium Tank adds +25% tank
   per level); with no deuterium the tank fills only as far as the stockpile
   pays and the rest follows as production arrives. It is paid ahead of every
   queue, except for a fleet under standing orders, which is held to its
@@ -388,7 +468,8 @@ What every doctrine does:
   `recall` costs 2x the jump fuel per hex, all or nothing; ships that break
   up in it leave their share of the cargo where the fleet jumped from.
 - **Combat** — round-based vs pirates, shields absorb first, rapid-fire
-  chains (corvettes shred scouts…), victors drop salvage (`FleetDestroyed.salvage`
+  chains by OGame's table (a Cruiser fires again five times in six at a
+  Light Fighter; `world.rapid_fire`), victors drop salvage (`FleetDestroyed.salvage`
   is exactly the pile `collect_salvage` can take; it lasts 180 ticks, its
   sector view carries `salvage_despawn_tick`, and a `SalvageDespawned` event
   says when one expires). You only receive combat
@@ -401,10 +482,10 @@ What every doctrine does:
   ticks, and a destroyed fleet leaves its whole cargo so (an `Alert` says how
   much and where). Fuel beyond the tanks that are left is lost. Hostile ids in a sector view are the ids `attack` and
   `CombatStarted.enemy_fleet_id` use; messages name a hostile by its `label`
-  ("3x corvette pack"), not by id. `ResourceHarvested` is one event per fleet
+  ("2x light fighter pack"), not by id. `ResourceHarvested` is one event per fleet
   every 10 ticks (and when harvesting stops).
-- **Scanning** — active `scan` reveals connected sectors (2 hops with a Scout
-  in fleet, 1 without) and picks up *signals* one hop farther: rich ore,
+- **Scanning** — active `scan` reveals connected sectors (2 hops with an
+  Espionage Probe in fleet, 1 without) and picks up *signals* one hop farther: rich ore,
   hostile mass, derelicts, anomalies. Scan intel is live for ~2 minutes.
   After that the sector stays on your chart: the server remembers every
   sector you have had eyes on, and `full_state.known_sectors` returns all of
@@ -425,57 +506,69 @@ What every doctrine does:
   the shipping lanes (`D` on the map, "derelict transponder" on scans).
   Board one (`explore_site`, 20 ticks) for tiered loot, sometimes a
   recoverable ship or an instant-tech data core — or an ambush by whatever
-  killed the crew. Aborted/failed boardings leave the site *hotter*. A
-  Scout aboard reads the risk down; a Hauler doubles the haul.
-- **Loot** — a kill pays `1.2 x group_power^0.8` units (55% metal, 30%
+  killed the crew. Aborted/failed boardings leave the site *hotter*. An
+  Espionage Probe aboard reads the risk down; a Recycler doubles the haul.
+- **Loot** — everything the map pays is three times what it paid before the
+  catalogue was OGame's (`MAP_PAYS`, provisional), against costs that are
+  about ten times what they were. A kill pays `0.57 x group_power^0.8` units (55% metal, 30%
   crystal, 15% deuterium) times P^0.5, for the whole group; far hunting pays
   more but the odds fall faster than the pay rises. Derelict tier follows the
   threat (T1-3, T4-6, T7-9). A kill in a sector that has been killed in
   recently pays less: each recent kill multiplies the next one's loot and
   score by 0.75 (heat halves every 4 respawn delays), so a sector is not an
   endless tap. Holds grow with the pace like the loot: a ship's cargo is
-  multiplied by P^0.5 (a blitz Hauler holds 4900, a Scout 245). A site pays `240 x 1.14^(ring-4)` units at 60 to
+  multiplied by P^0.5 (OGame's holds: 5,000 for a Small Cargo, 25,000 for a
+  Large one, 20,000 for a Recycler, 50 for a Light Fighter; a blitz Small
+  Cargo holds 122,000). A site pays `720 x 1.14^(ring-4)` units at 60 to
   140% times P^0.5; ambush odds `0.10 + 0.03 x (T-1)` (max 0.35); a recovered
   ship `0.05 x (T-2)` (max 0.30), a data core `0.03 x (T-5)` (max 0.15), and
-  from T6 an ancient relic (2% per point above 5, max 8%, worth 30 explore
+  from T6 an ancient relic (2% per point above 5, max 8%, worth 300 explore
   points, no other use yet). A stripped derelict is replaced after 120 game hours / P^0.5.
 - **Standing orders** — assign a fleet a doctrine and the server flies it
   (see `policy_update` above). Doctrines respect fuel/cargo thresholds,
   return home to deposit and refuel within their fuel budget, wait for
   shields, go round fights they need not take, and log every decision.
-- **Defences** — Pulse Turrets, Lancer Batteries and Ion Bastions are built
-  from the shipyard queue, stay home, burn no fuel, and cost 8 to 13
-  resources per point of power (ships cost 25 to 48). Each Defense Grid level
-  adds 4% to every structure, and the grid's own virtual platforms are small
-  now; the structures are the defence. `homeworld.defences` lists them,
-  `home_defence_power` is what a raid meets (docked ships + grid +
-  structures).
-- **Raids** — once your empire is worth raiding (Shipyard ≥ 2 or a Defense
-  Grid), pirates occasionally vector at your homeworld: a roll every 6 hours
+- **Defences** — OGame's eight: Rocket Launcher (Shipyard 1), Light Laser,
+  Heavy Laser, Gauss Cannon, Ion Cannon, Plasma Turret and the two Shield
+  Domes, of which a homeworld holds one each. They are built
+  from the shipyard queue, stay home, burn no fuel, and cost 16 to 32
+  resources per point of power (warships cost 37 to 59). Weapons, Shielding
+  and Armour Technology raise every structure standing, at once.
+  `homeworld.defences` lists them,
+  `home_defence_power` is what a raid meets (docked ships + Solar
+  Satellites + structures, each stated beside it: `docked_power`,
+  `satellite_power`, `structure_power`). A catalogue entry with a limit
+  (`max`) says how many more may be ordered now (`room`). The domes are a
+  shield and a hull and no more until raids are fought as battles.
+- **Raids** — once your empire is worth raiding (Shipyard ≥ 2 or any
+  defence built), pirates occasionally vector at your homeworld: a roll every 6 hours
   at pace 1 (30%), at most one per 18 hours, never in your first day, all
   divided by P^0.75; each eligible roll that misses raises the next one's odds
-  by 15 points, so a raid is never long overdue. A raid's power is `5 + 11 x S^0.75` (S = your building
-  and research points, ships and defences excluded) times a roll of 0.80 to
+  by 15 points, so a raid is never long overdue. A raid's power is `50 + 9 x S^0.75` (S = your building
+  and research points, ships and defences excluded; a Rocket Launcher is 102
+  of power, a Light Fighter 91) times a roll of 0.80 to
   1.15, so it grows with your economy and not with your defence;
   `next_raid_estimate_power` shows what to expect. `RaidIncoming` warns
   `600 / sqrt(P)` ticks ahead (30 to 600) with the raid's `est_power`.
-  Docked ships, the grid and structures defend (±10% fog). Repelled: bonus
+  Docked ships, Solar Satellites and structures defend (±10% fog). Repelled: bonus
   salvage in orbit and a share of structures destroyed (up to half, scaled by
   raid over defence power), 70% of them rebuilt free shortly after. Lost: a
-  hard-capped slice of the stockpile above the Vault-protected share (≤8%),
+  hard-capped slice of the stockpile above the share the storage buildings
+  protect (≤8%),
   half the structures gone for good, a quarter of the ships docked at home
-  destroyed (at least one), and a long grace period. What the destroyed
+  and a quarter of the Solar Satellites
+  destroyed (at least one of each), and a long grace period. What the destroyed
   ships carried beyond the holds left goes to the stockpile as far as the
-  Vault has room, and the rest is lost. Cargo aboard fleets at
+  stores have room, and the rest is lost. Cargo aboard fleets at
   home counts as stockpile: the raid takes its slice of the two together,
   above one protected share, from stockpile and holds alike, so a hold at the
   dock hides nothing. Never
   buildings, never queues. `RaidResolved` reports `structures_lost`,
-  `structures_restored`, `protected_kept`, `ships_lost` and, for a repelled
+  `structures_restored`, `protected_kept`, `ships_lost`, `satellites_lost` and, for a repelled
   raid, `salvage_despawn_tick`. The orbital salvage is on your own planet, so
   a fleet docked at home scoops it into storage by itself, up to what the
-  Vault holds (`SalvageCollected` says what); with no fleet docked, or the
-  Vault full, an `Alert` fires once when 60 s are left.
+  stores hold (`SalvageCollected` says what); with no fleet docked, or the
+  stores full, an `Alert` fires once when 60 s are left.
 - **The hub and its exchange** — the sector at the centre, 0,0, is a neutral
   post: empty space with no ore, no hostile group and no derelict, and no
   hostile group wanders in. `status` names it on the World line. A fleet
@@ -493,15 +586,16 @@ What every doctrine does:
     stays there beyond. A trade pays the fee of every unit it moves the meter
     through, so one large order and the same order in pieces return the
     same; `receive` is rounded down to whole units.
-  - `span` is 15% of what your own mines make in one window, in weight, so
-    it grows with your mines; an empire with no mine output pays 75%.
+  - `span` is 15% of what your homeworld makes in one window with all the
+    energy it needs, in weight, so it grows with your mines; the metal and
+    crystal that come with no mine count, the Fusion Reactor's burn does not.
   - The meter falls by one `span` every `window_ticks` (86400 ticks at pace
     1, divided by P^0.75), whether you are connected or not. `clear_in` is
     the ticks until it is empty.
-  - Example, season pace, mines 10/9/8 (`span` 4185): one Hauler's 632 metal
+  - Example, season pace, mines 10/9/8 (`span` 11903): 632 metal
     is worth 316 deuterium at par. From an empty meter the fee runs from 25%
-    to 33% across the trade, 29% on the whole: 225 deuterium. The same 632
-    sold with the meter above 4185 would bring 79.
+    to 28% across the trade, 26% on the whole: 232 deuterium. The same 632
+    sold with the meter above 11903 would bring 79.
   - What the exchange takes is what a hold carries: field cargo (ore,
     wreckage, derelict loot, cargo a full store would not accept) or a
     surplus loaded from the stockpile at home.
@@ -524,8 +618,8 @@ What every doctrine does:
     dock. Giving a laden fleet standing orders ends the mark and its hold
     goes back to the stockpile.
   - A hold is storage of a kind: a fleet at home holds what it can carry on
-    top of the Vault. It is dear storage (a Hauler costs 950 resources and
-    holds 200 x sqrt(P)), and no hiding place: a lost raid counts cargo at
+    top of the stores. A Small Cargo costs 4,000 resources and
+    holds 5,000 x sqrt(P), but it is no hiding place: a lost raid counts cargo at
     home with the stockpile (see Raids). Loading moves no score.
   - The trip: `load` the resource that is at its cap, fly to 0,0, `exchange`,
     fly home; the dock unloads what you bought.
@@ -534,7 +628,7 @@ What every doctrine does:
   dock makes 12.5 fuel of a unit of deuterium (0.08 a fuel unit); the hold
   makes 15% less, 10.625.
   - Any deuterium aboard counts: mined, salvaged, bought at the exchange or
-    loaded at a dock. A Hauler loaded with deuterium at home is a tanker for
+    loaded at a dock. A cargo ship loaded with deuterium at home is a tanker for
     the fleet it flies in.
   - The fleet row's `refine` (`deuterium`, `fuel`) is what the order would
     do right now. It is absent when the order would be refused: in combat,
@@ -556,18 +650,18 @@ What every doctrine does:
   - **The site** decides the yield. A sector's `grade` is the sum of its ore:
     Sparse 0.5, Moderate 1, Rich 2, Pristine 4, for metal, crystal and
     deuterium. The outpost's extractor makes, per resource and game hour,
-    `2 x density x ring factor x level` times P; the ring factor is 1.10 per
+    `6 x density x ring factor x level` times P; the ring factor is 1.10 per
     ring from ring 3 (1.77 at ring 9, 5.05 at ring 20). It reads the ore the
     sector was made with, not what harvesting has left this hour, and it
     does not empty the tiles. A site makes only what it has ore of: most
     make no deuterium.
-  - **Levels**: 1 costs 1000/500/200 and takes 15 game hours divided by P; 2
-    costs 2500/1250/500 (37.5 h); 3 costs 6250/3125/1250 (93.75 h). Level 1
+  - **Levels**: 1 costs 3000/1500/600 and takes 15 game hours divided by P; 2
+    costs 7500/3750/1500 (37.5 h); 3 costs 18750/9375/3750 (93.75 h). Level 1
     is paid from the founding fleet's hold, levels 2 and 3 from the outpost's
     store when you order them. The outpost works at its old level while it
     builds. While level 1 is being built the outpost has a store and nothing
     else, and no raid comes.
-  - **The store** is its own, apart from your stockpile: 3000/1500/750 at
+  - **The store** is its own, apart from your stockpile: 9000/4500/2250 at
     level 1, times 2.5 a level, times sqrt(P). The extractor stops at the
     cap, with one `Alert` (warning) per resource each time it fills. Nothing
     in the store scores, and nothing in it can be spent at home until a fleet
@@ -591,11 +685,13 @@ What every doctrine does:
   - **Raids**: pirates of its ring raid it on the homeworld's raid clock,
     with the same warning, starting a day of that clock after level 1 is
     finished (`RaidIncoming` and `RaidResolved` carry `outpost`). A raid's
-    power is `2 x` the ring's group power times 0.80 to 1.15: 31 to 45 at
-    ring 9, 57 to 82 at ring 12, 126 to 182 at ring 16, 280 to 402 at ring
+    power is `2 x` the ring's group power times 0.80 to 1.15: 314 to 451 at
+    ring 9, 570 to 820 at ring 12, 1264 to 1816 at ring 16, 2799 to 4024 at ring
     20, whatever your empire is worth (`raid_power` in the survey and in
-    your outpost's state gives the two ends). The platform (40, 100, 250 by
-    level) and your ships standing there defend, and the defence counts a
+    your outpost's state gives the two ends; a Light Fighter is 91 of power,
+    a Cruiser 675). The platform (408, 1306, 3972 by
+    level: the power of 4 Rocket Launchers, then of 8 with 4 Light Lasers,
+    then of 16 with 8 and 4 Heavy Lasers) and your ships standing there defend, and the defence counts a
     tenth more or less by chance. Repelled: your ships' shields are halved, nothing
     else, and no salvage. Lost: a quarter of the ships there are destroyed
     (at least one), and what they carried goes into the store; a quarter of
@@ -606,7 +702,7 @@ What every doctrine does:
     level it is building. After a lost raid none comes for 48 game hours
     divided by P^0.75. No raid destroys an outpost.
   - **Repair**: a breached outpost repairs itself. A repair is priced in
-    metal: 537.5 at level 1, 1343.75 at level 2, 3359.375 at level 3 (a
+    metal: 1612.5 at level 1, 4031.25 at level 2, 10078.125 at level 3 (a
     quarter of the level's cost at par). The store pays it in metal; where
     the metal runs out a unit of crystal pays for 1.5 and then a unit of
     deuterium for 2, so any store that holds the price in anything pays.
@@ -647,15 +743,16 @@ What every doctrine does:
     the next level's cost), fly out, `unload`, `load` what it has made, fly
     home.
 - **Score** — one ranking for humans and AI agents (`leaderboard`).
-  `core` = completed building and research levels + living ships + half of
+  `core` = completed building and research levels + living ships and Solar
+  Satellites + half of
   the defence structures + the finished levels of your outpost, each priced
   at cost x (1 metal, 1.5 crystal, 2
   deuterium) / 1000. Kills add the weight of the pile they leave (so points
   follow the finds factor and the sector's heat), in full up to 4x the NPC
   group's power and falling as 4/ratio beyond (half at 8x, a 5% floor, never
-  zero), once per respawn. Exploration adds `0.5 x weight(loot) + 1.5 x T^1.5`
-  for the first boarding of each derelict, 30 for a relic, and
-  `0.15 + 0.10 x T^1.5` for each new sector whose chart you deliver to the
+  zero), once per respawn. Exploration adds `0.5 x weight(loot) + 15 x T^1.5`
+  for the first boarding of each derelict, 300 for a relic, and
+  `1.5 + 1.0 x T^1.5` for each new sector whose chart you deliver to the
   homeworld or to your finished outpost (the fleet must arrive alive:
   `ChartDelivered`). `score = core + min(combat + explore, 0.25 x core)`. Cancelling
   a build or losing a ship scores nothing; resources received from others

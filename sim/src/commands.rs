@@ -186,13 +186,23 @@ fn harvest_label(r: HarvestResource) -> &'static str {
 /// "X needs Y level N (you have M) and ..." for a build, research or ship
 /// order, from the same requirement lists the catalog sends.
 fn missing_prerequisites_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> Option<String> {
-    use iac_shared::protocol::{building_requirements, missing_requirements_message, research_requirements, ship_requirements};
+    use iac_shared::protocol::{
+        building_requirements, defence_requirements, missing_requirements_message, research_requirements,
+        ship_requirements,
+    };
     let p = engine.players.get(&player_id)?;
     let (buildings, research) = (p.projected_buildings(), p.projected_research());
     let (subject, requires) = match cmd {
-        Command::Build { building_type, .. } => (building_type.label(), building_requirements(&buildings, *building_type)),
-        Command::Research { tech, .. } => (tech.label(), research_requirements(&buildings, &research, *tech)),
+        Command::Build { building_type, .. } => {
+            (building_type.label(), building_requirements(&buildings, &research, *building_type))
+        }
+        Command::Research { tech, .. } => {
+            let level = research.get(*tech).saturating_add(1);
+            let energy = p.power(&engine.pace()).made;
+            (tech.label(), research_requirements(&buildings, &research, *tech, level, energy))
+        }
         Command::BuildShip { ship_class, .. } => (ship_class.label(), ship_requirements(&buildings, &research, *ship_class)),
+        Command::BuildDefence { kind, .. } => (kind.label(), defence_requirements(&buildings, &research, *kind)),
         _ => return None,
     };
     missing_requirements_message(subject, &requires)
@@ -247,24 +257,29 @@ fn cancel_refusal(engine: &GameEngine, player_id: u64, queue_type: iac_shared::p
     }
 }
 
-/// Names what a rejected order costs and which Storage Vault level would hold it.
+/// Names what a rejected order costs and which level of which storage
+/// building would hold it.
 fn storage_too_small_message(engine: &GameEngine, player_id: u64, cmd: &Command) -> String {
+    use iac_shared::scaling::{storage_building, storage_cap, storage_level_for};
     let (Some((label, cost)), Some(p)) = (engine.command_cost(player_id, cmd), engine.players.get(&player_id)) else {
         return "the payment is larger than a storage cap".to_string();
     };
-    let cap = iac_shared::scaling::storage_cap(p.buildings.storage_vault, &engine.pace());
-    let worst = ResourceKind::ALL
-        .into_iter()
-        .filter(|&k| cost.get(k) > cap.get(k))
+    let cap = storage_cap(&p.buildings, &engine.pace());
+    let over: Vec<ResourceKind> = ResourceKind::ALL.into_iter().filter(|&k| cost.get(k) > cap.get(k)).collect();
+    let worst = over
+        .iter()
+        .copied()
         .max_by(|&a, &b| (cost.get(a) / cap.get(a)).total_cmp(&(cost.get(b) / cap.get(b))))
         .unwrap_or(ResourceKind::Metal);
-    let need = ResourceKind::ALL
-        .into_iter()
-        .filter_map(|k| iac_shared::scaling::vault_level_for(cost.get(k), k, &engine.pace()))
-        .max();
-    let fix = match need {
-        Some(level) => format!("needs Storage Vault level {level}"),
-        None => "no Storage Vault can hold it".to_string(),
+    let levels: Vec<(&str, Option<u8>)> =
+        over.iter().map(|&k| (storage_building(k).label(), storage_level_for(cost.get(k), &engine.pace()))).collect();
+    let fix = match levels.iter().find(|(_, level)| level.is_none()) {
+        Some((building, _)) => format!("no {building} can hold it"),
+        None => {
+            let each: Vec<String> =
+                levels.iter().map(|(building, level)| format!("{building} level {}", level.unwrap_or(0))).collect();
+            format!("needs {}", listed(&each))
+        }
     };
     let smaller = match batch_of(cmd) {
         Some((unit, count)) if count > 1 => match units_covered(cap, unit) {
@@ -306,8 +321,13 @@ pub(crate) fn amount_words(amount: Resources) -> String {
         .filter(|&k| amount.get(k) > 0.0)
         .map(|k| format!("{} {}", amount.get(k).ceil(), k.label()))
         .collect();
-    match parts.as_slice() {
-        [] => "nothing".to_string(),
+    if parts.is_empty() { "nothing".to_string() } else { listed(&parts) }
+}
+
+/// "a", "a and b", "a, b and c".
+fn listed(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
         [one] => one.clone(),
         [first @ .., last] => format!("{} and {last}", first.join(", ")),
     }
@@ -431,11 +451,17 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         (ErrorCode::NoResources, Command::CollectSalvage { .. }) => "no salvage in this sector".to_string(),
         (ErrorCode::StorageTooSmall, _) => storage_too_small_message(engine, player_id, cmd),
         (ErrorCode::InsufficientResources, _) => insufficient_resources_message(engine, player_id, cmd),
-        (ErrorCode::DefenceLocked, Command::BuildDefence { kind, .. }) => engine
-            .players
-            .get(&player_id)
-            .and_then(|p| iac_shared::protocol::missing_requirements_message(kind.label(), &iac_shared::protocol::defence_requirements(&p.buildings, &p.research, *kind)))
-            .unwrap_or_else(|| format!("{} is locked", kind.label())),
+        (ErrorCode::DefenceLocked, Command::BuildDefence { kind, .. }) => {
+            missing_prerequisites_message(engine, player_id, cmd).unwrap_or_else(|| format!("{} is locked", kind.label()))
+        }
+        (ErrorCode::MaxLevelReached, Command::BuildDefence { kind, .. }) => {
+            let most = kind.max_count().unwrap_or(0);
+            let have = engine.players.get(&player_id).map_or(0, |p| GameEngine::defences_owned_and_ordered(p, *kind));
+            format!(
+                "no more than {most} {} may stand; {have} stand, are being rebuilt or are on order",
+                kind.label()
+            )
+        }
         (ErrorCode::ResourceNotPresent, Command::Harvest { resource, .. }) => {
             format!("this sector has no {} to harvest", harvest_label(*resource))
         }
@@ -495,7 +521,7 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         }
         (
             ErrorCode::PrerequisitesNotMet | ErrorCode::NoShipyard | ErrorCode::NoResearchLab | ErrorCode::ShipLocked,
-            Command::Build { .. } | Command::Research { .. } | Command::BuildShip { .. },
+            Command::Build { .. } | Command::Research { .. } | Command::BuildShip { .. } | Command::BuildDefence { .. },
         ) => missing_prerequisites_message(engine, player_id, cmd)
             .unwrap_or_else(|| format!("command rejected ({code:?})")),
         (ErrorCode::ServerError, _) => "internal server error".to_string(),

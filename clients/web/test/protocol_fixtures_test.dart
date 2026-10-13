@@ -184,9 +184,17 @@ void main() {
           reason: 'a fleet under orders carries the doctrine and every setting in force');
       expect(s.fleets[1].policy, isNull, reason: 'and one flown by hand carries none');
       expect(s.homeworld.buildings.length, BuildingType.values.length);
-      expect(s.homeworld.storage.cap.metal, 7500);
+      expect(s.homeworld.storage.cap.metal, 150000);
       expect(s.homeworld.storage.capped, [ResourceKind.deuterium]);
       expect(s.homeworld.storage.fullInS.crystal, isNull);
+      final energy = s.homeworld.energy;
+      expect((energy.made, energy.needed, energy.perSatellite, energy.fusionStarved), (412, 520, 30, false));
+      expect((energy.short, energy.sharePct), (true, 79), reason: 'short of energy the mines run at the share the server states');
+      expect((s.homeworld.satellites, s.homeworld.production.deuterium), (6, -0.4), reason: 'the Fusion Reactor may burn more deuterium than is made');
+      expect(s.homeworld.buildSlotUnlock!.label, 'Computer Technology level 6');
+      expect(s.world.rapidFire, isNotEmpty);
+      expect(s.world.rapidFireOf(ShipClass.cruiser).map((r) => (r.against.label, r.shots)), contains(('Light Fighter', 6)));
+      expect(s.world.rapidFireAgainst(const ShipyardItem.defence(DefenceKind.rocketLauncher)).map((r) => r.shipClass), contains(ShipClass.cruiser));
     });
 
     test('a fleet says when its hold was loaded at the dock, and load says what it takes', () {
@@ -249,12 +257,15 @@ void main() {
     test('the homeworld lists defences, defence power and the next raid estimate', () {
       final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
       final hw = (ServerMessage.fromJson(readJson(f)) as GameState).homeworld;
-      expect(hw.defences.first.kind, DefenceKind.pulseTurret);
+      expect(hw.defences.first.kind, DefenceKind.rocketLauncher);
       expect(hw.defences.first.count, 12);
       expect(hw.defences.first.restoring, 2);
-      expect(hw.homeDefencePower, 340.5);
+      expect(hw.homeDefencePower, 2340.5);
+      expect([hw.dockedPower, hw.satellitePower, hw.structurePower], [444, closeTo(126.6, 1e-4), closeTo(1769.9, 1e-4)]);
       expect(hw.nextRaidEstimatePower, 300.25);
-      expect(hw.catalog.defences.map((d) => d.count), [12, 0, 3]);
+      expect(hw.catalog.defences.map((d) => d.count), [12, 0, 0, 3, 0, 0, 1, 0]);
+      expect(hw.catalog.defences.map((d) => (d.max, d.room)), [for (var i = 0; i < 6; i++) (null, null), (1, 0), (1, 0)],
+          reason: 'a dome is one of a kind, and one that stands or is on order leaves room for no more');
       expect(hw.catalog.defences.first.requires.first.label, 'Shipyard level 1');
     });
 
@@ -303,9 +314,9 @@ void main() {
       expect(hw.buildQueue.length, 2);
       expect(hw.buildPending.first.waitingFor!.crystal, 120.5);
       expect(hw.buildPending.last.waitingFor, isNull);
-      expect(hw.shipyardPending.map((q) => q.item.label), ['Frigate', 'Pulse Turret']);
+      expect(hw.shipyardPending.map((q) => q.item.label), ['Cruiser', 'Rocket Launcher']);
       expect(hw.shipyardPending.first.count, 2);
-      expect(hw.researchPending.single.tech, ResearchType.cruiserTech);
+      expect(hw.researchPending.single.tech, ResearchType.ionTechnology);
     });
 
     test('the mapper lists waiting items after the running ones and says what they wait for', () {
@@ -315,7 +326,7 @@ void main() {
       expect(ui.buildQueue.map((q) => q.active), [true, true, false, false]);
       expect(ui.buildQueue[2].time, 'short by 121 Cr, starts in about 1:35');
       expect(ui.buildQueue[3].time, 'held by a reserved order, starts in about 1:35');
-      expect(ui.shipyard.map((q) => q.name).skip(1), ['Frigate x2', 'Pulse Turret x10']);
+      expect(ui.shipyard.map((q) => q.name).skip(1), ['Cruiser x2', 'Rocket Launcher x10']);
       expect(ui.shipyard.map((q) => q.time).skip(1), ['paid, waiting for the yard, starts in about 4:00', 'paid, waiting for a prerequisite']);
       expect(ui.research.waiting.single.time, 'short by 1,200 De, starts in about 30:00');
     });
@@ -328,8 +339,12 @@ void main() {
       expect(cat.ships.map((s) => s.shipClass), ShipClass.values);
       final yard = cat.buildings.firstWhere((b) => b.buildingType == BuildingType.shipyard);
       expect(yard.next, isNotNull);
-      expect(yard.requires.single.label, 'Metal Mine level 2');
-      expect(cat.ships.first.requires.first.label, 'Shipyard level 1');
+      expect(yard.requires.single.label, 'Robotics Factory level 2');
+      expect(cat.ships.first.requires.first.label, 'Shipyard level 2');
+      expect(cat.defences.map((d) => d.kind), DefenceKind.values);
+      expect(cat.buildings.first.effects.map((e) => e.kind), [EffectKind.metalPerTick, EffectKind.energyUsed]);
+      final satellite = cat.ships.firstWhere((s) => s.shipClass == ShipClass.solarSatellite);
+      expect((satellite.flies, satellite.drive, satellite.jumpTicks), (false, null, 0), reason: 'a Solar Satellite stays at home');
     });
   });
 

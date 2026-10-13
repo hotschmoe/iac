@@ -2,7 +2,7 @@ import 'dart:math' as math;
 
 import '../protocol/protocol.dart' as proto;
 import '../state/state_mapper.dart' show amountsOf;
-import 'intel.dart' show clockFmt, groupDigits, hopCount;
+import 'intel.dart' show anHour, clockFmt, groupDigits, hopCount;
 
 /// Whether [h] lies in the rings an outpost stands in, which are the
 /// engine's. The server is the judge of a site; this only decides where the
@@ -15,19 +15,11 @@ String outpostDockVoice(proto.OutpostState o) =>
     'LOADS AND UNLOADS BY ORDER.\n'
     'IT IS IN A RAID\'S REACH: A RAID THE OUTPOST LOSES DESTROYS A QUARTER OF THE SHIPS STANDING HERE.';
 
-/// Ticks in a game hour, which is what the rules quote a yield by.
-const _hour = 3600;
-
-String _rate(double perTick) {
-  final v = perTick * _hour;
-  return v >= 100 ? groupDigits(v.round()) : v.toStringAsFixed(1);
-}
-
 /// "77.9 Fe, 39.0 De" made in a game hour; "nothing" when [perTick] is zero.
 String yieldAnHour(proto.Resources perTick) {
   final parts = [
     for (final (v, unit) in [(perTick.metal, 'Fe'), (perTick.crystal, 'Cr'), (perTick.deuterium, 'De')])
-      if (v > 0) '${_rate(v)} $unit',
+      if (v > 0) '${anHour(v)} $unit',
   ];
   return parts.isEmpty ? 'nothing' : parts.join(', ');
 }

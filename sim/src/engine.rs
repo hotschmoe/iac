@@ -13,28 +13,27 @@ use iac_shared::hex::Hex;
 use iac_shared::keymap::{KeyMap, KeySet};
 use iac_shared::constants::{
     Resources, ResourceKind, ShipClass, Density,
-    STARTING_RESOURCES, STARTING_SCOUTS, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, STRANDED_RECOVERY_TICKS,
+    STARTING_RESOURCES, STARTING_SHIPS, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, STRANDED_RECOVERY_TICKS,
     HARVEST_COOLDOWN, SHIELD_REGEN_IDLE_TICKS,
     RECALL_FUEL_MULTIPLIER, RECALL_DAMAGE_CHANCE_PER_HEX, RECALL_DAMAGE_CHANCE_CAP,
     RECALL_HULL_DAMAGE_MIN, RECALL_HULL_DAMAGE_MAX,
-    FUEL_RATE_PER_MASS, FUEL_DEUT_PER_UNIT,
+    FUEL_DEUT_PER_UNIT,
     NPC_PATROL_INTERVAL, SALVAGE_DESPAWN_TICKS, HOME_SALVAGE_WARN_TICKS, DERELICT_RESPAWN_TICKS, HARVEST_REPORT_TICKS,
     TEMPLATE_NPC_ID_BASE,
     MOVE_BASE_COOLDOWN,
-    SCAN_COOLDOWN, SCAN_BASE_RANGE, SCAN_SCOUT_RANGE, SCAN_REVEAL_TICKS,
+    SCAN_COOLDOWN, SCAN_BASE_RANGE, SCAN_PROBE_RANGE, SCAN_REVEAL_TICKS,
     RAID_ROLL_INTERVAL, RAID_ROLL_CHANCE, RAID_PITY_STEP, RAID_LOST_SHIP_FRACTION, RAID_MIN_INTERVAL,
-    RAID_MIN_PLAYER_AGE, RAID_POWER_ROLL_MIN, RAID_POWER_ROLL_MAX,
+    RAID_MIN_PLAYER_AGE, RAID_MIN_SHIPYARD, RAID_POWER_ROLL_MIN, RAID_POWER_ROLL_MAX,
     RAID_STRUCTURE_DAMAGE, RAID_STRUCTURE_RESTORE, RAID_RESTORE_TICKS, RAID_LOST_STRUCTURE_FRACTION,
     RAID_LOSS_CAP_METAL, RAID_LOSS_CAP_CRYSTAL, RAID_LOSS_CAP_DEUT,
     RAID_DEFENSE_SALVAGE_FRACTION, RAID_SUPPRESS_AFTER_LOSS,
-    EXPLORE_DURATION_TICKS, EXPLORE_SCOUT_AMBUSH_REDUCTION, EXPLORE_HAULER_LOOT_MULTIPLIER,
+    EXPLORE_DURATION_TICKS, EXPLORE_PROBE_AMBUSH_REDUCTION, EXPLORE_RECYCLER_LOOT_MULTIPLIER,
     EXPLORE_RETRY_AMBUSH_BUMP, POLICY_EVAL_INTERVAL, POLICY_FUEL_PAYBACK, POLICY_FUEL_UNBOUNDED_PCT,
     POLICY_MIN_SEAM_UNITS, POLICY_SEARCH_HOPS, POLICY_SHIELDS_READY,
     POLICY_MIN_FUEL_PCT_MAX, POLICY_CARGO_RETURN_PCT_MIN, POLICY_CARGO_RETURN_PCT_MAX,
     POLICY_RANGE_MIN, POLICY_RANGE_MAX, POLICY_ENGAGE_RATIO_X10_MIN, POLICY_ENGAGE_RATIO_X10_MAX,
     LANE_SEARCH_HOPS,
     OUTPOST_MIN_RING, OUTPOST_MAX_RING, OUTPOST_MAX_LEVEL, OUTPOST_RAID_LOSS, OUTPOST_SPACING,
-    defense_grid_scout_units,
 };
 use iac_shared::pace::Pace;
 use iac_shared::world::{self, HubService, WorldGen};
@@ -107,7 +106,6 @@ pub struct Ship {
     pub shield: f32,
     pub shield_max: f32,
     pub weapon_power: f32,
-    pub speed: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,7 +149,7 @@ pub struct NpcFleet {
     /// What the group cost to build, and its combined power, fixed at spawn.
     pub bounty: Resources,
     pub power: f32,
-    /// "3x corvette pack": how messages name the group.
+    /// "3x cruiser pack": how messages name the group.
     pub label: String,
 }
 
@@ -169,6 +167,8 @@ pub struct Player {
     pub ship_queue: Option<ShipQueueEntry>,
     pub ship_pending: Vec<PendingShip>,
     pub defences: Defences,
+    /// Solar Satellites at home: built as ships, never part of a fleet.
+    pub satellites: u32,
     pub research_queue: Option<ResearchQueueEntry>,
     pub research_pending: Vec<PendingResearch>,
     /// SHA-256 of the account's token; None for accounts that predate
@@ -226,11 +226,16 @@ pub struct Defences {
 }
 
 impl Defences {
-    /// Combined power of the structures at a Defense Grid level.
-    pub fn power(&self, grid_level: u8) -> f32 {
+    /// Combined power of the structures with the owner's research.
+    pub fn power(&self, research: &ResearchLevels) -> f32 {
         DefenceKind::ALL.iter()
-            .map(|&k| self.count[k as usize] as f32 * scaling::structure_power(k, grid_level))
+            .map(|&k| self.count[k as usize] as f32 * scaling::structure_power(k, research))
             .sum()
+    }
+
+    /// Standing or being rebuilt after a raid.
+    pub fn owned(&self, kind: DefenceKind) -> u32 {
+        self.count[kind as usize] + self.restoring[kind as usize]
     }
 }
 
@@ -263,17 +268,24 @@ impl Player {
         scaling::building_slots(&self.research) as usize
     }
 
-    /// What the homeworld mines add to the stockpile each tick.
+    /// The homeworld's energy this tick. The Fusion Reactor runs while the
+    /// stockpile holds any deuterium for it.
+    pub fn power(&self, pace: &Pace) -> scaling::Power {
+        scaling::home_power(&self.buildings, &self.research, self.satellites, self.resources.deuterium > 0.0, pace)
+    }
+
+    /// What the mines add to the stockpile each tick with the energy there
+    /// is, before the Fusion Reactor's burn.
+    pub fn mined_per_tick(&self, pace: &Pace) -> Resources {
+        scaling::production_per_tick(&self.buildings, self.power(pace).fraction(), pace)
+    }
+
+    /// What the stockpile gains each tick: the mines less the Fusion
+    /// Reactor's burn, so deuterium may be negative.
     pub fn production_per_tick(&self, pace: &Pace) -> Resources {
-        Resources {
-            metal: scaling::production_per_tick(BuildingType::MetalMine, self.buildings.metal_mine, pace),
-            crystal: scaling::production_per_tick(BuildingType::CrystalMine, self.buildings.crystal_mine, pace),
-            deuterium: scaling::production_per_tick(
-                BuildingType::DeuteriumSynthesizer,
-                self.buildings.deuterium_synthesizer,
-                pace,
-            ),
-        }
+        let power = self.power(pace);
+        let mined = scaling::production_per_tick(&self.buildings, power.fraction(), pace);
+        Resources { deuterium: mined.deuterium - power.fusion_burn, ..mined }
     }
 }
 
@@ -555,17 +567,23 @@ impl Window {
 
 /// The ships a fight in a sector would meet: the group the ring spawns at
 /// that distance from the hub, or ships that were counted.
-#[derive(Clone, Copy)]
 enum Opposing {
     Ring(u16),
-    Ships(Force),
+    Ships(Box<Force>),
 }
 
 impl Opposing {
     fn force(self) -> Force {
         match self {
             Opposing::Ring(dist) => Force::of_ring(dist),
-            Opposing::Ships(force) => force,
+            Opposing::Ships(force) => *force,
+        }
+    }
+
+    fn ring(&self) -> Option<u16> {
+        match self {
+            Opposing::Ring(dist) => Some(*dist),
+            Opposing::Ships(_) => None,
         }
     }
 }
@@ -1244,7 +1262,6 @@ impl GameEngine {
                         shield: cs.shield,
                         shield_max: cs.shield_max,
                         weapon_power: cs.weapon_power,
-                        speed: cs.ship_class.base_stats().speed,
                     }).collect();
                     f.ships[..new_ships.len()].copy_from_slice(&new_ships);
                     for j in new_ships.len()..f.ships.len() {
@@ -1276,7 +1293,6 @@ impl GameEngine {
                             shield: ns.shield,
                             shield_max: ns.shield_max,
                             weapon_power: ns.weapon_power,
-                            speed: ns.ship_class.base_stats().speed,
                         };
                     }
                     for j in count..n.ships.len() {
@@ -1461,7 +1477,7 @@ impl GameEngine {
 
             let target = fleet.harvest_target;
             let yield_mult = self.players.get(&fleet.owner_id)
-                .map_or(1.0, |p| scaling::harvest_yield(p.research.harvesting_efficiency));
+                .map_or(1.0, |p| scaling::harvest_yield(p.research.laser_technology));
             let harvest_power = fleet_harvest_power(fleet);
             let dist = location.dist_from_origin();
             let max_cargo = fleet_cargo_capacity(fleet, &self.world.pace);
@@ -1624,7 +1640,7 @@ impl GameEngine {
             let mut left = pile;
             if let Some(fleet_id) = docked {
                 let player = self.players.get_mut(&pid).unwrap();
-                let cap = scaling::storage_cap(player.buildings.storage_vault, &self.world.pace);
+                let cap = scaling::storage_cap(&player.buildings, &self.world.pace);
                 let taken = player.resources.shortfall(cap).min(pile);
                 if taken.total() > 0.0 {
                     player.resources = player.resources.add(taken);
@@ -1759,8 +1775,10 @@ impl GameEngine {
     fn process_homeworlds(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let pace = self.world.pace;
         for (_, player) in self.players.iter_mut() {
-            let cap = scaling::storage_cap(player.buildings.storage_vault, &pace);
-            player.resources = player.resources.add_capped(player.production_per_tick(&pace), cap);
+            let cap = scaling::storage_cap(&player.buildings, &pace);
+            let burn = player.power(&pace).fusion_burn;
+            player.resources = player.resources.add_capped(player.mined_per_tick(&pace), cap);
+            player.resources.deuterium = (player.resources.deuterium - burn).max(0.0);
         }
         let docked: Vec<u64> = self.fleets.values()
             .filter(|f| f.cargo.total() > 0.0 && self.players.get(&f.owner_id).is_some_and(|p| p.homeworld == f.location))
@@ -1786,7 +1804,7 @@ impl GameEngine {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
         if fleet.laden { return; }
         let Some(player) = self.players.get_mut(&fleet.owner_id) else { return; };
-        let cap = scaling::storage_cap(player.buildings.storage_vault, &self.world.pace);
+        let cap = scaling::storage_cap(&player.buildings, &self.world.pace);
         let room = player.resources.shortfall(cap).min(fleet.cargo);
         if room.total() <= 0.0 { return; }
         player.resources = player.resources.add(room);
@@ -1796,7 +1814,7 @@ impl GameEngine {
 
     /// A fleet that has lost ships keeps what the holds it has left carry.
     /// The rest leaves, each resource in proportion: at the owner's
-    /// homeworld into the stockpile as far as the Vault allows, at the
+    /// homeworld into the stockpile as far as its caps allow, at the
     /// owner's outpost into its store as far as that has room, and the
     /// remainder is lost; anywhere else into the sector's wreckage. Nothing
     /// is made, and a fleet with no ships left sheds its whole cargo.
@@ -1822,7 +1840,7 @@ impl GameEngine {
         let outpost = self.outposts.get_mut(&owner).filter(|o| o.sector == sector);
         let docked = match (home, outpost) {
             (Some(player), _) => {
-                let cap = scaling::storage_cap(player.buildings.storage_vault, &pace);
+                let cap = scaling::storage_cap(&player.buildings, &pace);
                 let stored = player.resources.shortfall(cap).min(shed);
                 player.resources = player.resources.add(stored);
                 Some(("the stockpile", stored))
@@ -1879,7 +1897,7 @@ impl GameEngine {
         if units <= 0.0 { return; }
 
         let budget = self.policies.get(&fleet_id).filter(|p| p.params.fuel_budget_pct < POLICY_FUEL_UNBOUNDED_PCT);
-        let store_full = stock >= scaling::storage_cap(player.buildings.storage_vault, &self.world.pace).deuterium;
+        let store_full = stock >= scaling::storage_cap(&player.buildings, &self.world.pace).deuterium;
         let mut credit_left = None;
         if let Some(policy) = budget && !store_full {
             let cost = missing * FUEL_DEUT_PER_UNIT;
@@ -1904,7 +1922,7 @@ impl GameEngine {
 
     pub fn storage_state(&self, player: &Player) -> StorageState {
         let pace = &self.world.pace;
-        let cap = scaling::storage_cap(player.buildings.storage_vault, pace);
+        let cap = scaling::storage_cap(&player.buildings, pace);
         let rate = player.production_per_tick(pace);
         let eta = |kind: ResourceKind| {
             let (stock, cap, rate) = (player.resources.get(kind), cap.get(kind), rate.get(kind));
@@ -1912,7 +1930,7 @@ impl GameEngine {
         };
         StorageState {
             cap,
-            protected: scaling::storage_protected(player.buildings.storage_vault, pace),
+            protected: scaling::storage_protected(&player.buildings, pace),
             full_in_s: ResourceEta {
                 metal: eta(ResourceKind::Metal),
                 crystal: eta(ResourceKind::Crystal),
@@ -1983,7 +2001,7 @@ impl GameEngine {
             player.building_queue = running;
             for q in done {
                 player.buildings.set(q.building_type, q.target_level);
-                if q.building_type == BuildingType::FuelDepot {
+                if q.building_type == BuildingType::DeuteriumTank {
                     fuel_recalc_players.push(pid);
                 }
                 self.pending_events.push(GameEvent {
@@ -2001,7 +2019,7 @@ impl GameEngine {
             {
                 player.research.set(q.tech, q.target_level);
                 player.research_queue = None;
-                if q.tech == ResearchType::ExtendedFuelTanks {
+                if q.tech == ResearchType::ImpulseDrive {
                     fuel_recalc_players.push(pid);
                 }
                 self.pending_events.push(GameEvent {
@@ -2014,13 +2032,13 @@ impl GameEngine {
                 });
             }
 
-            let yard = player.buildings.shipyard;
+            let yard = player.buildings.clone();
             if let Some(q) = player.ship_queue.as_mut().filter(|q| tick >= q.end_tick) {
                 completed_ships.push((pid, q.item));
                 q.built += 1;
                 if q.built < q.count {
                     q.start_tick = tick;
-                    q.end_tick = tick + q.item.unit_ticks(yard, &pace);
+                    q.end_tick = tick + q.item.unit_ticks(&yard, &pace);
                 } else {
                     player.ship_queue = None;
                 }
@@ -2030,7 +2048,11 @@ impl GameEngine {
         for (pid, item) in completed_ships {
             let kind = match item {
                 ShipyardItem::Ship(ship_class) => {
-                    self.add_ship_to_homeworld(pid, ship_class)?;
+                    if ship_class.flies() {
+                        self.add_ship_to_homeworld(pid, ship_class)?;
+                    } else if let Some(p) = self.players.get_mut(&pid) {
+                        p.satellites += 1;
+                    }
                     EventKind::ShipBuilt(iac_shared::protocol::ShipBuiltEvent {
                         ship_class,
                         count: 1,
@@ -2112,21 +2134,18 @@ impl GameEngine {
     fn building_ready(&self, p: &Player, b: BuildingType, target: u8) -> bool {
         p.building_queue.iter().all(|q| q.building_type != b)
             && p.buildings.get(b) + 1 == target
-            && scaling::building_prerequisites_met(b, &p.buildings)
+            && scaling::building_prerequisites_met(b, &p.buildings, &p.research)
     }
 
     fn research_ready(&self, p: &Player, tech: ResearchType, target: u8) -> bool {
         p.buildings.research_lab > 0
             && p.research.get(tech) + 1 == target
             && scaling::research_prerequisites_met(tech, &p.buildings, &p.research)
+            && p.power(&self.world.pace).made >= scaling::research_energy(tech, target)
     }
 
     fn ship_ready(&self, p: &Player, item: ShipyardItem) -> bool {
-        p.buildings.shipyard > 0
-            && match item {
-                ShipyardItem::Ship(class) => scaling::ship_class_unlocked(class, &p.research),
-                ShipyardItem::Defence(kind) => scaling::defence_prerequisites_met(kind, &p.buildings, &p.research),
-            }
+        scaling::prerequisites_met(item.prerequisites(), &p.buildings, &p.research)
     }
 
     /// Tell the owner what happened to an order.
@@ -2183,7 +2202,7 @@ impl GameEngine {
         let (b, target) = (order.building_type, order.target_level);
         let cost = scaling::building_cost(b, target);
         p.resources = p.resources.sub(cost);
-        let ticks = scaling::building_time(b, target, p.buildings.fabricator, &pace);
+        let ticks = scaling::building_time(b, target, &p.buildings, &pace);
         p.building_queue.push(BuildQueueEntry { id: order.id, building_type: b, target_level: target, start_tick: tick, end_tick: tick + ticks });
         let mut event = self.queue_event(pid, QueueType::Building, order.id, format!("{} Lv.{target}", b.label()), QueueAction::Started);
         event.paid = cost;
@@ -2198,7 +2217,7 @@ impl GameEngine {
         let (tech, target) = (order.tech, order.target_level);
         let cost = scaling::research_cost(tech, target);
         p.resources = p.resources.sub(cost);
-        let ticks = scaling::research_time(tech, target, p.buildings.research_lab, &pace);
+        let ticks = scaling::research_time(tech, target, &p.buildings, &pace);
         p.research_queue = Some(ResearchQueueEntry { id: order.id, tech, target_level: target, start_tick: tick, end_tick: tick + ticks });
         let mut event = self.queue_event(pid, QueueType::Research, order.id, format!("{} Lv.{target}", tech.label()), QueueAction::Started);
         event.paid = cost;
@@ -2217,7 +2236,7 @@ impl GameEngine {
         let pace = self.world.pace;
         let Some(p) = self.players.get_mut(&pid) else { return; };
         let item = order.item;
-        let per_unit = item.unit_ticks(p.buildings.shipyard, &pace);
+        let per_unit = item.unit_ticks(&p.buildings, &pace);
         p.ship_queue = Some(ShipQueueEntry {
             id: order.id, item, count: order.count, built: 0,
             start_tick: tick, end_tick: tick + per_unit,
@@ -2232,7 +2251,7 @@ impl GameEngine {
     // Forecasted pressure, never a random tax: raids are announced
     // RAID_WARNING_TICKS in advance, sized against the defense the player
     // already has, hard-capped on losses, and pay out salvage when repelled.
-    // DefenseGrid exists so a player can leave home without babysitting it.
+    // Defences exist so a player can leave home without babysitting it.
 
     fn process_raids(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let tick = self.current_tick;
@@ -2268,7 +2287,8 @@ impl GameEngine {
             let Some(player) = self.players.get(&pid) else { continue; };
             // Raids only threaten empires worth raiding — and defenseless
             // beginners are off the menu entirely.
-            let eligible = player.buildings.shipyard >= 2 || player.buildings.defense_grid >= 1;
+            let eligible = player.buildings.shipyard >= RAID_MIN_SHIPYARD
+                || DefenceKind::ALL.into_iter().any(|kind| player.defences.owned(kind) > 0);
             if !eligible { continue; }
 
             let base = scaling::raid_power_base(scaling::econ_points(&player.buildings, &player.research));
@@ -2448,6 +2468,7 @@ impl GameEngine {
                 salvage_despawn_tick: None,
                 raid_power,
                 defense_power,
+                satellites_lost: 0,
                 structures_lost: 0,
                 structures_restored: 0,
                 protected_kept,
@@ -2463,7 +2484,6 @@ impl GameEngine {
     fn resolve_raid(&mut self, player_id: u64, raid_power: f32) -> Result<(), Box<dyn std::error::Error>> {
         let Some(player) = self.players.get(&player_id) else { return Ok(()); };
         let homeworld = player.homeworld;
-        let grid_level = player.buildings.defense_grid;
 
         // Defense is measured at arrival, not forecast — ships built or
         // recalled during the warning window count.
@@ -2476,13 +2496,13 @@ impl GameEngine {
         let effective_defense = defense_power * rng.random_range(0.9..1.1);
         let defended = effective_defense >= raid_power;
 
-        // Raid fleet value, for salvage: treat it as corvette-equivalents.
-        let corvette_power = scaling::ship_power(ShipClass::Corvette);
-        let corvettes = (raid_power / corvette_power).ceil().max(1.0);
-        let raid_value = ShipClass::Corvette.build_cost().scale(f64::from(corvettes));
+        // Raid fleet value, for salvage: treat it as Light Fighters.
+        let raiders = (raid_power / scaling::ship_power(ShipClass::LightFighter)).ceil().max(1.0);
+        let raid_value = ShipClass::LightFighter.build_cost().scale(f64::from(raiders));
 
         let mut resources_lost = Resources::default();
         let mut ships_lost = 0;
+        let mut satellites_lost = 0;
         let mut salvage_dropped: Option<Resources> = None;
         let mut salvage_despawn_tick: Option<u64> = None;
         let mut protected_kept = Resources::default();
@@ -2499,7 +2519,7 @@ impl GameEngine {
             salvage_despawn_tick = Some(tick + SALVAGE_DESPAWN_TICKS as u64);
             ov.salvage_despawn_tick = salvage_despawn_tick;
             salvage_dropped = Some(salvage);
-            // Defenders take shield damage but the grid keeps hulls intact.
+            // Defenders take shield damage but hulls stay intact.
             for fleet in self.fleets.values_mut() {
                 if fleet.owner_id != player_id || fleet.location != homeworld { continue; }
                 for ship in &mut fleet.ships[0..fleet.ship_count] {
@@ -2511,8 +2531,11 @@ impl GameEngine {
             (structures_lost, structures_restored) =
                 self.damage_structures(player_id, RAID_LOST_STRUCTURE_FRACTION, false);
             ships_lost = self.destroy_docked_ships(player_id, homeworld, RAID_LOST_SHIP_FRACTION, &mut rng);
+            let player = self.players.get_mut(&player_id).unwrap();
+            satellites_lost = (player.satellites as f32 * RAID_LOST_SHIP_FRACTION).ceil() as u32;
+            player.satellites -= satellites_lost.min(player.satellites);
             let player = &self.players[&player_id];
-            let protected = scaling::storage_protected(player.buildings.storage_vault, &self.world.pace);
+            let protected = scaling::storage_protected(&player.buildings, &self.world.pace);
             let rate = Resources { metal: RAID_LOSS_CAP_METAL, crystal: RAID_LOSS_CAP_CRYSTAL, deuterium: RAID_LOSS_CAP_DEUT };
             let left;
             (left, resources_lost, protected_kept) = self.skim_dock(player_id, homeworld, player.resources, |_| protected, rate);
@@ -2546,6 +2569,7 @@ impl GameEngine {
                 salvage_despawn_tick,
                 raid_power,
                 defense_power,
+                satellites_lost,
                 structures_lost,
                 structures_restored,
                 protected_kept,
@@ -2553,9 +2577,9 @@ impl GameEngine {
             }),
         });
         info!(
-            "Raid on player {} resolved: {} (raid {:.0} vs defense {:.0}, grid L{})",
+            "Raid on player {} resolved: {} (raid {:.0} vs defense {:.0})",
             player_id, if defended { "repelled" } else { "lost" },
-            raid_power, defense_power, grid_level,
+            raid_power, defense_power,
         );
 
         Ok(())
@@ -2708,21 +2732,29 @@ impl GameEngine {
         }
     }
 
-    /// Combat power defending the homeworld: docked ships, the DefenseGrid's
-    /// virtual platforms and every defence structure.
+    /// Combat power defending the homeworld: docked ships, Solar Satellites
+    /// and every defence.
     pub fn home_defense_power(&self, player_id: u64) -> f32 {
         let Some(player) = self.players.get(&player_id) else { return 0.0; };
+        self.docked_power(player) + Self::satellite_power(player) + player.defences.power(&player.research)
+    }
+
+    /// What the ships standing at the homeworld add to its defence.
+    pub fn docked_power(&self, player: &Player) -> f32 {
         let mut power = 0.0;
         for fleet in self.fleets.values() {
-            if fleet.owner_id != player_id || fleet.location != player.homeworld { continue; }
+            if fleet.owner_id != player.id || fleet.location != player.homeworld { continue; }
             for ship in &fleet.ships[0..fleet.ship_count] {
                 if ship.hull <= 0.0 { continue; }
                 power += ship.weapon_power + (ship.hull + ship.shield) / 10.0;
             }
         }
-        power += defense_grid_scout_units(player.buildings.defense_grid)
-            * scaling::ship_power(ShipClass::Scout);
-        power + player.defences.power(player.buildings.defense_grid)
+        power
+    }
+
+    /// What the Solar Satellites at home add to its defence.
+    pub fn satellite_power(player: &Player) -> f32 {
+        player.satellites as f32 * scaling::satellite_power(&player.research)
     }
 
     // ── Outposts ──────────────────────────────────────────────────
@@ -3401,6 +3433,7 @@ impl GameEngine {
             ship_queue: None,
             ship_pending: Vec::new(),
             defences: Defences::default(),
+            satellites: 0,
             research_queue: None,
             research_pending: Vec::new(),
             token_hash: None,
@@ -3415,8 +3448,6 @@ impl GameEngine {
         self.players.insert(player_id, player);
 
         let fleet_id = self.next_id();
-        let scout_base = ShipClass::Scout.base_stats();
-        let scout_stats = scaling::apply_research_to_stats(scout_base, &ResearchLevels::default());
 
         let mut fleet = Fleet {
             id: fleet_id,
@@ -3424,7 +3455,7 @@ impl GameEngine {
             location: homeworld,
             state: FleetStatus::Idle,
             ships: [Ship::default(); MAX_SHIPS_PER_FLEET],
-            ship_count: STARTING_SCOUTS,
+            ship_count: 0,
             cargo: Resources::default(),
             fuel: 0.0,
             fuel_max: 0.0,
@@ -3437,17 +3468,11 @@ impl GameEngine {
             laden: false,
         };
 
-        for i in 0..STARTING_SCOUTS {
-            fleet.ships[i] = Ship {
-                id: self.next_id(),
-                ship_class: ShipClass::Scout,
-                hull: scout_stats.hull,
-                hull_max: scout_stats.hull,
-                shield: scout_stats.shield,
-                shield_max: scout_stats.shield,
-                weapon_power: scout_stats.weapon,
-                speed: scout_stats.speed,
-            };
+        for &(class, count) in STARTING_SHIPS {
+            for _ in 0..count {
+                fleet.ships[fleet.ship_count] = built_ship(self.next_id(), class, &ResearchLevels::default());
+                fleet.ship_count += 1;
+            }
         }
 
         if let Some(player) = self.players.get(&player_id) {
@@ -3494,8 +3519,8 @@ impl GameEngine {
         let fuel_cost = fleet_fuel_cost(fleet, research);
         if fleet.fuel < fuel_cost { return Err(ErrorCode::InsufficientFuel); }
 
-        // Compute cooldown before mutable borrow (needs immutable fleet data)
-        let cooldown = fleet_move_cooldown(fleet, research);
+        // The charge: every tick of the jump but the one it lands on.
+        let cooldown = fleet_jump_ticks(fleet, research) - 1;
 
         let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
         fleet_mut.fuel -= fuel_cost;
@@ -3569,13 +3594,14 @@ impl GameEngine {
 
     /// `odds_ratio` of `ours` against `theirs`. `rings` must be `ours`'s own.
     fn ratio_against(&self, ours: &Force, theirs: Opposing, rings: &RingOdds) -> f32 {
-        if let Opposing::Ring(dist) = theirs
+        let ring = theirs.ring();
+        if let Some(dist) = ring
             && let Some(&ratio) = rings.0.borrow().get(&dist)
         {
             return ratio;
         }
         let ratio = self.odds_ratio(ours, &theirs.force());
-        if let Opposing::Ring(dist) = theirs {
+        if let Some(dist) = ring {
             rings.0.borrow_mut().insert(dist, ratio);
         }
         ratio
@@ -3673,10 +3699,12 @@ impl GameEngine {
             force.join(&Force::of_ships(&npc.ships[..npc.ship_count as usize]));
         }
         if !force.is_empty() || self.outpost_at(coord).is_some() {
-            return Opposing::Ships(force);
+            return Opposing::Ships(Box::new(force));
         }
         match self.pending_template_npc(coord) {
-            Some(tmpl) => Opposing::Ships(Force::of_group(tmpl.ship_class, f32::from(tmpl.count), tmpl.stat_multiplier)),
+            Some(tmpl) => {
+                Opposing::Ships(Box::new(Force::of_group(tmpl.ship_class, f32::from(tmpl.count), tmpl.stat_multiplier)))
+            }
             None => Opposing::Ring(coord.dist_from_origin()),
         }
     }
@@ -3725,7 +3753,12 @@ impl GameEngine {
     /// sets, and the tick `process_movement` lands the fleet on.
     pub fn hop_ticks(&self, fleet: &Fleet) -> u16 {
         let research = self.players.get(&fleet.owner_id).map(|p| &p.research);
-        fleet_move_cooldown(fleet, research) + 1
+        fleet_jump_ticks(fleet, research)
+    }
+
+    /// Hops a scan by `fleet` reveals.
+    pub fn scan_range(fleet: &Fleet) -> u8 {
+        if fleet_has(fleet, ShipClass::EspionageProbe) { SCAN_PROBE_RANGE } else { SCAN_BASE_RANGE }
     }
 
     /// The ways home from `from`. `direct` is the fewest hops over the real
@@ -3910,7 +3943,7 @@ impl GameEngine {
     /// The exact reading, span and window of `player`'s exchange meter now.
     fn exchange_standing(&self, player: &Player) -> (f64, f64, u64) {
         let pace = self.world.pace;
-        let span = scaling::exchange_span(&player.production_per_tick(&pace), &pace);
+        let span = scaling::exchange_span(&player.mined_per_tick(&pace), &pace);
         let window = scaling::exchange_window(&pace);
         let elapsed = self.current_tick.saturating_sub(player.exchange_tick);
         (scaling::exchange_pressure_after(player.exchange_pressure, elapsed, span, window), span, window)
@@ -4362,7 +4395,7 @@ impl GameEngine {
         fleet_mut.fuel -= fuel_cost;
 
         let base_damage_chance = RECALL_DAMAGE_CHANCE_PER_HEX * dist;
-        let ej_reduction = scaling::recall_damage_reduction(player.research.emergency_jump);
+        let ej_reduction = scaling::recall_damage_reduction(player.research.hyperspace_technology);
         let damage_chance = RECALL_DAMAGE_CHANCE_CAP.min(base_damage_chance.max(0.0) - ej_reduction.max(0.0));
 
         let mut rng = StdRng::seed_from_u64(
@@ -4570,10 +4603,10 @@ impl GameEngine {
         Ok(())
     }
 
-    /// A payment larger than a stockpile cap can never be made until the
-    /// Storage Vault grows.
+    /// A payment larger than a stockpile cap can never be made until that
+    /// resource's storage building grows.
     fn ensure_fits_storage(&self, player: &Player, cost: Resources) -> Result<(), ErrorCode> {
-        let cap = scaling::storage_cap(player.buildings.storage_vault, &self.world.pace);
+        let cap = scaling::storage_cap(&player.buildings, &self.world.pace);
         if ResourceKind::ALL.into_iter().any(|k| cost.get(k) > cap.get(k)) {
             return Err(ErrorCode::StorageTooSmall);
         }
@@ -4625,7 +4658,7 @@ impl GameEngine {
         let projected = player.projected_buildings();
         let current_level = projected.get(building_type);
         if current_level >= MAX_BUILDING_LEVEL { return Err(ErrorCode::MaxLevelReached); }
-        if !scaling::building_prerequisites_met(building_type, &projected) {
+        if !scaling::building_prerequisites_met(building_type, &projected, &player.projected_research()) {
             return Err(ErrorCode::PrerequisitesNotMet);
         }
         if player.building_queue.len() + player.building_pending.len() >= player.building_slots() + scaling::QUEUE_WAITING {
@@ -4651,7 +4684,9 @@ impl GameEngine {
         let projected = player.projected_research();
         let current_level = projected.get(tech);
         if current_level >= scaling::research_max_level(tech) { return Err(ErrorCode::MaxLevelReached); }
-        if !scaling::research_prerequisites_met(tech, &player.projected_buildings(), &projected) {
+        if !scaling::research_prerequisites_met(tech, &player.projected_buildings(), &projected)
+            || player.power(&self.world.pace).made < scaling::research_energy(tech, current_level + 1)
+        {
             return Err(ErrorCode::PrerequisitesNotMet);
         }
         if player.research_queue.iter().count() + player.research_pending.len() > scaling::QUEUE_WAITING {
@@ -4671,8 +4706,11 @@ impl GameEngine {
 
     pub fn handle_build_ship(&mut self, player_id: u64, ship_class: ShipClass, count: u16) -> Result<(), ErrorCode> {
         let player = self.players.get(&player_id).ok_or(ErrorCode::ServerError)?;
-        if player.projected_buildings().shipyard == 0 { return Err(ErrorCode::NoShipyard); }
-        if !scaling::ship_class_unlocked(ship_class, &player.projected_research()) { return Err(ErrorCode::ShipLocked); }
+        let buildings = player.projected_buildings();
+        if buildings.shipyard == 0 { return Err(ErrorCode::NoShipyard); }
+        if !scaling::ship_class_unlocked(ship_class, &buildings, &player.projected_research()) {
+            return Err(ErrorCode::ShipLocked);
+        }
         self.order_shipyard(player_id, ShipyardItem::Ship(ship_class), count)
     }
 
@@ -4682,7 +4720,18 @@ impl GameEngine {
         if !scaling::defence_prerequisites_met(kind, &player.projected_buildings(), &player.projected_research()) {
             return Err(ErrorCode::DefenceLocked);
         }
+        if kind.max_count().is_some_and(|most| Self::defences_owned_and_ordered(player, kind) + u32::from(count) > most) {
+            return Err(ErrorCode::MaxLevelReached);
+        }
         self.order_shipyard(player_id, ShipyardItem::Defence(kind), count)
+    }
+
+    /// Defences of `kind` standing, being rebuilt and paid for in the yard.
+    pub fn defences_owned_and_ordered(player: &Player, kind: DefenceKind) -> u32 {
+        let item = ShipyardItem::Defence(kind);
+        let building = player.ship_queue.iter().filter(|q| q.item == item).map(|q| u32::from(q.undelivered()));
+        let waiting = player.ship_pending.iter().filter(|q| q.item == item).map(|q| u32::from(q.count));
+        player.defences.owned(kind) + building.chain(waiting).sum::<u32>()
     }
 
     /// Order a shipyard batch behind the ones already there. The whole batch
@@ -4801,8 +4850,8 @@ impl GameEngine {
     }
 
     /// Active scan: reveal connected sectors around the fleet and pick up
-    /// faint signal contacts one hop beyond. Scouts extend the range —
-    /// that's their job.
+    /// faint signal contacts one hop beyond. An Espionage Probe aboard
+    /// extends the range.
     pub fn handle_scan(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
         if fleet.state == FleetStatus::InCombat { return Err(ErrorCode::OnCooldown); }
@@ -4810,9 +4859,7 @@ impl GameEngine {
         if fleet.action_cooldown > 0 { return Err(ErrorCode::OnCooldown); }
 
         let origin = fleet.location;
-        let has_scout = fleet.ships[0..fleet.ship_count].iter()
-            .any(|s| s.ship_class == ShipClass::Scout);
-        let range = if has_scout { SCAN_SCOUT_RANGE } else { SCAN_BASE_RANGE };
+        let range = Self::scan_range(fleet);
 
         let revealed = self.get_sensor_revealed_coords(origin, range);
         let fringe: Vec<Hex> = {
@@ -4935,10 +4982,8 @@ impl GameEngine {
     /// Ambush odds for a boarding attempt by this fleet at `site`.
     fn site_ambush_chance(&self, fleet: &Fleet, site: Hex, bumps: u8) -> f32 {
         let base = scaling::derelict_ambush(ring_rating(site));
-        let has_scout = fleet.ships[0..fleet.ship_count].iter()
-            .any(|s| s.ship_class == ShipClass::Scout);
-        let scout_bonus = if has_scout { EXPLORE_SCOUT_AMBUSH_REDUCTION } else { 0.0 };
-        (base + bumps as f32 * EXPLORE_RETRY_AMBUSH_BUMP - scout_bonus).clamp(0.02, 0.95)
+        let read = if fleet_has(fleet, ShipClass::EspionageProbe) { EXPLORE_PROBE_AMBUSH_REDUCTION } else { 0.0 };
+        (base + bumps as f32 * EXPLORE_RETRY_AMBUSH_BUMP - read).clamp(0.02, 0.95)
     }
 
     /// Stripped derelicts are replaced after `DERELICT_RESPAWN_TICKS` (finds class).
@@ -5057,8 +5102,7 @@ impl GameEngine {
 
         let fleet = self.fleets.get(&fleet_id).unwrap();
         let ambush_chance = self.site_ambush_chance(fleet, location, bumps);
-        let has_hauler = fleet.ships[0..fleet.ship_count].iter()
-            .any(|s| s.ship_class == ShipClass::Hauler);
+        let has_rigging = fleet_has(fleet, ShipClass::Recycler);
 
         let mut rng = StdRng::seed_from_u64(
             self.current_tick
@@ -5095,7 +5139,7 @@ impl GameEngine {
         let rating = ring_rating(location);
         let base_value = scaling::derelict_value(dist)
             * f64::from(rng.random_range(scaling::DERELICT_ROLL_MIN..=scaling::DERELICT_ROLL_MAX));
-        let loot_mult = self.world.pace.finds_mult() * if has_hauler { EXPLORE_HAULER_LOOT_MULTIPLIER } else { 1.0 };
+        let loot_mult = self.world.pace.finds_mult() * if has_rigging { EXPLORE_RECYCLER_LOOT_MULTIPLIER } else { 1.0 };
         let rolled = scaling::split_loot(base_value).scale(loot_mult);
 
         // Cargo-cap the haul; anything the hold can't take drifts loose
@@ -5188,32 +5232,23 @@ impl GameEngine {
             .and_then(|f| self.players.get(&f.owner_id))
             .map(|p| p.research.clone())
             .unwrap_or_default();
-        let stats = scaling::apply_research_to_stats(class.base_stats(), &research);
         let hull_frac: f32 = rng.random_range(0.35..0.70);
-        let ship_id = self.next_id();
+        let ship = built_ship(self.next_id(), class, &research);
         if let Some(f) = self.fleets.get_mut(&fleet_id) {
             if f.ship_count >= MAX_SHIPS_PER_FLEET { return; }
-            f.ships[f.ship_count] = Ship {
-                id: ship_id,
-                ship_class: class,
-                hull: stats.hull * hull_frac,
-                hull_max: stats.hull,
-                shield: 0.0,
-                shield_max: stats.shield,
-                weapon_power: stats.weapon,
-                speed: stats.speed,
-            };
+            f.ships[f.ship_count] = Ship { hull: ship.hull_max * hull_frac, shield: 0.0, ..ship };
             f.ship_count += 1;
         }
     }
 
-    /// A data core grants an instant level in a random low tech.
+    /// A data core grants an instant level in a random low tech. Not in one
+    /// that is bought with energy: Graviton is not to be found in a wreck.
     fn pick_tech_cache(&self, player_id: u64, rng: &mut StdRng) -> Option<ResearchType> {
         let player = self.players.get(&player_id)?;
         let candidates: Vec<ResearchType> = ResearchType::ALL.iter().copied()
             .filter(|&t| {
                 let lvl = player.research.get(t);
-                lvl < 3 && lvl < scaling::research_max_level(t)
+                lvl < 3 && lvl < scaling::research_max_level(t) && scaling::research_energy(t, lvl + 1) == 0
             })
             .collect();
         if candidates.is_empty() { return None; }
@@ -5371,7 +5406,7 @@ impl GameEngine {
     /// Deuterium per tick a doctrine's fuel budget grows by.
     fn fuel_income(&self, owner: u64, params: &PolicyParams) -> f64 {
         let Some(player) = self.players.get(&owner) else { return 0.0; };
-        player.production_per_tick(&self.world.pace).deuterium * f64::from(params.fuel_budget_pct) / 100.0
+        player.production_per_tick(&self.world.pace).deuterium.max(0.0) * f64::from(params.fuel_budget_pct) / 100.0
     }
 
     /// Shields come back while a fleet idles and hull never does, so a fleet
@@ -5714,7 +5749,7 @@ impl GameEngine {
     /// `owner`'s fleets with `room` units free.
     fn seam_worth(&self, owner: u64, ore: &OreReserve, room: f64) -> f32 {
         let yield_mult = self.players.get(&owner)
-            .map_or(1.0, |p| scaling::harvest_yield(p.research.harvesting_efficiency));
+            .map_or(1.0, |p| scaling::harvest_yield(p.research.laser_technology));
         let load = Resources { metal: ore.metal.units, crystal: ore.crystal.units, deuterium: ore.deuterium.units }
             .scale(yield_mult);
         worth_aboard(load, room)
@@ -6199,7 +6234,6 @@ impl GameEngine {
                 shield: stats.shield * m,
                 shield_max: stats.shield * m,
                 weapon_power: stats.weapon * m,
-                speed: stats.speed,
             };
         }
 
@@ -6507,25 +6541,12 @@ impl GameEngine {
             new_id
         };
 
-        let player = self.players.get(&player_id).unwrap();
-        let research = player.research.clone();
-        let base_stats = ship_class.base_stats();
-        let stats = scaling::apply_research_to_stats(base_stats, &research);
-
-        let ship_id = self.next_id();
+        let research = self.players.get(&player_id).unwrap().research.clone();
+        let ship = built_ship(self.next_id(), ship_class, &research);
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
         if fleet.ship_count >= MAX_SHIPS_PER_FLEET { return Ok(()); }
 
-        fleet.ships[fleet.ship_count] = Ship {
-            id: ship_id,
-            ship_class,
-            hull: stats.hull,
-            hull_max: stats.hull,
-            shield: stats.shield,
-            shield_max: stats.shield,
-            weapon_power: stats.weapon,
-            speed: stats.speed,
-        };
+        fleet.ships[fleet.ship_count] = ship;
         fleet.ship_count += 1;
 
         let player = self.players.get(&player_id).unwrap();
@@ -6696,7 +6717,7 @@ fn remembered_opposing(seen: &SectorState) -> Opposing {
     use iac_shared::protocol::NpcBehavior::{Aggressive, Swarm};
     let ring = || Opposing::Ring(seen.location.dist_from_origin());
     if seen.outpost.is_some() && seen.hostiles.is_none() {
-        return Opposing::Ships(Force::default());
+        return Opposing::Ships(Box::default());
     }
     let Some(groups) = seen.hostiles.as_ref().filter(|_| seen.threat.basis == ThreatBasis::Observed) else {
         return ring();
@@ -6716,53 +6737,60 @@ fn remembered_opposing(seen: &SectorState) -> Opposing {
     for ship in groups.iter().flat_map(|g| &g.ships) {
         force.add_group(ship.ship_class, f32::from(ship.count), multiplier);
     }
-    Opposing::Ships(force)
+    Opposing::Ships(Box::new(force))
 }
 
-fn fleet_move_cooldown(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 {
-    let mut min_speed: u8 = 255;
-    for ship in &fleet.ships[0..fleet.ship_count] {
-        if ship.speed < min_speed { min_speed = ship.speed; }
-    }
-    if min_speed == 0 { return MOVE_BASE_COOLDOWN; }
-    let base = (MOVE_BASE_COOLDOWN as u32 * 10 / min_speed as u32) as u16;
-    if let Some(r) = research {
-        let reduction = scaling::navigation_cooldown_reduction(r.navigation);
-        base.saturating_sub(reduction)
-    } else {
-        base
+/// A ship as the yard delivers it: the class's figures with the owner's
+/// Armour, Shielding and Weapons Technology, which it keeps.
+fn built_ship(id: u64, ship_class: ShipClass, research: &ResearchLevels) -> Ship {
+    let stats = scaling::apply_research_to_stats(ship_class.base_stats(), research);
+    Ship {
+        id,
+        ship_class,
+        hull: stats.hull,
+        hull_max: stats.hull,
+        shield: stats.shield,
+        shield_max: stats.shield,
+        weapon_power: stats.weapon,
     }
 }
 
+fn fleet_has(fleet: &Fleet, class: ShipClass) -> bool {
+    fleet.ships[0..fleet.ship_count].iter().any(|s| s.ship_class == class)
+}
+
+/// Ticks one jump takes `fleet`: its slowest ship sets them, with the
+/// owner's drive research as it stands now.
+fn fleet_jump_ticks(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 {
+    let none = ResearchLevels::default();
+    let research = research.unwrap_or(&none);
+    fleet.ships[0..fleet.ship_count].iter()
+        .map(|s| scaling::jump_ticks(scaling::ship_speed(s.ship_class, research)))
+        .max()
+        .unwrap_or(MOVE_BASE_COOLDOWN)
+}
+
+/// Fuel one jump burns: OGame's figure for each ship, less Energy
+/// Technology's saving.
 fn fleet_fuel_cost(fleet: &Fleet, research: Option<&ResearchLevels>) -> f64 {
-    let total_mass: f32 = fleet.ships[0..fleet.ship_count].iter().map(|s| s.hull_max).sum();
-    let base = f64::from(total_mass) * FUEL_RATE_PER_MASS;
-    if let Some(r) = research {
-        base * scaling::fuel_rate_modifier(r.fuel_efficiency)
-    } else {
-        base
-    }
+    let none = ResearchLevels::default();
+    let research = research.unwrap_or(&none);
+    let burn = fleet.ships[0..fleet.ship_count].iter()
+        .fold(0.0, |burn, s| burn + scaling::ship_burn(s.ship_class, research));
+    burn * scaling::fuel_rate_modifier(research.energy_technology)
 }
 
 /// Raw units per tick the fleet can extract at density multiplier 1.
 fn fleet_harvest_power(fleet: &Fleet) -> f64 {
-    fleet.ships[0..fleet.ship_count].iter()
-        .map(|s| match s.ship_class {
-            ShipClass::Hauler => 5.0,
-            ShipClass::Scout => 1.0,
-            _ => 0.5,
-        })
-        .sum()
+    fleet.ships[0..fleet.ship_count].iter().map(|s| s.ship_class.harvest_power()).sum()
 }
 
 fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f64 {
     // Folded from 0.0: the `sum()` of no floats is -0.0, and a fleet with no
     // ships left must not carry a zero whose sign a store may not keep.
     let total_fuel = fleet.ships[0..fleet.ship_count].iter()
-        .fold(0.0, |tank, s| tank + f64::from(s.ship_class.base_stats().fuel));
-    total_fuel
-        * scaling::fuel_capacity_modifier(player.research.extended_fuel_tanks)
-        * scaling::fuel_depot_modifier(player.buildings.fuel_depot)
+        .fold(0.0, |tank, s| tank + scaling::ship_tank(s.ship_class, &player.research));
+    total_fuel * scaling::tank_modifier(player.buildings.deuterium_tank)
 }
 
 /// What `refine` would turn into what for `fleet` right now: all the
@@ -6812,9 +6840,9 @@ fn ambush_guardian_template(site: Hex, rng: &mut StdRng) -> iac_shared::world::N
 /// What can be coaxed back to life in a wreck of this tier.
 fn recoverable_ship_class(tier: u8, rng: &mut StdRng) -> ShipClass {
     let pool: &[ShipClass] = match tier {
-        1 => &[ShipClass::Scout, ShipClass::Corvette],
-        2 => &[ShipClass::Scout, ShipClass::Corvette, ShipClass::Hauler],
-        _ => &[ShipClass::Corvette, ShipClass::Hauler, ShipClass::Frigate, ShipClass::Cruiser],
+        1 => &[ShipClass::EspionageProbe, ShipClass::LightFighter],
+        2 => &[ShipClass::LightFighter, ShipClass::SmallCargo, ShipClass::HeavyFighter],
+        _ => &[ShipClass::HeavyFighter, ShipClass::LargeCargo, ShipClass::Cruiser, ShipClass::Battleship],
     };
     pool[rng.random_range(0..pool.len())]
 }

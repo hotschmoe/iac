@@ -11,8 +11,8 @@ python3 -m unittest discover -s tools/playtest/tests    # tests for the CLI's pa
 
 - `IAC_PACE` sets the world pace for the new world (a number or a preset:
   persistent, fortnight, season, sprint, dev, blitz, test). One hour of play
-  wants `blitz` (x600: the whole tech arc in about 3 hours of play, the first
-  Cruiser in about 42 minutes); `test` (x8000) plays the arc in 12 minutes.
+  wants `blitz` (x600: the endgame in about two and a half hours of play, the
+  first Cruiser in about 54 minutes); `test` (x8000) plays the arc in 11 minutes.
   Unset means `persistent` (x1), where nothing finishes within an hour. The
   pace is fixed for the life of the world.
 - Players are declared agents (`agent: true` at login), so the leaderboard

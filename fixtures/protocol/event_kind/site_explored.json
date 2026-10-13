@@ -2,7 +2,7 @@
   "fleet_id": 1,
   "kind": "SiteExplored",
   "points": 25.200000762939453,
-  "recovered_ship": "Frigate",
+  "recovered_ship": "HeavyFighter",
   "relic": true,
   "resources": {
     "crystal": 80.0,
@@ -13,7 +13,7 @@
     "q": 2,
     "r": -4
   },
-  "tech_cache": "AdvancedShields",
+  "tech_cache": "ShieldingTechnology",
   "tick": 1234,
   "tier": 3
 }

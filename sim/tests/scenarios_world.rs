@@ -47,7 +47,7 @@ fn drop_home_pile(engine: &mut iac_sim::GameEngine, pid: u64, pile: Resources) -
 fn an_uncollected_pile_despawns_in_front_of_the_fleet_that_made_it() {
     let mut engine = world("persistent");
     let (pid, fid) = join(&mut engine, "Witness");
-    let at = lone_scout_sector(&engine, Passive);
+    let at = lone_fighter_sector(&engine, Passive);
     let (pile, despawn) = pile_of(&fight(&mut engine, pid, fid, at));
     assert!(engine.sector_overrides[&at.to_key()].salvage.is_some());
 
@@ -64,7 +64,7 @@ fn an_uncollected_pile_despawns_in_front_of_the_fleet_that_made_it() {
 fn the_chart_remembers_a_pile_as_seen_until_its_own_timer_runs_out() {
     let mut engine = world("persistent");
     let (pid, fid) = join(&mut engine, "Chartist");
-    let at = lone_scout_sector(&engine, Passive);
+    let at = lone_fighter_sector(&engine, Passive);
     let home = engine.players[&pid].homeworld;
     let (pile, despawn) = pile_of(&fight(&mut engine, pid, fid, at));
     run(&mut engine, 1);
@@ -169,7 +169,7 @@ fn a_fleet_docked_at_home_scoops_what_fits_and_the_rest_stays_with_an_alert() {
     assert!(engine.sector_overrides[&home.to_key()].salvage.is_none());
     assert!(events.iter().any(|e| matches!(&e.kind, EventKind::SalvageCollected(c) if c.resources == small && c.remaining.is_none())));
 
-    let cap = scaling::storage_cap(p.buildings.storage_vault, &engine.pace());
+    let cap = scaling::storage_cap(&p.buildings, &engine.pace());
     edit(&mut engine, |s| s.players.get_mut(&pid).unwrap().resources = cap);
     let despawn = drop_home_pile(&mut engine, pid, Resources { metal: 500.0, crystal: 0.0, deuterium: 0.0 });
     let events = run_until(&mut engine, 400, |e| e.current_tick() + 1 >= despawn);
@@ -321,11 +321,11 @@ fn harvesting_empties_a_tile_by_its_ring_reserve_and_research_only_raises_the_yi
         let (pid, fid) = join(&mut engine, "Miner");
         let at = metal_tile(&engine);
         edit(&mut engine, |s| {
-            s.players.get_mut(&pid).unwrap().research.harvesting_efficiency = level;
+            s.players.get_mut(&pid).unwrap().research.laser_technology = level;
             let fleet = s.fleets.get_mut(&fid).unwrap();
             fleet.location = at;
             for ship in &mut fleet.ships[..fleet.ship_count] {
-                ship.ship_class = ShipClass::Hauler;
+                ship.ship_class = ShipClass::Recycler;
             }
         });
         let started = engine.execute(pid, Command::Harvest { fleet_id: fid, resource: HarvestResource::Metal });
@@ -431,12 +431,14 @@ fn delegate(name: &str, preset: PolicyPreset, max_range: u8) -> (iac_sim::GameEn
     let home = engine.players[&pid].homeworld;
     edit(&mut engine, |s| {
         let player = s.players.get_mut(&pid).unwrap();
-        player.buildings.storage_vault = 8;
+        player.buildings.deuterium_tank = 8;
         player.resources.deuterium = 5_000.0;
         let fleet = s.fleets.get_mut(&fid).unwrap();
         for ship in &mut fleet.ships[..fleet.ship_count] {
             ship.weapon_power = 5000.0;
         }
+        fleet.fuel_max *= scaling::tank_modifier(8);
+        fleet.fuel = fleet.fuel_max;
     });
     let params = PolicyParams { max_range, fuel_budget_pct: 100, ..PolicyParams::default() };
     engine.handle_policy_update(pid, fid, preset, Some(params)).unwrap();
@@ -485,8 +487,7 @@ fn a_fleet_whose_cargo_the_full_store_cannot_take_waits_at_the_dock_until_it_can
     let hold = iac_sim::engine::fleet_cargo_capacity(&engine.fleets[&fid], &engine.world.pace);
     edit(&mut engine, |s| {
         let player = s.players.get_mut(&pid).unwrap();
-        player.buildings.storage_vault = 0;
-        player.resources.metal = scaling::storage_cap(0, &s.meta.pace).metal;
+        player.resources.metal = scaling::storage_cap(&player.buildings, &s.meta.pace).metal;
         s.fleets.get_mut(&fid).unwrap().cargo.metal = hold;
     });
 
@@ -495,7 +496,7 @@ fn a_fleet_whose_cargo_the_full_store_cannot_take_waits_at_the_dock_until_it_can
     assert!(holds(&blocked).iter().any(|why| why.contains("no room for the cargo aboard")), "{:?}", holds(&blocked));
     assert_eq!(engine.fleets[&fid].cargo.metal, hold);
 
-    edit(&mut engine, |s| s.players.get_mut(&pid).unwrap().buildings.storage_vault = 8);
+    edit(&mut engine, |s| s.players.get_mut(&pid).unwrap().buildings.metal_storage = 1);
     let freed = policy_actions(&run_until(&mut engine, 100, |e| e.fleets[&fid].location != home));
     assert_eq!(engine.fleets[&fid].cargo.total(), 0.0);
     assert!(moves(&freed).contains(&"heading to claim"), "{freed:?}");
@@ -536,6 +537,13 @@ fn a_salvage_fleet_passes_over_wreckage_it_may_not_reach_for_wreckage_it_may() {
     let mut engine = world("persistent");
     let (pid, fid) = join(&mut engine, "Picker");
     let home = engine.players[&pid].homeworld;
+    muster(&mut engine, fid, &[(ShipClass::LightFighter, 2), (ShipClass::SmallCargo, 1)], home);
+    edit(&mut engine, |s| {
+        s.players.get_mut(&pid).unwrap().buildings.deuterium_tank = 8;
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.fuel_max = 3.0 * (2.0 * 200.0 + 120.0);
+        fleet.fuel = fleet.fuel_max;
+    });
     let quiet = |e: &iac_sim::GameEngine, h: Hex| {
         e.world_gen.generate_sector(h).npc_template.is_none() && e.derelict_site_at(h).is_none() && h != home
     };
@@ -547,12 +555,12 @@ fn a_salvage_fleet_passes_over_wreckage_it_may_not_reach_for_wreckage_it_may() {
     let (shut, shut_hops) = *everywhere
         .iter()
         .find(|(h, _)| !open(*h) && quiet(&engine, *h))
-        .expect("a quiet sector the starting scouts may not enter");
+        .expect("a quiet sector two fighters and a cargo ship may not enter");
     let (within, _) = *reachable
         .iter()
         .find(|(h, hops)| *hops > shut_hops && quiet(&engine, *h))
         .expect("a quiet sector farther out that they may");
-    let pile = Resources { metal: 30.0, crystal: 0.0, deuterium: 0.0 };
+    let pile = Resources { metal: 3000.0, crystal: 0.0, deuterium: 0.0 };
     drop_pile(&mut engine, shut, pile);
     drop_pile(&mut engine, within, pile);
     edit(&mut engine, |s| s.players.get_mut(&pid).unwrap().resources.deuterium = 5_000.0);
@@ -569,7 +577,7 @@ fn a_salvage_fleet_passes_over_wreckage_it_may_not_reach_for_wreckage_it_may() {
         .collect();
     assert!(scooped.contains(&within), "{scooped:?}");
     assert!(engine.sector_overrides[&shut.to_key()].salvage.is_some(), "the pile behind the odds is still there");
-    assert_eq!(engine.fleets[&fid].ship_count, 2);
+    assert_eq!(engine.fleets[&fid].ship_count, 3);
 }
 
 #[test]
@@ -692,7 +700,7 @@ fn orders_flown(engine: &mut iac_sim::GameEngine, pid: u64, fid: u64) -> Vec<(St
 fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_orders() {
     let mut engine = world("persistent");
     let (pid, fid) = join(&mut engine, "Jumper");
-    let at = lone_scout_sector(&engine, Passive);
+    let at = lone_fighter_sector(&engine, Passive);
     let scout = engine.fleets[&fid].ships[0].id;
     let escort = engine.handle_split(pid, fid, &[scout]).unwrap();
     deploy(&mut engine, fid, at, None);
@@ -702,13 +710,13 @@ fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_or
     let tank = engine.fleets[&fid].fuel;
     assert!(engine.execute(pid, Command::Move { fleet_id: fid, target: onward }).error.is_none());
     assert_eq!(engine.fleets[&fid].state, FleetStatus::Moving);
-    assert_eq!(tank - engine.fleets[&fid].fuel, 3.0, "one scout burns 3 fuel a jump, paid when it is ordered");
+    assert_eq!(tank - engine.fleets[&fid].fuel, 20.0, "one Light Fighter burns 20 fuel a jump, paid when it is ordered");
     let attack = engine.execute(pid, Command::Attack { fleet_id: escort, target_fleet_id: template_npc_id(at) });
     assert!(attack.error.is_none(), "{:?}", attack.error);
     assert_eq!(engine.fleets[&fid].state, FleetStatus::InCombat, "a fleet still charging its jump is in the sector's fight");
     let fought = run_until(&mut engine, 10, |e| e.active_combats.is_empty());
     assert_eq!((engine.fleets[&fid].location, engine.fleets[&fid].state), (at, FleetStatus::Idle), "the jump is lost");
-    assert_eq!(engine.fleets[&fid].fuel, tank - 3.0, "and so is the fuel it burned");
+    assert_eq!(engine.fleets[&fid].fuel, tank - 20.0, "and so is the fuel it burned");
     let caught: Vec<_> = fought
         .iter()
         .filter_map(|e| match &e.kind {
@@ -721,7 +729,7 @@ fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_or
         caught[0].message,
         format!(
             "fleet {fid} was caught in a fight at {at} while charging its jump to {onward}: \
-             the jump is abandoned, and the 3 fuel it burned for the jump is forfeit"
+             the jump is abandoned, and the 20 fuel it burned for the jump is forfeit"
         ),
     );
     assert!(
@@ -776,7 +784,7 @@ fn a_recalled_fleet_is_out_of_its_fight_and_the_hostiles_it_left_can_be_fought_a
     let mut engine = world("persistent");
     let (pid, fid) = join(&mut engine, "Runner");
     let home = engine.players[&pid].homeworld;
-    let at = lone_scout_sector(&engine, Passive);
+    let at = lone_fighter_sector(&engine, Passive);
     endless_fight(&mut engine, pid, fid, at);
     let stock = engine.players[&pid].resources.metal;
 
@@ -808,7 +816,7 @@ fn a_fight_nobody_is_left_in_frees_its_hostiles_for_the_next_fleet() {
     let mut engine = world("persistent");
     let (pid, fid) = join(&mut engine, "Vanished");
     let (next, next_fleet) = join(&mut engine, "Next");
-    let at = lone_scout_sector(&engine, Passive);
+    let at = lone_fighter_sector(&engine, Passive);
     endless_fight(&mut engine, pid, fid, at);
 
     edit(&mut engine, |s| {
@@ -832,7 +840,7 @@ fn chart_after_visit(engine: &mut iac_sim::GameEngine, pid: u64, fid: u64, at: H
 fn every_fleet_in_a_crowded_sector_fights_scores_and_comes_out_free() {
     let mut engine = world("persistent");
     let crews: Vec<(u64, u64)> = (0..9).map(|i| join(&mut engine, &format!("Crew{i}"))).collect();
-    let at = lone_scout_sector(&engine, Passive);
+    let at = lone_fighter_sector(&engine, Passive);
     for &(_, fid) in &crews {
         deploy(&mut engine, fid, at, Some(5000.0));
     }
@@ -940,7 +948,7 @@ fn home_ground_is_quiet_and_an_unscouted_lair_is_as_strong_as_the_chart_says() {
                 pack.power()
             );
             let inner = Zone::from_distance(at.dist_from_origin()) == Zone::InnerRing;
-            assert!(!inner || pack.ship_class == ShipClass::Scout, "a {} in the Inner Ring at {at}", pack.label());
+            assert!(!inner || pack.ship_class == ShipClass::LightFighter, "a {} in the Inner Ring at {at}", pack.label());
         }
         assert!(lairs > 1000, "the gradient was walked: {lairs} lairs");
     }
@@ -970,16 +978,18 @@ fn a_starter_fleet_wins_through_the_inner_ring_and_dies_past_it() {
 #[test]
 fn a_label_tells_the_outcome_whatever_the_classes() {
     use RatioLabel::{Deadly, Even, Favourable, Safe};
-    use ShipClass::{Corvette, Frigate, Scout};
+    use ShipClass::{Battleship, Cruiser, HeavyFighter, LightFighter};
     let cases = [
-        (Scout, 3, 10, Deadly),
-        (Scout, 6, 9, Even),
-        (Scout, 10, 9, Favourable),
-        (Corvette, 1, 7, Safe),
-        (Corvette, 5, 13, Even),
-        (Corvette, 8, 13, Favourable),
-        (Frigate, 1, 11, Safe),
-        (Frigate, 3, 15, Safe),
+        (LightFighter, 3, 10, Deadly),
+        (LightFighter, 8, 9, Even),
+        (LightFighter, 16, 9, Favourable),
+        (HeavyFighter, 6, 9, Safe),
+        (HeavyFighter, 6, 13, Even),
+        (HeavyFighter, 8, 13, Favourable),
+        (Cruiser, 4, 11, Safe),
+        (Cruiser, 5, 15, Favourable),
+        (Battleship, 1, 20, Deadly),
+        (Battleship, 5, 20, Even),
     ];
     for (class, count, ring, told) in cases {
         let mut engine = world("persistent");
@@ -1011,8 +1021,8 @@ fn a_default_patrol_holds_where_power_alone_said_engage_and_fights_what_it_beats
     let convoy = |scouts: usize| {
         let mut engine = world("persistent");
         let (pid, fid) = join(&mut engine, "Warden");
-        let at = lair(&engine, 10, |b| b == Passive);
-        muster(&mut engine, fid, &[(ShipClass::Scout, scouts)], at);
+        let at = lair(&engine, 9, |b| b == Passive);
+        muster(&mut engine, fid, &[(ShipClass::LightFighter, scouts)], at);
         (engine, pid, fid, at)
     };
 
@@ -1027,7 +1037,7 @@ fn a_default_patrol_holds_where_power_alone_said_engage_and_fights_what_it_beats
     assert!(orders.iter().any(|(action, why)| action == "move" && why.contains("too strong")), "it withdraws: {orders:?}");
     assert_eq!(engine.fleets[&fid].ship_count, 4);
 
-    let (mut engine, pid, fid, at) = convoy(8);
+    let (mut engine, pid, fid, at) = convoy(20);
     let Fights { fought, won, hull_kept } = fights(&engine, pid, fid, at, 60);
     assert!(won == fought && hull_kept > 0.84, "won {won} of {fought}, kept {hull_kept:.2} of the hull");
     engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, None).unwrap();
@@ -1041,17 +1051,23 @@ fn a_stockpile_of_millions_grows_by_what_its_mines_make_and_is_stored_to_the_las
     let (pid, _) = join(&mut engine, "Hoarder");
     let stock = Resources { metal: 5_000_000.0, crystal: 2_500_000.0, deuterium: 1_250_000.0 };
     edit(&mut engine, |s| {
-        let player = s.players.get_mut(&pid).unwrap();
-        player.buildings.storage_vault = 20;
-        (player.buildings.metal_mine, player.buildings.crystal_mine, player.buildings.deuterium_synthesizer) = (10, 10, 10);
-        player.resources = stock;
+        let b = &mut s.players.get_mut(&pid).unwrap().buildings;
+        (b.metal_storage, b.crystal_storage, b.deuterium_tank) = (10, 10, 10);
+        (b.metal_mine, b.crystal_mine, b.deuterium_synthesizer, b.solar_plant) = (10, 10, 10, 20);
+        s.players.get_mut(&pid).unwrap().resources = stock;
     });
     let pace = engine.pace();
     let made = engine.players[&pid].production_per_tick(&pace);
-    let cap = scaling::storage_cap(20, &pace);
+    let cap = scaling::storage_cap(&engine.players[&pid].buildings, &pace);
     for kind in ResourceKind::ALL {
-        assert!(made.get(kind) > 0.0 && made.get(kind) < 0.1, "a tick of {} is less than a 32-bit float holds here", kind.label());
-        assert!(stock.get(kind) + 3600.0 * made.get(kind) < cap.get(kind), "the Vault has room for the hour");
+        let (held, tick) = (stock.get(kind) as f32, made.get(kind) as f32);
+        let added = held + tick - held;
+        assert!(
+            tick > 0.0 && (added - tick).abs() > 0.1 * tick,
+            "a 32-bit float adds {added} for a tick of {tick} {} here",
+            kind.label()
+        );
+        assert!(stock.get(kind) + 3600.0 * made.get(kind) < cap.get(kind), "the store has room for the hour");
     }
 
     run(&mut engine, 3600);

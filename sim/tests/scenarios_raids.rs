@@ -54,7 +54,9 @@ fn blitz_players_see_sized_raids_within_the_hour_and_never_before_they_are_old_e
     let quiet = counts.iter().filter(|c| **c == 0).count();
     let mean = counts.iter().sum::<usize>() as f32 / counts.len() as f32;
     assert!(quiet <= 1, "{quiet} of 12 blitz hours had no raid: {counts:?}");
-    assert!((1.2..=3.0).contains(&mean), "mean {mean} raids per blitz hour: {counts:?}");
+    // Two Light Fighters at home repel every raid on an empire this small,
+    // so no raid is followed by the quiet a lost one buys.
+    assert!((2.0..=4.5).contains(&mean), "mean {mean} raids per blitz hour: {counts:?}");
 
     for f in seen.iter().flatten() {
         assert!(f.forecast_tick >= min_age, "forecast at {} before the empire was {min_age} ticks old", f.forecast_tick);

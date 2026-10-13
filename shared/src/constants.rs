@@ -6,16 +6,14 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::maths;
-
 /// Bumped when costs, times, production formulas, the moment an order pays
 /// or the arithmetic a formula is computed with change: whenever a stored
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 8;
+pub const ECONOMY_VERSION: u32 = 9;
 /// Bumped when sector generation changes.
-pub const WORLDGEN_VERSION: u32 = 3;
+pub const WORLDGEN_VERSION: u32 = 4;
 
 /// Server tick rate.
 pub const TICK_RATE_HZ: u64 = 1;
@@ -84,18 +82,20 @@ impl Density {
     }
 
     /// Raw units harvested at this density before it drops one level, at
-    /// ring 1 (`scaling::ore_step_units` applies the ring factor).
+    /// ring 1 (`scaling::ore_step_units` applies the ring factor): 3, 7, 12
+    /// and 20 times `MAP_PAYS`.
     pub fn step_units(self) -> f64 {
-        match self {
+        let steps = match self {
             Density::None => 0.0,
             Density::Sparse => 3.0,
             Density::Moderate => 7.0,
             Density::Rich => 12.0,
             Density::Pristine => 20.0,
-        }
+        };
+        steps * MAP_PAYS
     }
 
-    /// Everything a tile of this density holds, at ring 1: 0 / 3 / 10 / 22 / 42.
+    /// Everything a tile of this density holds, at ring 1: 0 / 9 / 30 / 66 / 126.
     pub fn reserve_units(self) -> f64 {
         let mut level = self;
         let mut total = 0.0;
@@ -170,132 +170,196 @@ impl TerrainType {
     }
 }
 
-/// Ship class definitions.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(u8)]
-pub enum ShipClass {
-    #[default]
-    Scout,
-    Corvette,
-    Frigate,
-    Cruiser,
-    Hauler,
+/// The drive a ship flies on: the research that speeds it, and by how much a level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Drive {
+    Combustion,
+    Impulse,
+    Hyperspace,
 }
 
-impl ShipClass {
-    pub const ALL: [ShipClass; 5] = [
-        ShipClass::Scout,
-        ShipClass::Corvette,
-        ShipClass::Frigate,
-        ShipClass::Cruiser,
-        ShipClass::Hauler,
-    ];
-
-    pub fn base_stats(self) -> ShipStats {
+impl Drive {
+    /// Share of the base speed each level of the drive's research adds.
+    pub fn speed_per_level(self) -> f64 {
         match self {
-            ShipClass::Scout => ShipStats {
-                hull: 30.0,
-                shield: 10.0,
-                weapon: 5.0,
-                speed: 10,
-                cargo: 20,
-                fuel: 60,
-            },
-            ShipClass::Corvette => ShipStats {
-                hull: 50.0,
-                shield: 20.0,
-                weapon: 15.0,
-                speed: 8,
-                cargo: 10,
-                fuel: 50,
-            },
-            ShipClass::Frigate => ShipStats {
-                hull: 120.0,
-                shield: 60.0,
-                weapon: 30.0,
-                speed: 5,
-                cargo: 30,
-                fuel: 80,
-            },
-            ShipClass::Cruiser => ShipStats {
-                hull: 200.0,
-                shield: 100.0,
-                weapon: 80.0,
-                speed: 4,
-                cargo: 50,
-                fuel: 120,
-            },
-            ShipClass::Hauler => ShipStats {
-                hull: 80.0,
-                shield: 20.0,
-                weapon: 5.0,
-                speed: 6,
-                cargo: 200,
-                fuel: 100,
-            },
+            Drive::Combustion => 0.1,
+            Drive::Impulse => 0.2,
+            Drive::Hyperspace => 0.3,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            ShipClass::Scout => "Scout",
-            ShipClass::Corvette => "Corvette",
-            ShipClass::Frigate => "Frigate",
+            Drive::Combustion => "Combustion Drive",
+            Drive::Impulse => "Impulse Drive",
+            Drive::Hyperspace => "Hyperspace Drive",
+        }
+    }
+}
+
+/// OGame's ships, in OGame's order, without the Colony Ship
+/// (`docs/design/ogame.md`, sections 5.3 and 6.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum ShipClass {
+    SmallCargo,
+    LargeCargo,
+    #[default]
+    LightFighter,
+    HeavyFighter,
+    Cruiser,
+    Battleship,
+    Recycler,
+    EspionageProbe,
+    Bomber,
+    SolarSatellite,
+    Destroyer,
+    Deathstar,
+    Battlecruiser,
+}
+
+impl ShipClass {
+    pub const COUNT: usize = 13;
+    pub const ALL: [ShipClass; ShipClass::COUNT] = [
+        ShipClass::SmallCargo,
+        ShipClass::LargeCargo,
+        ShipClass::LightFighter,
+        ShipClass::HeavyFighter,
+        ShipClass::Cruiser,
+        ShipClass::Battleship,
+        ShipClass::Recycler,
+        ShipClass::EspionageProbe,
+        ShipClass::Bomber,
+        ShipClass::SolarSatellite,
+        ShipClass::Destroyer,
+        ShipClass::Deathstar,
+        ShipClass::Battlecruiser,
+    ];
+
+    /// OGame's figures. A unit's hull in a fight is a tenth of its structure.
+    pub fn base_stats(self) -> ShipStats {
+        let unit = |structure: f32, shield: f32, weapon: f32, cargo: u32, speed: u32, fuel: u32| ShipStats {
+            hull: structure / 10.0,
+            shield,
+            weapon,
+            speed,
+            cargo,
+            fuel,
+        };
+        match self {
+            ShipClass::SmallCargo => unit(4_000.0, 10.0, 5.0, 5_000, 5_000, 10),
+            ShipClass::LargeCargo => unit(12_000.0, 25.0, 5.0, 25_000, 7_500, 50),
+            ShipClass::LightFighter => unit(4_000.0, 10.0, 50.0, 50, 12_500, 20),
+            ShipClass::HeavyFighter => unit(10_000.0, 25.0, 150.0, 100, 10_000, 75),
+            ShipClass::Cruiser => unit(27_000.0, 50.0, 400.0, 800, 15_000, 300),
+            ShipClass::Battleship => unit(60_000.0, 200.0, 1_000.0, 1_500, 10_000, 500),
+            ShipClass::Recycler => unit(16_000.0, 10.0, 1.0, 20_000, 2_000, 300),
+            ShipClass::EspionageProbe => unit(1_000.0, 0.0, 0.0, 5, 100_000_000, 1),
+            ShipClass::Bomber => unit(75_000.0, 500.0, 1_000.0, 500, 4_000, 1_000),
+            ShipClass::SolarSatellite => unit(2_000.0, 1.0, 1.0, 0, 0, 0),
+            ShipClass::Destroyer => unit(110_000.0, 500.0, 2_000.0, 2_000, 5_000, 1_000),
+            ShipClass::Deathstar => unit(9_000_000.0, 50_000.0, 200_000.0, 1_000_000, 100, 1),
+            ShipClass::Battlecruiser => unit(70_000.0, 400.0, 700.0, 750, 10_000, 250),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ShipClass::SmallCargo => "Small Cargo",
+            ShipClass::LargeCargo => "Large Cargo",
+            ShipClass::LightFighter => "Light Fighter",
+            ShipClass::HeavyFighter => "Heavy Fighter",
             ShipClass::Cruiser => "Cruiser",
-            ShipClass::Hauler => "Hauler",
+            ShipClass::Battleship => "Battleship",
+            ShipClass::Recycler => "Recycler",
+            ShipClass::EspionageProbe => "Espionage Probe",
+            ShipClass::Bomber => "Bomber",
+            ShipClass::SolarSatellite => "Solar Satellite",
+            ShipClass::Destroyer => "Destroyer",
+            ShipClass::Deathstar => "Deathstar",
+            ShipClass::Battlecruiser => "Battlecruiser",
         }
     }
 
     /// Build cost in resources.
     pub fn build_cost(self) -> Resources {
+        let cost = |metal: f64, crystal: f64, deuterium: f64| Resources { metal, crystal, deuterium };
         match self {
-            ShipClass::Scout => Resources {
-                metal: 200.0,
-                crystal: 50.0,
-                deuterium: 30.0,
-            },
-            ShipClass::Corvette => Resources {
-                metal: 400.0,
-                crystal: 100.0,
-                deuterium: 60.0,
-            },
-            ShipClass::Frigate => Resources {
-                metal: 1000.0,
-                crystal: 400.0,
-                deuterium: 200.0,
-            },
-            ShipClass::Cruiser => Resources {
-                metal: 3000.0,
-                crystal: 1500.0,
-                deuterium: 800.0,
-            },
-            ShipClass::Hauler => Resources {
-                metal: 600.0,
-                crystal: 200.0,
-                deuterium: 150.0,
-            },
+            ShipClass::SmallCargo => cost(2_000.0, 2_000.0, 0.0),
+            ShipClass::LargeCargo => cost(6_000.0, 6_000.0, 0.0),
+            ShipClass::LightFighter => cost(3_000.0, 1_000.0, 0.0),
+            ShipClass::HeavyFighter => cost(6_000.0, 4_000.0, 0.0),
+            ShipClass::Cruiser => cost(20_000.0, 7_000.0, 2_000.0),
+            ShipClass::Battleship => cost(45_000.0, 15_000.0, 0.0),
+            ShipClass::Recycler => cost(10_000.0, 6_000.0, 2_000.0),
+            ShipClass::EspionageProbe => cost(0.0, 1_000.0, 0.0),
+            ShipClass::Bomber => cost(50_000.0, 25_000.0, 15_000.0),
+            ShipClass::SolarSatellite => cost(0.0, 2_000.0, 500.0),
+            ShipClass::Destroyer => cost(60_000.0, 50_000.0, 15_000.0),
+            ShipClass::Deathstar => cost(5_000_000.0, 4_000_000.0, 1_000_000.0),
+            ShipClass::Battlecruiser => cost(30_000.0, 40_000.0, 15_000.0),
         }
     }
 
-    /// Rapid-fire table: returns multiplier against target class (0 = no bonus).
-    pub fn rapid_fire_vs(self, target: ShipClass) -> u8 {
+    /// The drive the class is built with. Two classes change drive with
+    /// research (`scaling::ship_drive`); a Solar Satellite has none.
+    pub fn drive(self) -> Option<Drive> {
         match self {
-            ShipClass::Corvette if target == ShipClass::Scout => 3,
-            ShipClass::Frigate if target == ShipClass::Corvette => 2,
-            ShipClass::Cruiser if target == ShipClass::Frigate => 2,
-            _ => 0,
+            ShipClass::SmallCargo
+            | ShipClass::LargeCargo
+            | ShipClass::LightFighter
+            | ShipClass::Recycler
+            | ShipClass::EspionageProbe => Some(Drive::Combustion),
+            ShipClass::HeavyFighter | ShipClass::Cruiser | ShipClass::Bomber => Some(Drive::Impulse),
+            ShipClass::Battleship | ShipClass::Destroyer | ShipClass::Deathstar | ShipClass::Battlecruiser => {
+                Some(Drive::Hyperspace)
+            }
+            ShipClass::SolarSatellite => None,
+        }
+    }
+
+    /// A Solar Satellite stays at the homeworld: it is counted there and is
+    /// never part of a fleet.
+    pub fn flies(self) -> bool {
+        self != ShipClass::SolarSatellite
+    }
+
+    /// `TANK_JUMPS`: jumps a full tank holds, before the Deuterium Tank.
+    /// OGame has no tank; this column is this game's and provisional. It
+    /// trades reach against the worth of docks and of deuterium in a hold.
+    pub fn tank_jumps(self) -> u32 {
+        match self {
+            ShipClass::EspionageProbe => 20,
+            ShipClass::SmallCargo | ShipClass::LargeCargo | ShipClass::Recycler => 12,
+            ShipClass::LightFighter | ShipClass::HeavyFighter => 10,
+            ShipClass::Cruiser | ShipClass::Battlecruiser => 8,
+            ShipClass::Battleship | ShipClass::Bomber | ShipClass::Destroyer | ShipClass::Deathstar => 6,
+            ShipClass::SolarSatellite => 0,
+        }
+    }
+
+    /// Raw units a tick the ship extracts at density multiplier 1. This
+    /// game's column, provisional: the Recycler is the ship that mines.
+    pub fn harvest_power(self) -> f64 {
+        match self {
+            ShipClass::Recycler => 5.0,
+            ShipClass::SmallCargo | ShipClass::LargeCargo => 1.0,
+            ShipClass::SolarSatellite => 0.0,
+            _ => 0.5,
         }
     }
 }
 
+/// A class's figures before research. `fuel` is what one jump burns; the
+/// tank is `ShipClass::tank_jumps` of it.
 #[derive(Debug, Clone, Copy)]
 pub struct ShipStats {
     pub hull: f32,
     pub shield: f32,
     pub weapon: f32,
-    pub speed: u8,
-    pub cargo: u16,
-    pub fuel: u16,
+    pub speed: u32,
+    pub cargo: u32,
+    pub fuel: u32,
 }
 
 /// Amounts of the three resources. An amount is 64-bit wherever it is held,
@@ -432,7 +496,50 @@ pub const STARTING_RESOURCES: Resources = Resources {
     deuterium: 100.0,
 };
 
-pub const STARTING_SCOUTS: usize = 2;
+/// What a new empire flies. OGame starts with no ships; this is this game's
+/// and provisional. It sets what an empire can do on its first day.
+pub const STARTING_SHIPS: &[(ShipClass, usize)] = &[(ShipClass::LightFighter, 2)];
+
+/// What the map pays, against the game as it was before OGame's catalogue:
+/// ore in a tile, a derelict's hold, a group's wreckage and the outpost's
+/// cost, store and yield are each this many times what they were. OGame's
+/// mines make three times what this game's did, and the map is to stay the
+/// share of an empire's income the owner put it at. Provisional.
+pub const MAP_PAYS: f64 = 3.0;
+
+/// The highest temperature of every homeworld, in degrees. OGame gives each
+/// planet its own; here all homes are alike. It sets the Deuterium
+/// Synthesizer's output (x1.20) and a Solar Satellite's energy (30).
+/// Provisional.
+pub const HOME_TEMPERATURE_MAX: i32 = 40;
+
+/// A jump takes `max(1, ceil(sqrt(JUMP_SPEED_REF / speed)))` ticks, at the
+/// speed of the fleet's slowest ship: OGame's law of flight time, for one
+/// hop. Provisional: it trades how much speed matters against how long
+/// every trip takes.
+pub const JUMP_SPEED_REF: f64 = 50_000.0;
+
+/// Each level of the Deuterium Tank adds this share to every fleet's tank.
+/// Provisional.
+pub const TANK_PER_DEUT_TANK_LEVEL: f64 = 0.25;
+/// Each level of Energy Technology takes this share off what a jump burns,
+/// up to `FUEL_SAVING_MAX`. Provisional.
+pub const FUEL_SAVING_PER_LEVEL: f64 = 0.05;
+pub const FUEL_SAVING_MAX: f64 = 0.5;
+/// Each of the first `HARVEST_YIELD_LEVELS` levels of Laser Technology adds
+/// this share to what a unit of ore yields. Provisional.
+pub const HARVEST_YIELD_PER_LEVEL: f64 = 0.20;
+pub const HARVEST_YIELD_LEVELS: u8 = 5;
+/// The levels of Computer Technology that each open one more building slot.
+/// Provisional.
+pub const BUILD_SLOT_LEVELS: [u8; 2] = [3, 6];
+/// Each level of Hyperspace Technology takes this much off the chance that
+/// an emergency jump harms a ship. Provisional.
+pub const RECALL_SAVING_PER_LEVEL: f32 = 0.05;
+/// Hops around the homeworld seen for each level of Espionage Technology.
+/// Provisional.
+pub const SENSOR_HOPS_PER_LEVEL: u8 = 1;
+
 /// Fleets that may be away from the homeworld at once.
 pub const MAX_FLEETS_PER_PLAYER: usize = 3;
 /// All fleets a player may own, docked or deployed; splits stop here.
@@ -464,9 +571,6 @@ pub const RECALL_HULL_DAMAGE_MAX: f32 = 0.80;
 /// hop of fuel over this many ticks from empty: five minutes at 1 Hz.
 pub const STRANDED_RECOVERY_TICKS: u64 = 300;
 
-/// Fuel consumption per hex: fleet_mass * this value.
-pub const FUEL_RATE_PER_MASS: f64 = 0.1;
-
 /// Deuterium paid per fuel unit topped up at the homeworld. Not scaled by
 /// pace: fuel is the price of range, not an economy timer.
 pub const FUEL_DEUT_PER_UNIT: f64 = 0.08;
@@ -480,18 +584,18 @@ pub const REFINE_LOSS: f64 = 0.15;
 pub const NPC_PATROL_INTERVAL: u16 = 15;
 
 /// Active scan: hops revealed from the scanning fleet's position.
-/// Fleets carrying a Scout get the extended range; signals are faint
-/// contacts detected one hop beyond the reveal radius.
+/// Fleets carrying an Espionage Probe get the extended range; signals are
+/// faint contacts detected one hop beyond the reveal radius.
 pub const SCAN_BASE_RANGE: u8 = 1;
-/// The scan range of a fleet with a Scout aboard.
-pub const SCAN_SCOUT_RANGE: u8 = 2;
+/// The scan range of a fleet with an Espionage Probe aboard.
+pub const SCAN_PROBE_RANGE: u8 = 2;
 /// How long actively-scanned sectors keep streaming live updates.
 pub const SCAN_REVEAL_TICKS: u64 = 120;
 
 /// Homeworld raids: forecasted pressure, never a random tax. A raid is
 /// rolled periodically, announced in advance, sized from the player's
 /// economy points (`scaling::raid_power_base`) and resolved against docked
-/// ships, the Defense Grid and defence structures. Losses are hard-capped.
+/// ships, Solar Satellites and defences. Losses are hard-capped.
 /// The cadence is attention-class: it follows P^0.75, not P.
 pub const RAID_ROLL_INTERVAL: u64 = 21_600;
 pub const RAID_ROLL_CHANCE: f32 = 0.30;
@@ -522,25 +626,15 @@ pub const RAID_RESTORE_TICKS: u64 = 600;
 /// A lost raid destroys this fraction of the structures, with no rebuild.
 pub const RAID_LOST_STRUCTURE_FRACTION: f32 = 0.5;
 /// A lost raid also destroys this fraction of the ships docked at home
-/// (at least one): ships parked at home defend, and when the defence fails
-/// they are what the raiders reach.
+/// (at least one) and of the Solar Satellites: ships parked at home defend,
+/// and when the defence fails they are what the raiders reach.
 pub const RAID_LOST_SHIP_FRACTION: f32 = 0.25;
-
-/// DefenseGrid: virtual defensive power per level (in "scout units",
-/// multiplied by scout combat power). Levels 4+ scale by +30%/level. Real
-/// structures provide the bulk of home defence.
-pub fn defense_grid_scout_units(level: u8) -> f32 {
-    match level {
-        0 => 0.0,
-        1 => 1.0,
-        2 => 2.5,
-        3 => 4.0,
-        n => 4.0 * maths::powi(1.3, i32::from(n) - 3),
-    }
-}
+/// An empire is raided once its Shipyard stands at this level, or it has
+/// any defence. Provisional.
+pub const RAID_MIN_SHIPYARD: u8 = 2;
 
 /// Wreckage piles drift away after this long. Piles are worth thousands at
-/// a fast pace and a hauler round trip from the outer ring takes about a
+/// a fast pace and a cargo ship's round trip from the outer ring takes about a
 /// minute, so 60 s lost most of them.
 pub const SALVAGE_DESPAWN_TICKS: u32 = 180;
 
@@ -563,10 +657,10 @@ pub const DERELICT_SPAWN_PCT: u8 = 8;
 pub const DERELICT_MIN_DIST: u16 = 4;
 /// Ticks a boarding takes, at every pace.
 pub const EXPLORE_DURATION_TICKS: u16 = 20;
-/// A Scout aboard reads the hulk before breaching (ambush chance down);
-/// a Hauler's rigging doubles what the boarding party can strip.
-pub const EXPLORE_SCOUT_AMBUSH_REDUCTION: f32 = 0.10;
-pub const EXPLORE_HAULER_LOOT_MULTIPLIER: f64 = 2.0;
+/// An Espionage Probe aboard reads the hulk before breaching (ambush chance
+/// down); a Recycler's rigging doubles what the boarding party can strip.
+pub const EXPLORE_PROBE_AMBUSH_REDUCTION: f32 = 0.10;
+pub const EXPLORE_RECYCLER_LOOT_MULTIPLIER: f64 = 2.0;
 /// Each failed/aborted boarding leaves the site angrier.
 pub const EXPLORE_RETRY_AMBUSH_BUMP: f32 = 0.10;
 /// A stripped derelict is replaced after 120 game hours, finds class.
@@ -595,7 +689,7 @@ pub const POLICY_ENGAGE_RATIO_X10_MIN: u8 = 1;
 pub const POLICY_ENGAGE_RATIO_X10_MAX: u8 = 100;
 /// MineAndReturn treats a sector holding fewer raw units than this as
 /// stripped: a tile that has only begun to refill is not worth a jump.
-pub const POLICY_MIN_SEAM_UNITS: f64 = 3.0;
+pub const POLICY_MIN_SEAM_UNITS: f64 = 3.0 * MAP_PAYS;
 /// A doctrine flies out for ore or wreckage only if what it can load is
 /// worth this many times the deuterium the jumps there and back burn, both
 /// at their score weights.
@@ -638,17 +732,18 @@ pub const OUTPOST_MAX_RING: u16 = 20;
 pub const OUTPOST_SPACING: u16 = 3;
 pub const OUTPOST_MAX_LEVEL: u8 = 3;
 /// Level 1; each further level costs `OUTPOST_GROWTH` times the last.
-pub const OUTPOST_COST: Resources = Resources { metal: 1000.0, crystal: 500.0, deuterium: 200.0 };
-/// Cost, store and platform grow by this factor a level.
+pub const OUTPOST_COST: Resources =
+    Resources { metal: 1000.0 * MAP_PAYS, crystal: 500.0 * MAP_PAYS, deuterium: 200.0 * MAP_PAYS };
+/// Cost and store grow by this factor a level.
 pub const OUTPOST_GROWTH: f64 = 2.5;
-/// Metal plus crystal of a level's cost that one game hour of building pays for.
-pub const OUTPOST_BUILD_RATE: f64 = 100.0;
+/// Metal plus crystal of a level's cost that one game hour of building pays
+/// for. It follows `MAP_PAYS` as the cost does, so the knob moves no time.
+pub const OUTPOST_BUILD_RATE: f64 = 100.0 * MAP_PAYS;
 /// The store at level 1, before the pace multiplier.
-pub const OUTPOST_STORE_BASE: Resources = Resources { metal: 3000.0, crystal: 1500.0, deuterium: 750.0 };
+pub const OUTPOST_STORE_BASE: Resources =
+    Resources { metal: 3000.0 * MAP_PAYS, crystal: 1500.0 * MAP_PAYS, deuterium: 750.0 * MAP_PAYS };
 /// Units a game hour, per level, for each point of the site's grade, times the ring factor.
-pub const OUTPOST_YIELD_PER_HOUR: f64 = 2.0;
-/// Defence power of the platform at level 1.
-pub const OUTPOST_PLATFORM_POWER: f32 = 40.0;
+pub const OUTPOST_YIELD_PER_HOUR: f64 = 2.0 * MAP_PAYS;
 /// A raid on an outpost is this many times the group its ring spawns.
 pub const OUTPOST_RAID_FACTOR: f32 = 2.0;
 /// Share of every resource above the protected floor that a lost raid takes.

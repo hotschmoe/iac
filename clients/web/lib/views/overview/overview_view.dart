@@ -130,7 +130,7 @@ class _Hero extends StatelessWidget {
     final s = con.state;
     final eco = con.economy;
     final cat = s.catalog;
-    int lvl(proto.BuildingType t) => cat?.buildings.where((b) => b.buildingType == t).firstOrNull?.level ?? 0;
+    final energy = s.hw?.energy;
     final buildingLevels = cat?.buildings.fold<int>(0, (a, b) => a + b.level) ?? 0;
     final researchLevels = cat?.research.fold<int>(0, (a, b) => a + b.level) ?? 0;
     final dockedShips = RegExp(r'(\d+)x').allMatches(s.docked).fold<int>(0, (a, m) => a + int.parse(m.group(1)!));
@@ -139,9 +139,8 @@ class _Hero extends StatelessWidget {
     final name = con.game.playerName.isEmpty ? 'Homeworld' : con.game.playerName;
     final chips = <Widget>[
       Tag(zone, on: true),
-      Tag('Sensor L${lvl(proto.BuildingType.sensorArray)}'),
-      Tag('Defence Grid L${lvl(proto.BuildingType.defenseGrid)}', color: C.own),
-      if (eco.storage != null) Tag('Vault L${eco.storage!.vaultLevel}'),
+      if (energy != null) Tag('Mines at ${energy.sharePct}%', color: energy.short ? C.ember : C.own),
+      if (s.hw case final hw? when hw.satellites > 0) Tag('${hw.satellites} Solar Satellite${hw.satellites == 1 ? '' : 's'}'),
       if (eco.world != null) Tag('Pace x${eco.world!.pace == eco.world!.pace.roundToDouble() ? eco.world!.pace.toInt() : eco.world!.pace}'),
     ];
     final stats = <(int, String)>[
@@ -350,7 +349,7 @@ class _FleetCard extends StatelessWidget {
             height: 24,
             child: SymIcon((c, s) {
               for (var i = 0; i < ships.length && i < 10; i++) {
-                Draw.symbol(c, Sym.own[ships[i]]!, 12 + i * 26.0, s.height / 2, 11, color: C.own, lw: 1.3, bloom: false);
+                Draw.symbol(c, Sym.own(ships[i]), 12 + i * 26.0, s.height / 2, 11, color: C.own, lw: 1.3, bloom: false);
               }
             }, size: 24),
           ),
@@ -463,7 +462,14 @@ class _AlertsPanel extends StatelessWidget {
                 if (a.tab != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 7),
-                    child: ConsoleButton(a.tab == 'defence' ? 'Defence' : a.tab == 'storage' ? 'Vault' : 'Queue', small: true,
+                    child: ConsoleButton(
+                        switch (a.tab) {
+                          'defence' => 'Defence',
+                          'storage' => 'Storage',
+                          'buildings' => 'Buildings',
+                          _ => 'Queue',
+                        },
+                        small: true,
                         onPressed: () => act.openTab(HomeworldTab.values.firstWhere((t) => t.name == a.tab))),
                   ),
               ])),

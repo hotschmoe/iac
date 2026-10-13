@@ -101,12 +101,18 @@ fn a_check_in_builder_orders_only_the_ships_and_turrets_its_stockpile_covers() {
     let mut world = Headless::new(7, Pace::parse("season").unwrap());
     let style = Style::new(Personality::Turtle, Attention::CheckIn);
     world.add_player(Box::new(Bot::new("turtle-check-in", style)), style.label()).expect("seat bot");
-    world.run(2 * DAY).unwrap();
+    world.run(5 * DAY).unwrap();
 
     let turtle = &world.summaries()[0];
-    assert!(turtle.turns < 2 * DAY / 20, "it looked in a few times: {} turns", turtle.turns);
+    assert!(turtle.turns < 5 * DAY / 20, "it looked in a few times: {} turns", turtle.turns);
     assert_eq!(turtle.orders_refused, 0, "a batch is paid when it is ordered, so it sends none it cannot pay for");
-    assert!(turtle.score.defence > 0.0 && turtle.ships > 2, "it did order turrets and hulls: {:?}, {} ships", turtle.score, turtle.ships);
+    let light_fighter = iac_shared::constants::ShipClass::LightFighter.build_cost();
+    let started_with = iac_shared::scaling::resource_weight(&light_fighter) * 2.0 / 1000.0;
+    assert!(
+        turtle.score.defence > 0.0 && turtle.score.fleet > started_with,
+        "it did order turrets, and ships or Solar Satellites, which the yard builds as ships: {:?}",
+        turtle.score
+    );
     assert!(turtle.buildings["Metal Mine"] >= 6, "{:?}", turtle.buildings);
 }
 

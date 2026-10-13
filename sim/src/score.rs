@@ -8,7 +8,7 @@
 // priced with `scaling::resource_weight`, so crystal and deuterium count
 // for more than metal.
 
-use iac_shared::constants::Resources;
+use iac_shared::constants::{Resources, ShipClass};
 use iac_shared::maths;
 use iac_shared::protocol::{LeaderboardEntry, LeaderboardReply};
 use iac_shared::scaling::{self, DefenceKind};
@@ -28,11 +28,15 @@ pub const MIN_PAY: f32 = 0.05;
 /// A first boarding pays this share of the weight of the loot it rolled
 /// (finds factor included), plus `DISCOVERY_POINTS * T^1.5`.
 pub const BOARD_VALUE_SHARE: f32 = 0.5;
-pub const DISCOVERY_POINTS: f32 = 1.5;
+/// The points that are not counted from a cost (this one, the two of a
+/// chart and `scaling::RELIC_POINTS`) are ten times what they were before
+/// OGame's catalogue: the core they are capped against is counted in costs
+/// that are about ten times what they were. Provisional.
+pub const DISCOVERY_POINTS: f32 = 15.0;
 /// A sector's chart, once delivered to a dock, pays
 /// `CHART_BASE_POINTS + CHART_THREAT_POINTS * T^1.5`.
-pub const CHART_BASE_POINTS: f32 = 0.15;
-pub const CHART_THREAT_POINTS: f32 = 0.10;
+pub const CHART_BASE_POINTS: f32 = 1.5;
+pub const CHART_THREAT_POINTS: f32 = 1.0;
 /// The exponent of the threat rating T in both.
 pub const THREAT_POINTS_EXPONENT: f32 = 1.5;
 /// Defence structures count at half value, so farming defenceless-looking
@@ -157,7 +161,8 @@ impl Meter {
 }
 
 /// `player`'s score: their levels, every ship of theirs docked or away,
-/// their defences and the finished levels of their outpost.
+/// their Solar Satellites as ships, their defences and the finished levels
+/// of their outpost.
 pub fn score_of(engine: &GameEngine, player: &Player) -> Score {
     let fleet: f32 = engine
         .fleets
@@ -167,13 +172,14 @@ pub fn score_of(engine: &GameEngine, player: &Player) -> Score {
         .filter(|s| s.hull > 0.0)
         .map(|s| scaling::resource_weight(&s.ship_class.build_cost()))
         .sum();
+    let satellites = player.satellites as f32 * scaling::resource_weight(&ShipClass::SolarSatellite.build_cost());
     let defence: f32 = DefenceKind::ALL
         .iter()
         .map(|&k| player.defences.count[k as usize] as f32 * scaling::resource_weight(&k.build_cost()))
         .sum();
     Score {
         econ: scaling::econ_points(&player.buildings, &player.research),
-        fleet,
+        fleet: fleet + satellites,
         defence: DEFENCE_SHARE * defence,
         outpost: scaling::outpost_points(engine.outposts.get(&player.id).map_or(0, |o| o.level)),
         combat: player.combat_points,

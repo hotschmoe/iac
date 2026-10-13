@@ -1,6 +1,6 @@
 {
   "count": 1,
-  "defence": "IonBastion",
+  "defence": "PlasmaTurret",
   "kind": "DefenceBuilt",
   "tick": 1234
 }

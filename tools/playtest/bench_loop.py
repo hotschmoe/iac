@@ -11,9 +11,9 @@ although something it could run was payable (idle_payable_pct).
 """
 import json, subprocess, sys, threading, time
 
-BUILD_ORDER = ["MetalMine", "CrystalMine", "DeuteriumSynthesizer", "ResearchLab", "Shipyard", "Fabricator",
-               "StorageVault", "SensorArray", "FuelDepot", "DefenseGrid"]
-SHIPS = ["Scout", "Corvette", "Hauler", "Frigate"]
+BUILD_ORDER = ["SolarPlant", "MetalMine", "CrystalMine", "DeuteriumSynthesizer", "RoboticsFactory", "ResearchLab",
+               "Shipyard", "DeuteriumTank", "MetalStorage", "CrystalStorage", "FusionReactor", "NaniteFactory"]
+SHIPS = ["LightFighter", "SmallCargo", "HeavyFighter", "Cruiser"]
 
 
 def run(play, *args):

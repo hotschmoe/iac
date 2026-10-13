@@ -12,6 +12,7 @@ import '../../models/fleet.dart';
 import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../state/game_controller.dart';
+import '../../state/state_mapper.dart' show amountsOf;
 import 'spec.dart';
 
 Widget _notReported(String what) => Padding(
@@ -28,6 +29,60 @@ Widget _notReported(String what) => Padding(
       ),
     );
 
+/// The homeworld's energy as the server states it: what is made and what
+/// the mines need, the share of their output the mines run at, what the
+/// Solar Satellites give and what the Fusion Reactor burns. Short of energy
+/// it warns, and it says so when the reactor has nothing to burn.
+class EnergyReadout extends StatelessWidget {
+  final proto.HomeworldState hw;
+  const EnergyReadout({super.key, required this.hw});
+
+  @override
+  Widget build(BuildContext context) {
+    final e = hw.energy;
+    final short = e.short;
+    final share = e.sharePct;
+    final col = short ? C.ember : C.own;
+    return Semantics(
+      label: 'Energy: ${e.made} made, ${e.needed} needed, mines at $share percent',
+      child: ConsolePanel(
+        key: const Key('energy-readout'),
+        title: 'Energy',
+        subText: short ? 'short' : 'covered',
+        border: short ? C.ember : null,
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Wrap(crossAxisAlignment: WrapCrossAlignment.center, spacing: 14, runSpacing: 4, children: [
+            Text.rich(
+                key: const Key('energy-figures'),
+                TextSpan(children: [
+                  TextSpan(text: groupDigits(e.made), style: T.mono(size: 20, color: short ? C.ember : C.a100, weight: FontWeight.w500)),
+                  TextSpan(text: ' MADE / ', style: T.mono(size: 11, color: C.text3)),
+                  TextSpan(text: groupDigits(e.needed), style: T.mono(size: 20, color: C.a100, weight: FontWeight.w500)),
+                  TextSpan(text: ' NEEDED', style: T.mono(size: 11, color: C.text3)),
+                ])),
+            Text('MINES AT $share%', key: const Key('energy-share'), style: T.cond(size: 14, color: col, weight: FontWeight.w700, spacing: 1.6)),
+            if (short) const Lamp('Short of energy', color: C.ember, blink: true),
+          ]),
+          const SizedBox(height: 6),
+          LedBar(e.fraction.clamp(0.0, 1.0), color: col, height: 8),
+          const SizedBox(height: 6),
+          Wrap(spacing: 16, runSpacing: 2, children: [
+            if (short)
+              Text('EVERY MINE MAKES $share% OF ITS OUTPUT UNTIL MORE ENERGY IS MADE.',
+                  key: const Key('energy-warning'), style: T.mono(size: 10.5, color: C.ember, weight: FontWeight.w600)),
+            Text('SOLAR SATELLITES ${hw.satellites}, +${e.perSatellite} EACH', key: const Key('energy-satellites'), style: T.mono(size: 10.5, color: C.text3)),
+            if (e.fusionStarved)
+              Text('FUSION REACTOR STOPPED: NO DEUTERIUM TO BURN', key: const Key('energy-fusion'), style: T.mono(size: 10.5, color: C.ember, weight: FontWeight.w600))
+            else if (e.fusionBurn > 0)
+              Text('FUSION REACTOR BURNS ${anHour(e.fusionBurn)} DE/H', key: const Key('energy-fusion'), style: T.mono(size: 10.5, color: C.text3)),
+          ]),
+        ]),
+      ),
+    );
+  }
+}
+
 class DefenceTab extends StatelessWidget {
   final EconomyView eco;
   final GameController ctrl;
@@ -38,7 +93,7 @@ class DefenceTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final d = eco.defence;
     if (d == null) return _notReported('Defence');
-    final cover = d.total / math.max(1, d.raidEstimate);
+    final cover = d.ratio;
     final raidIn = d.raidInTicks;
     return Padding(
       padding: const EdgeInsets.all(12),
@@ -58,15 +113,30 @@ class DefenceTab extends StatelessWidget {
             _breakdown(d),
             const SizedBox(height: 6),
             Wrap(spacing: 14, runSpacing: 4, children: [
-              _legend('Docked fleet and grid', d.other, C.own),
-              _legend('Structures', d.structures, C.crystal),
+              _legend('Docked ships', d.docked, C.own),
+              _legend('Solar satellites', d.satellites, C.a400),
+              _legend('Defences', d.structures, C.crystal),
               _legend('Next raid est.', d.raidEstimate, C.ember),
             ]),
           ]),
         ),
         const SizedBox(height: 10),
         ConsolePanel(
-          title: 'Structures',
+          key: const Key('defence-satellites'),
+          title: 'Solar satellites',
+          subText: 'x${d.satelliteCount}',
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('POWER ${groupDigits(d.satellites.round())} IN THE HOME DEFENCE', style: T.mono(size: 11, color: C.text2)),
+            WhyText('They stand at the homeworld and join no fleet. A raid that breaks through destroys ${proto.raidLostShipPct}% of them, '
+                'as it does of the ships docked here. They are built in the shipyard.'),
+            const SizedBox(height: 6),
+            ConsoleButton('Open shipyard', key: const ValueKey('defence-open-shipyard'), small: true, onPressed: () => ctrl.selectHomeworldTab(HomeworldTab.shipyard)),
+          ]),
+        ),
+        const SizedBox(height: 10),
+        ConsolePanel(
+          title: 'Defences',
           subText: 'BATCH x${ctrl.shipBatch}',
           child: Column(children: [for (var i = 0; i < d.rows.length; i++) _structure(i, d.rows[i])]),
         ),
@@ -77,15 +147,16 @@ class DefenceTab extends StatelessWidget {
   Widget _legend(String n, double v, Color c) => Row(mainAxisSize: MainAxisSize.min, children: [
         Container(width: 8, height: 8, color: c),
         const SizedBox(width: 5),
-        Text('${n.toUpperCase()} ${v.round()}', style: T.mono(size: 10.5, color: C.text2)),
+        Text('${n.toUpperCase()} ${groupDigits(v.round())}', style: T.mono(size: 10.5, color: C.text2)),
       ]);
 
   Widget _breakdown(DefenceView d) {
-    final max = (d.total > d.raidEstimate ? d.total : d.raidEstimate) * 1.05;
+    final max = math.max(1.0, (d.total > d.raidEstimate ? d.total : d.raidEstimate) * 1.05);
     Widget seg(double v, Color c) => Expanded(flex: (v / max * 1000).round().clamp(1, 1000), child: Container(height: 12, color: c.withValues(alpha: .75)));
     return Column(children: [
       Row(children: [
-        seg(d.other, C.own),
+        seg(d.docked, C.own),
+        seg(d.satellites, C.a400),
         seg(d.structures, C.crystal),
         Expanded(flex: ((max - d.total) / max * 1000).round().clamp(1, 1000), child: const SizedBox()),
       ]),
@@ -111,17 +182,15 @@ class DefenceTab extends StatelessWidget {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Expanded(child: Text(r.kind.label.toUpperCase(), style: T.cond(size: 13, color: sel ? C.a100 : C.a200, spacing: 1.2))),
-            Flexible(child: Text('x${r.count}${r.restoring > 0 ? ' (+${r.restoring} restoring)' : ''}', overflow: TextOverflow.ellipsis, style: T.mono(size: 12, color: C.a100))),
-            const SizedBox(width: 12),
-            Text('PWR ${r.power.round()}', style: T.mono(size: 11, color: C.text2)),
+            if (o?.max == 1) ...[const Tag('One of a kind'), const SizedBox(width: 8)],
+            Text('x${r.count}${r.restoring > 0 ? ' (+${r.restoring} restoring)' : ''}', style: T.mono(size: 12, color: C.a100)),
           ]),
           const SizedBox(height: 2),
           if (o != null)
-            Text(
-                'UNIT ${o.power.round()} PWR   COST ${o.unitCost.metal.round()} FE ${o.unitCost.crystal.round()} CR ${o.unitCost.deuterium.round()} DE   ${clockFmt(o.ticksPerUnit)}',
+            Text('EACH ${groupDigits(r.unitPower.round())} PWR   ${amountsOf(o.unitCost).toUpperCase()}   ${clockFmt(o.ticksPerUnit)}',
                 style: T.mono(size: 10, color: C.text3)),
           const SizedBox(height: 6),
-          ConsoleButton('Build x${ctrl.shipBatch}',
+          ConsoleButton('Build x${o == null ? ctrl.shipBatch : math.max(1, defenceBatch(o, ctrl.shipBatch))}',
               small: true,
               keyHint: sel ? 'Enter' : null,
               onPressed: spec != null && spec.canQueue ? () => ctrl.activateHomeworldCard(i) : null,
@@ -138,6 +207,9 @@ class DefenceTab extends StatelessWidget {
 const loadShares = [25, 50, 75, 100];
 
 const _abbr = {proto.ResourceKind.metal: 'Fe', proto.ResourceKind.crystal: 'Cr', proto.ResourceKind.deuterium: 'De'};
+
+/// "31,622": an amount as a hold or a stockpile counts it, in whole units.
+String _whole(double v) => groupDigits(v.floor());
 
 /// The two docks a hold is filled and emptied at by hand: the homeworld,
 /// from the stockpile, and the player's outpost, from its store.
@@ -221,14 +293,14 @@ class _HoldPanelState extends State<HoldPanel> {
         const SizedBox(height: 4),
         Wrap(spacing: 6, runSpacing: 6, children: [
           for (final f in docked)
-            ConsoleButton('${f.name} ${(st.holds[f.id]?.total ?? 0).floor()}/${f.holdCapacity.floor()}',
+            ConsoleButton('${f.name} ${_whole(st.holds[f.id]?.total ?? 0)}/${_whole(f.holdCapacity)}',
                 key: ValueKey('hold-fleet-${f.id}'), small: true, primary: f.id == fleet.id, onPressed: () => setState(() => _fleet = f.id)),
         ]),
         const SizedBox(height: 10),
         Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
           const Lbl('Aboard'),
           const SizedBox(width: 10),
-          Text('${hold.total.floor()} / ${fleet.holdCapacity.floor()}', key: const Key('hold-aboard'), style: T.mono(size: 13, color: C.text)),
+          Text('${_whole(hold.total)} / ${_whole(fleet.holdCapacity)}', key: const Key('hold-aboard'), style: T.mono(size: 13, color: C.text)),
           const Spacer(),
           if (fleet.laden) const Lamp('Laden', color: C.ok),
         ]),
@@ -238,7 +310,7 @@ class _HoldPanelState extends State<HoldPanel> {
         Text.rich(
           TextSpan(children: [
             for (final k in proto.ResourceKind.values) ...[
-              TextSpan(text: '${_abbr[k]} ${k.of(hold).floor()}', style: TextStyle(color: C.ore(k.name))),
+              TextSpan(text: '${_abbr[k]} ${_whole(k.of(hold))}', style: TextStyle(color: C.ore(k.name))),
               const TextSpan(text: '   '),
             ],
             if (note != null) TextSpan(text: note, style: const TextStyle(color: C.text3)),
@@ -251,7 +323,7 @@ class _HoldPanelState extends State<HoldPanel> {
         const SizedBox(height: 4),
         Wrap(spacing: 6, runSpacing: 6, children: [
           for (final k in proto.ResourceKind.values)
-            ConsoleButton('${_abbr[k]} ${k.of(from).floor()}${capped.contains(k) ? ' full' : ''}',
+            ConsoleButton('${_abbr[k]} ${_whole(k.of(from))}${capped.contains(k) ? ' full' : ''}',
                 key: ValueKey('hold-res-${k.name}'),
                 small: true,
                 primary: k == resource,
@@ -267,10 +339,10 @@ class _HoldPanelState extends State<HoldPanel> {
                 key: ValueKey('hold-share-$s'), small: true, primary: s == _share, onPressed: () => setState(() => _share = s)),
         ]),
         const SizedBox(height: 8),
-        Kv('Room in the hold', key: const Key('hold-room'), v: '${room.floor()}'),
+        Kv('Room in the hold', key: const Key('hold-room'), v: _whole(room)),
         const SizedBox(height: 10),
         Wrap(spacing: 8, runSpacing: 6, children: [
-          ConsoleButton(why == null ? 'Load ${(amount ?? fits).floor()} ${_abbr[resource]}' : 'Load',
+          ConsoleButton(why == null ? 'Load ${_whole(amount ?? fits)} ${_abbr[resource]}' : 'Load',
               key: const ValueKey('hold-load'),
               small: true,
               primary: why == null,
@@ -305,67 +377,68 @@ class StorageTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final st = eco.storage;
-    if (st == null) return _notReported('Storage');
-    final rows = [
-      ('metal', 'Metal', C.metal, state.stock.metal, state.resources.metal.rate),
-      ('crystal', 'Crystal', C.crystal, state.stock.crystal, state.resources.crystal.rate),
-      ('deut', 'Deuterium', C.deut, state.stock.deuterium, state.resources.deut.rate),
-    ];
+    final hw = state.hw;
+    if (st == null || hw == null) return _notReported('Storage');
+    final stores = ConsolePanel(
+      title: 'Storage',
+      subText: 'one building a resource',
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 2),
+      child: Column(children: [for (final s in stockpiles) _row(st, hw, s.kind, s.name)]),
+    );
+    final hold = HoldPanel(state: state, ctrl: ctrl);
     return Padding(
       padding: const EdgeInsets.all(12),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        ConsolePanel(
-          title: 'Storage vault',
-          subText: 'LEVEL ${st.vaultLevel}',
-          padding: const EdgeInsets.all(14),
-          child: Column(children: [for (final r in rows) _row(st, r.$1, r.$2, r.$3, r.$4, r.$5)]),
-        ),
-        const SizedBox(height: 10),
-        HoldPanel(state: state, ctrl: ctrl),
-        const SizedBox(height: 10),
-        _upgrade(),
-      ]),
+      child: LayoutBuilder(
+        builder: (context, box) => box.maxWidth >= _sideBySide
+            ? Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Expanded(flex: 3, child: stores),
+                const SizedBox(width: 10),
+                Expanded(flex: 2, child: hold),
+              ])
+            : Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [stores, const SizedBox(height: 10), hold]),
+      ),
     );
   }
 
-  Widget _upgrade() {
-    final cat = state.catalog;
-    final o = cat?.buildings.where((b) => b.buildingType == proto.BuildingType.storageVault).firstOrNull;
-    final hw = state.hw;
-    String? reason;
-    if (o == null) {
-      reason = 'The server catalog has no Storage Vault';
-    } else {
-      reason = whyNot(
-          requires: o.requires,
-          maxed: o.next == null,
-          queued: hw == null ? 0 : hw.buildQueue.length + hw.buildPending.length,
-          capacity: hw == null ? 0 : hw.buildSlots + hw.queueWaitingMax);
-    }
-    return ConsolePanel(
-      title: 'Upgrade',
-      padding: const EdgeInsets.all(14),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        if (o?.next != null)
-          Text('L${o!.level} > L${o.next!.level}   ${o.next!.cost.metal.round()} FE ${o.next!.cost.crystal.round()} CR ${o.next!.cost.deuterium.round()} DE   ${clockFmt(o.next!.ticks)}',
-              style: T.mono(size: 11, color: C.text2)),
-        const SizedBox(height: 6),
-        ConsoleButton('Upgrade vault',
-            key: const ValueKey('hw-upgrade-vault'),
+  /// From this width the stockpiles and the hold panel stand side by side.
+  static const _sideBySide = 980.0;
+
+  /// The building that holds [k]: its level, its next and the order for it.
+  Widget _upgrade(proto.HomeworldState hw, proto.ResourceKind k, proto.BuildingOption? o) {
+    final next = o?.next;
+    final reason = o == null
+        ? 'The server catalog has no ${k.storage}'
+        : whyNot(
+            requires: o.requires,
+            maxed: next == null,
+            queued: hw.buildQueue.length + hw.buildPending.length,
+            capacity: hw.buildSlots + hw.queueWaitingMax);
+    final cap = o?.effects.where((e) => e.kind == proto.EffectKind.storageCap).firstOrNull?.next;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Wrap(crossAxisAlignment: WrapCrossAlignment.center, spacing: 10, runSpacing: 4, children: [
+        ConsoleButton(next == null ? '${k.storage} maxed' : 'Raise ${k.storage} to L${next.level}',
+            key: ValueKey('hw-upgrade-${k.name}'),
             small: true,
-            onPressed: reason == null ? () => ctrl.sendCommand(proto.BuildCommand(buildingType: proto.BuildingType.storageVault)) : null,
+            onPressed: reason == null && o != null ? () => ctrl.sendCommand(proto.BuildCommand(buildingType: o.buildingType)) : null,
             reason: reason),
-        if (reason != null) WhyText(reason),
+        if (next != null)
+          Text('${amountsOf(next.cost).toUpperCase()}   ${clockFmt(next.ticks)}${cap == null ? '' : '   CAP ${groupDigits(cap.round())}'}',
+              style: T.mono(size: 10, color: C.text3)),
       ]),
-    );
+      if (reason != null) WhyText(reason),
+    ]);
   }
 
-  Widget _row(StorageView st, String k, String name, Color c, double stock, double rate) {
-    final cap = st.cap[k] ?? 1;
-    final prot = st.protected[k] ?? 0;
-    final full = st.fullIn(k, stock, rate);
+  Widget _row(StorageView st, proto.HomeworldState hw, proto.ResourceKind k, String name) {
+    final c = C.ore(k.name);
+    final stock = k.of(state.stock);
+    final rate = k.of(hw.production);
+    final cap = st.cap(k);
+    final prot = st.protected(k);
+    final full = st.fullIn(k);
     final near = proto.storageNearCap(stock, cap);
     return Padding(
+      key: Key('storage-row-${k.name}'),
       padding: const EdgeInsets.only(bottom: 14),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
@@ -373,16 +446,25 @@ class StorageTab extends StatelessWidget {
           const SizedBox(width: 10),
           Register(stock, size: 20, glow: true),
           Text(' / ${groupDigits(cap.round())}', style: T.mono(size: 12, color: C.text3)),
-          const Spacer(),
-          if (near) Lamp(stock >= cap * .98 ? 'Full' : 'Near cap', color: C.ember, blink: true),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: near
+                  ? Lamp(st.capped(k) ? 'Full' : 'Near cap', color: C.ember, blink: true)
+                  : Text(st.buildingTag(k).toUpperCase(), maxLines: 1, overflow: TextOverflow.ellipsis, style: T.mono(size: 9.5, color: C.text3)),
+            ),
+          ),
         ]),
         const SizedBox(height: 4),
-        LedBar(stock / cap, color: near ? C.ember : c, height: 10, mark: C.ember, markAt: proto.storageNearCapRatio),
+        LedBar(cap > 0 ? stock / cap : 0, color: near ? C.ember : c, height: 10, mark: C.ember, markAt: proto.storageNearCapRatio),
         const SizedBox(height: 6),
         Text(
-            'PROTECTED ${groupDigits(prot.round())}   RAIDABLE ${groupDigits((stock - prot).clamp(0, cap).round())}   '
-            '${full == null ? 'NOT FILLING' : full == 0 ? 'FULL' : 'FULL IN ${clockFmt(full)}'}   +${rate.toStringAsFixed(2)}/T',
-            style: T.mono(size: 10, color: C.text3)),
+            'SAFE FROM RAIDS ${groupDigits(prot.round())}   '
+            '${full == null ? 'NOT FILLING' : full == 0 ? 'FULL' : 'FULL IN ${clockFmt(full)}'}   ${signedAnHour(rate)}/H',
+            style: T.mono(size: 10, color: rate < 0 ? C.ember : C.text3)),
+        const SizedBox(height: 6),
+        _upgrade(hw, k, st.building(k)),
       ]),
     );
   }

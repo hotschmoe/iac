@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import '../../console/economy_view.dart';
 import '../../console/intel.dart';
 import '../../protocol/protocol.dart' as proto;
@@ -16,7 +18,14 @@ class ItemSpec {
   final String? reason;
   final String actionLabel;
   final String note;
-  final proto.ShipClass? ship;
+
+  /// What a level of a building or a research does, now and at the next.
+  final List<proto.Effect> effects;
+  final proto.ShipOption? ship;
+  final proto.DefenceOption? defence;
+
+  /// What else in the catalogue asks for this item: "Cruiser (level 2)".
+  final List<String> neededBy;
   const ItemSpec({
     required this.kind,
     required this.title,
@@ -27,10 +36,17 @@ class ItemSpec {
     this.reason,
     required this.actionLabel,
     this.note = '',
+    this.effects = const [],
     this.ship,
+    this.defence,
+    this.neededBy = const [],
   });
 
   bool get canQueue => reason == null;
+
+  /// A shipyard order whose batch is the player's to choose: not a defence
+  /// of which only so many may stand.
+  bool get batched => ship != null || (defence != null && defence!.max == null);
 }
 
 /// Locked, maxed and queue-full block queueing. For a building or a tech
@@ -50,24 +66,69 @@ String? whyNot({
   return null;
 }
 
-const buildingNotes = <proto.BuildingType, String>{
-  proto.BuildingType.metalMine: 'Primary metal income.',
-  proto.BuildingType.crystalMine: 'Crystal income for research and hulls.',
-  proto.BuildingType.deuteriumSynthesizer: 'Deuterium is fleet fuel and a build cost.',
-  proto.BuildingType.shipyard: 'Higher levels build ships faster and unlock classes.',
-  proto.BuildingType.researchLab: 'Higher levels speed research and unlock techs.',
-  proto.BuildingType.fuelDepot: 'Fuel handling at the homeworld.',
-  proto.BuildingType.sensorArray: 'Longer sensor reach around home.',
-  proto.BuildingType.defenseGrid: 'Raises homeworld defence power.',
-  proto.BuildingType.storageVault: 'Raises the stockpile caps and the protected share.',
-  proto.BuildingType.fabricator: 'Higher levels shorten the construction time of every building.',
-};
+/// A figure of [kind] as the console prints it. What the figure is, and its
+/// label, are the engine's; the unit it is written in is chosen here.
+String effectValue(proto.EffectKind kind, double v) => switch (kind) {
+      proto.EffectKind.metalPerTick ||
+      proto.EffectKind.crystalPerTick ||
+      proto.EffectKind.deuteriumPerTick ||
+      proto.EffectKind.fusionBurnPerTick =>
+        '${anHour(v)}/h',
+      proto.EffectKind.energyUsed ||
+      proto.EffectKind.energyMade ||
+      proto.EffectKind.buildSlots ||
+      proto.EffectKind.storageCap ||
+      proto.EffectKind.storageProtected =>
+        groupDigits(v.round()),
+      proto.EffectKind.sensorHops => hopCount(v.round()),
+      proto.EffectKind.buildingSpeed ||
+      proto.EffectKind.shipyardSpeed ||
+      proto.EffectKind.researchSpeed ||
+      proto.EffectKind.tankFactor ||
+      proto.EffectKind.attack ||
+      proto.EffectKind.shield ||
+      proto.EffectKind.hull ||
+      proto.EffectKind.speed ||
+      proto.EffectKind.jumpFuel ||
+      proto.EffectKind.oreYield =>
+        'x${trimmed(v)}',
+      proto.EffectKind.recallRisk => '-${(v * 100).round()}%',
+    };
+
+/// "metal 33.0/h": the first thing a building or a research does, for a tile.
+String? effectCaption(List<proto.Effect> effects) => switch (effects.firstOrNull) {
+      null => null,
+      final e => '${e.kind.label} ${effectValue(e.kind, e.now)}',
+    };
+
+/// Everything in [cat] that asks for the item labelled [label], with the level it asks for.
+List<String> neededBy(proto.HomeworldCatalog cat, String label) {
+  String? asks(List<proto.Requirement> requires) {
+    for (final r in requires) {
+      if (!r.energy && r.name == label) return 'level ${r.need}';
+    }
+    return null;
+  }
+
+  return [
+    for (final o in cat.buildings)
+      if (asks(o.requires) case final level?) '${o.buildingType.label} ($level)',
+    for (final o in cat.research)
+      if (asks(o.requires) case final level?) '${o.tech.label} ($level)',
+    for (final o in cat.ships)
+      if (asks(o.requires) case final level?) '${o.shipClass.label} ($level)',
+    for (final o in cat.defences)
+      if (asks(o.requires) case final level?) '${o.kind.label} ($level)',
+  ];
+}
 
 ItemSpec? specFor(GameController c, {int? index}) {
   final cat = c.state.catalog;
   final i = index ?? c.hwCursor;
   if (cat == null) return null;
   final hw = c.state.hw;
+  final yardQueued = hw == null ? 0 : (hw.shipyardQueue == null ? 0 : 1) + hw.shipyardPending.length;
+  final yardCapacity = hw == null ? 0 : 1 + hw.queueWaitingMax;
   switch (c.hwTab) {
     case HomeworldTab.buildings:
       if (i < 0 || i >= cat.buildings.length) return null;
@@ -85,7 +146,8 @@ ItemSpec? specFor(GameController c, {int? index}) {
             queued: hw == null ? 0 : hw.buildQueue.length + hw.buildPending.length,
             capacity: hw == null ? 0 : hw.buildSlots + hw.queueWaitingMax),
         actionLabel: o.next == null ? 'Maxed' : 'Queue to L${o.next!.level}',
-        note: buildingNotes[o.buildingType] ?? '',
+        effects: o.effects,
+        neededBy: neededBy(cat, o.buildingType.label),
       );
     case HomeworldTab.research:
       if (i < 0 || i >= cat.research.length) return null;
@@ -103,13 +165,14 @@ ItemSpec? specFor(GameController c, {int? index}) {
             queued: hw == null ? 0 : (hw.researchActive == null ? 0 : 1) + hw.researchPending.length,
             capacity: hw == null ? 0 : 1 + hw.queueWaitingMax),
         actionLabel: o.next == null ? 'Maxed' : 'Research L${o.next!.level}',
+        effects: o.effects,
+        neededBy: neededBy(cat, o.tech.label),
       );
     case HomeworldTab.shipyard:
       if (i < 0 || i >= cat.ships.length) return null;
       final o = cat.ships[i];
       final n = c.shipBatch;
-      final total = proto.Resources(
-          metal: o.unitCost.metal * n, crystal: o.unitCost.crystal * n, deuterium: o.unitCost.deuterium * n);
+      final total = batchCost(o.unitCost, n);
       return ItemSpec(
         kind: 'Ship',
         title: o.shipClass.label,
@@ -117,21 +180,19 @@ ItemSpec? specFor(GameController c, {int? index}) {
         cost: total,
         ticks: o.ticksPerShip * n,
         requires: o.requires,
-        reason: whyNot(
-                requires: o.requires,
-                maxed: false,
-                queued: hw == null ? 0 : (hw.shipyardQueue == null ? 0 : 1) + hw.shipyardPending.length,
-                capacity: hw == null ? 0 : 1 + hw.queueWaitingMax) ??
-            shortReason(c.state.stock, total),
+        reason: whyNot(requires: o.requires, maxed: false, queued: yardQueued, capacity: yardCapacity) ?? shortReason(c.state.stock, total),
         actionLabel: 'Build x$n',
-        note: 'The whole batch is paid when ordered. Ships join the dock fleet when built.',
-        ship: o.shipClass,
+        note: o.flies
+            ? 'The whole batch is paid when ordered. Ships join the dock fleet when built.'
+            : 'The whole batch is paid when ordered. It stays at the homeworld and joins no fleet: it makes energy, '
+                'stands in the home defence, and a raid that breaks through destroys ${proto.raidLostShipPct}% of them.',
+        ship: o,
       );
     case HomeworldTab.defence:
       if (i < 0 || i >= cat.defences.length) return null;
       final o = cat.defences[i];
-      final n = c.shipBatch;
-      final total = proto.Resources(metal: o.unitCost.metal * n, crystal: o.unitCost.crystal * n, deuterium: o.unitCost.deuterium * n);
+      final n = math.max(1, defenceBatch(o, c.shipBatch));
+      final total = batchCost(o.unitCost, n);
       return ItemSpec(
         kind: 'Defence',
         title: o.kind.label,
@@ -139,14 +200,12 @@ ItemSpec? specFor(GameController c, {int? index}) {
         cost: total,
         ticks: o.ticksPerUnit * n,
         requires: o.requires,
-        reason: whyNot(
-                requires: o.requires,
-                maxed: false,
-                queued: hw == null ? 0 : (hw.shipyardQueue == null ? 0 : 1) + hw.shipyardPending.length,
-                capacity: hw == null ? 0 : 1 + hw.queueWaitingMax) ??
+        reason: whyNot(requires: o.requires, maxed: false, queued: yardQueued, capacity: yardCapacity) ??
+            limitReason(o) ??
             shortReason(c.state.stock, total),
         actionLabel: 'Build x$n',
-        note: 'Built in the shipyard queue, the whole batch paid when ordered. Power ${o.power.toStringAsFixed(0)} each.',
+        note: 'Built in the shipyard queue, the whole batch paid when ordered. It never moves and burns no fuel.',
+        defence: o,
       );
     case HomeworldTab.storage:
       return null;
@@ -154,5 +213,3 @@ ItemSpec? specFor(GameController c, {int? index}) {
 }
 
 String fmtTicks(int t) => clockFmt(t);
-
-double powerOf(proto.ShipClass c) => c.power;

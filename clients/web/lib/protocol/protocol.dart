@@ -41,6 +41,10 @@ bool storageNearCap(num stock, num cap) => cap > 0 && stock.toDouble() / cap.toD
 /// What a `refine` order loses against a dock, as a whole percent.
 const refineLossPct = (refineLoss * 100 + 0.5) ~/ 1;
 
+/// The share of the ships at home, and of the Solar Satellites, that a raid
+/// which breaks through destroys, as a whole percent.
+const raidLostShipPct = (raidLostShipFraction * 100 + 0.5) ~/ 1;
+
 /// The zones of the world. A ring's zone is cut as the engine's
 /// `Zone::from_distance` cuts it, at the radii Rust holds; the names are the
 /// client's.
@@ -138,8 +142,36 @@ extension NpcFleetInfoCount on NpcFleetInfo {
 }
 
 extension RequirementLabel on Requirement {
-  /// As cards and captions print it, in the engine's words: "Shipyard level 4".
-  String get label => '$name level $need';
+  /// As cards and captions print it, in the engine's words: "Shipyard level
+  /// 4", or "300000 energy made" for one that asks for energy.
+  String get label => energy ? '$need energy made' : '$name level $need';
+}
+
+extension RapidFireOf on WorldInfo {
+  /// What [c] fires again at, in the catalogue's order.
+  List<RapidFire> rapidFireOf(ShipClass c) => [for (final r in rapidFire) if (r.shipClass == c) r];
+
+  /// The classes that fire again at [target].
+  List<RapidFire> rapidFireAgainst(ShipyardItem target) => [for (final r in rapidFire) if (r.against == target) r];
+}
+
+extension EnergyShare on EnergyState {
+  /// Less energy is made than the mines need.
+  bool get short => fraction < 1;
+
+  /// The share of their output the mines run at, as a whole percent that
+  /// reads 100 only when it is all of it.
+  int get sharePct => (fraction * 100).floor();
+}
+
+extension CatalogStorage on HomeworldCatalog {
+  /// The building that stores [kind], which Rust names by its label.
+  BuildingOption? storageOf(ResourceKind kind) {
+    for (final b in buildings) {
+      if (b.buildingType.label == kind.storage) return b;
+    }
+    return null;
+  }
 }
 
 extension HomeworldStateEdit on HomeworldState {
@@ -150,17 +182,25 @@ extension HomeworldStateEdit on HomeworldState {
     return 0;
   }
 
-  /// A copy with some fields replaced (for tests and the offline demo).
+  /// A copy with some fields replaced (for the scripted world of the tests).
   HomeworldState copyWith({
     Resources? production,
+    EnergyState? energy,
+    int? satellites,
     StorageState? storage,
     List<BuildingState>? buildings,
     List<ResearchState>? research,
+    List<ShipState>? dockedShips,
     List<DefenceState>? defences,
     double? homeDefencePower,
+    double? dockedPower,
+    double? satellitePower,
+    double? structurePower,
     List<BuildQueueItem>? buildQueue,
     List<QueuedBuild>? buildPending,
     int? buildSlots,
+    Requirement? buildSlotUnlock,
+    bool clearBuildSlotUnlock = false,
     ShipyardQueueItem? shipyardQueue,
     bool clearShipyardQueue = false,
     List<QueuedShip>? shipyardPending,
@@ -172,20 +212,26 @@ extension HomeworldStateEdit on HomeworldState {
       HomeworldState(
         location: location,
         production: production ?? this.production,
+        energy: energy ?? this.energy,
+        satellites: satellites ?? this.satellites,
         storage: storage ?? this.storage,
         buildings: buildings ?? this.buildings,
         research: research ?? this.research,
         buildQueue: buildQueue ?? this.buildQueue,
         buildPending: buildPending ?? this.buildPending,
         buildSlots: buildSlots ?? this.buildSlots,
+        buildSlotUnlock: clearBuildSlotUnlock ? null : (buildSlotUnlock ?? this.buildSlotUnlock),
         queueWaitingMax: queueWaitingMax,
         shipyardQueue: clearShipyardQueue ? null : (shipyardQueue ?? this.shipyardQueue),
         shipyardPending: shipyardPending ?? this.shipyardPending,
         researchActive: clearResearchActive ? null : (researchActive ?? this.researchActive),
         researchPending: researchPending ?? this.researchPending,
-        dockedShips: dockedShips,
+        dockedShips: dockedShips ?? this.dockedShips,
         defences: defences ?? this.defences,
         homeDefencePower: homeDefencePower ?? this.homeDefencePower,
+        dockedPower: dockedPower ?? this.dockedPower,
+        satellitePower: satellitePower ?? this.satellitePower,
+        structurePower: structurePower ?? this.structurePower,
         nextRaidEstimatePower: nextRaidEstimatePower,
         catalog: catalog ?? this.catalog,
       );

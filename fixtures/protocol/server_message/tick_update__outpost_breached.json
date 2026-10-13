@@ -21,6 +21,7 @@
         "deuterium": 0.0,
         "metal": 0.0
       },
+      "satellites_lost": 0,
       "ships_lost": 1,
       "structures_lost": 0,
       "structures_restored": 0,
@@ -52,9 +53,10 @@
       },
       "power": 61.5,
       "range_hops": 4,
+      "scan_range": 1,
       "ships": [
         {
-          "class": "Scout",
+          "class": "LightFighter",
           "hull": 80.5,
           "hull_max": 100.0,
           "id": 71,
@@ -63,7 +65,7 @@
           "weapon_power": 4.0
         },
         {
-          "class": "Hauler",
+          "class": "SmallCargo",
           "hull": 100.0,
           "hull_max": 100.0,
           "id": 72,

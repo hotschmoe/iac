@@ -12,22 +12,29 @@
     "MetalMine",
     "CrystalMine",
     "DeuteriumSynthesizer",
+    "SolarPlant",
+    "FusionReactor",
+    "RoboticsFactory",
+    "NaniteFactory",
     "Shipyard",
-    "ResearchLab",
-    "FuelDepot",
-    "SensorArray",
-    "DefenseGrid",
-    "StorageVault",
-    "Fabricator"
+    "MetalStorage",
+    "CrystalStorage",
+    "DeuteriumTank",
+    "ResearchLab"
   ],
   "ChartMark": [
     "aboard",
     "delivered"
   ],
   "DefenceKind": [
-    "PulseTurret",
-    "LancerBattery",
-    "IonBastion"
+    "RocketLauncher",
+    "LightLaser",
+    "HeavyLaser",
+    "GaussCannon",
+    "IonCannon",
+    "PlasmaTurret",
+    "SmallShieldDome",
+    "LargeShieldDome"
   ],
   "Density": [
     "None",
@@ -111,19 +118,20 @@
     "Research"
   ],
   "ResearchType": [
-    "FuelEfficiency",
-    "ExtendedFuelTanks",
-    "ReinforcedHulls",
-    "AdvancedShields",
-    "WeaponsResearch",
-    "Navigation",
-    "HarvestingEfficiency",
-    "CorvetteTech",
-    "FrigateTech",
-    "CruiserTech",
-    "HaulerTech",
-    "EmergencyJump",
-    "ModularFabrication"
+    "EspionageTechnology",
+    "ComputerTechnology",
+    "WeaponsTechnology",
+    "ShieldingTechnology",
+    "ArmourTechnology",
+    "EnergyTechnology",
+    "HyperspaceTechnology",
+    "CombustionDrive",
+    "ImpulseDrive",
+    "HyperspaceDrive",
+    "LaserTechnology",
+    "IonTechnology",
+    "PlasmaTechnology",
+    "GravitonTechnology"
   ],
   "ResourceKind": [
     "metal",
@@ -131,11 +139,19 @@
     "deuterium"
   ],
   "ShipClass": [
-    "Scout",
-    "Corvette",
-    "Frigate",
+    "SmallCargo",
+    "LargeCargo",
+    "LightFighter",
+    "HeavyFighter",
     "Cruiser",
-    "Hauler"
+    "Battleship",
+    "Recycler",
+    "EspionageProbe",
+    "Bomber",
+    "SolarSatellite",
+    "Destroyer",
+    "Deathstar",
+    "Battlecruiser"
   ],
   "SignalKind": [
     "RichOre",

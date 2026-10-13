@@ -1,6 +1,6 @@
 // Background notices, driven by the demo world's own event sequence: a raid
-// is announced on the first tick and lands 279 ticks in, a Corvette leaves
-// the yard at 170 and the Crystal Mine finishes at 260.
+// is announced on the first tick and lands 279 ticks in, a Light Fighter
+// leaves the yard at 170 and the Crystal Mine finishes at 260.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -74,25 +74,28 @@ void main() {
     expect(title.value, '(1) IN AMBER CLAD');
 
     await tester.pump(const Duration(seconds: 170));
-    expect(browser.shown[1], (title: 'Shipyard order complete - In Amber Clad', body: '1 x Corvette. The next order is under way.', tag: 'queue-ship'));
+    expect(browser.shown[1], (title: 'Shipyard order complete - In Amber Clad', body: '1 x Light Fighter. The next order is under way.', tag: 'queue-ship'));
 
     await tester.pump(const Duration(seconds: 50));
-    expect(browser.shown[2], (title: 'Shipyard idle - In Amber Clad', body: '1 x Corvette. Nothing else is queued.', tag: 'queue-ship'));
-    final closing = browser.shown.last;
+    final closing = browser.shown[2];
     expect(closing.title, 'Raid closing - In Amber Clad');
     expect(closing.body, contains('arrives in 1:00'));
     expect(c.state.events.any((e) => e.message.startsWith('! Raid of estimated power')), isTrue, reason: 'the closing raid is in the log, which is what toasts it in front');
 
     await tester.pump(const Duration(seconds: 60));
-    expect(browser.shown.skip(4).map((n) => n.title.replaceAll(' - In Amber Clad', '')), ['Building complete', 'Raid repelled', 'Raid incoming'],
+    expect(browser.shown.skip(3).map((n) => n.title.replaceAll(' - In Amber Clad', '')), ['Building complete', 'Raid repelled', 'Raid incoming'],
         reason: 'the mine finishes, the raid lands, and the next one is announced; the raid closes only once');
-    expect(browser.shown[4].body, 'Crystal Mine level 8. The next order is under way.');
+    expect(browser.shown[3].body, 'Crystal Mine level 8. The next order is under way.');
+
+    final lastHull = c.state.hw!.shipyardQueue!.endTick - c.state.tick;
+    await tester.pump(Duration(seconds: lastHull + 1));
+    expect(browser.shown[6], (title: 'Shipyard idle - In Amber Clad', body: '1 x Light Fighter. Nothing else is queued.', tag: 'queue-ship'));
     expect(title.value, '(7) IN AMBER CLAD');
 
     await _foreground(tester);
     expect(title.value, 'IN AMBER CLAD');
     final toasts = find.byType(ToastLayer);
-    for (final missed in ['RAID CLOSING', 'BUILDING COMPLETE', 'RAID REPELLED', 'RAID INCOMING']) {
+    for (final missed in ['BUILDING COMPLETE', 'RAID REPELLED', 'RAID INCOMING', 'SHIPYARD IDLE']) {
       expect(find.descendant(of: toasts, matching: find.text(missed)), findsOneWidget);
     }
     await tester.pump(const Duration(seconds: 150));
@@ -157,7 +160,7 @@ void main() {
     const site = proto.Hex(10, 0);
     final browser = _Browser(NotifyPermission.granted);
     final c = DemoController()..startDemo();
-    c.place(101, site, const proto.Resources(metal: 1000, crystal: 500, deuterium: 200));
+    c.place(101, site, const proto.Resources(metal: 3000, crystal: 1500, deuterium: 600));
     c.handleCommand('found');
     await pumpShell(tester, controller: c, prefs: ConsolePrefs(MemoryKv())..setNotify(true), notifier: browser);
     List<({String title, String body, String tag})> outpost() => [
@@ -177,17 +180,17 @@ void main() {
     expect(outpost().skip(2).map((n) => n.title), ['Outpost breached', 'Outpost repair waiting']);
     expect(outpost()[2].body, allOf(contains('beat the defence of'), contains('destroyed 1 ship standing there'), contains('until it has repaired itself from its store')));
     expect(outpost()[3].body,
-        allOf(startsWith('Your outpost at 10, 0 is breached and cannot repair itself: the repair costs 537 Fe and its store is short by 538 Fe.'),
+        allOf(startsWith('Your outpost at 10, 0 is breached and cannot repair itself: the repair costs 1,612 Fe and its store is short by 1,613 Fe.'),
             endsWith('until a fleet unloads that, or crystal or deuterium in its place.')));
 
     await tester.pump(const Duration(seconds: 5));
     expect(outpost(), hasLength(4), reason: 'a repair that still waits is said once');
-    c.place(101, site, const proto.Resources(metal: 300, crystal: 200, deuterium: 100));
+    c.place(101, site, const proto.Resources(metal: 900, crystal: 400, deuterium: 100));
     c.handleCommand('unload');
     await tester.pump(const Duration(seconds: 8));
     expect(c.state.outpost!.inService, isTrue, reason: 'the store covered the repair and the repair ran');
 
-    c.place(101, site, const proto.Resources(crystal: 2000));
+    c.place(101, site, const proto.Resources(crystal: 15000));
     c.handleCommand('unload');
     await tester.pump(const Duration(seconds: 1));
     expect(outpost().skip(4).single, (

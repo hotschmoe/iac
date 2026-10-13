@@ -249,37 +249,58 @@ fn an_absence_is_played_reported_and_limited() {
 
 #[test]
 fn a_ship_batch_the_stockpile_does_not_cover_is_refused_and_costs_nothing() {
-    const SCOUT: [f64; 3] = [200.0, 50.0, 30.0];
+    const FIGHTER: [f64; 3] = [3000.0, 1000.0, 0.0];
     let stock_of = |state: &Value| ["metal", "crystal", "deuterium"].map(|k| state["player"]["resources"][k].as_f64().unwrap());
-    let covered = |stock: [f64; 3]| (0..3).map(|k| (stock[k] / SCOUT[k]).floor() as u64).min().unwrap();
+    let covered = |stock: [f64; 3]| (0..2).map(|k| (stock[k] / FIGHTER[k]).floor() as u64).min().unwrap();
+    let build = |building: &str| json!({"type": "command", "action": "build", "building_type": building});
+    let research = |tech: &str| json!({"type": "command", "action": "research", "tech": tech});
 
     let mut machine = new_game(T0, "blitz", &[]);
     log_in(&mut machine, T0);
-    for building in ["MetalMine", "Shipyard"] {
-        let queued = send(&mut machine, T0, json!({"type": "command", "action": "build", "building_type": building}));
-        assert!(queued.iter().all(|f| f["type"] != "error"), "a building queues ahead of what it needs: {queued:?}");
-    }
+    // What a Light Fighter asks of a new empire: deuterium for the rest, the
+    // Robotics Factory the Shipyard needs, and the drive behind a lab.
+    let mut plan = vec![
+        build("DeuteriumSynthesizer"),
+        build("SolarPlant"),
+        build("DeuteriumSynthesizer"),
+        build("SolarPlant"),
+        build("RoboticsFactory"),
+        build("RoboticsFactory"),
+        build("Shipyard"),
+        build("ResearchLab"),
+        research("EnergyTechnology"),
+        research("CombustionDrive"),
+    ]
+    .into_iter()
+    .peekable();
 
     let mut now = T0;
     let state = loop {
+        if let Some(order) = plan.peek()
+            && send(&mut machine, now, order.clone()).iter().all(|f| f["type"] != "error")
+        {
+            plan.next();
+        }
         now += 1000;
         play(&mut machine, now - 1000, 1);
         let state = send(&mut machine, now, json!({"type": "request_full_state"})).remove(0);
-        let yard = state["homeworld"]["buildings"].as_array().unwrap().iter().any(|b| b["building_type"] == "Shipyard" && b["level"] == 1);
-        if yard && covered(stock_of(&state)) >= 1 {
+        let home = &state["homeworld"];
+        let yard = home["buildings"].as_array().unwrap().iter().any(|b| b["building_type"] == "Shipyard" && b["level"] == 1);
+        let drive = home["research"].as_array().unwrap().iter().any(|r| r["tech"] == "CombustionDrive" && r["level"] == 1);
+        if yard && drive && covered(stock_of(&state)) >= 1 {
             break state;
         }
-        assert!(now < T0 + 600_000, "no shipyard and a scout's worth of stock within ten minutes of blitz");
+        assert!(now < T0 + 7_200_000, "no shipyard, drive and fighter's worth of stock within two hours of blitz");
     };
     let stock = stock_of(&state);
     let fits = covered(stock);
 
-    let too_many = send(&mut machine, now, json!({"type": "command", "action": "build_ship", "ship_class": "Scout", "count": fits + 1}));
+    let too_many = send(&mut machine, now, json!({"type": "command", "action": "build_ship", "ship_class": "LightFighter", "count": fits + 1}));
     assert_eq!(too_many.len(), 1, "{too_many:?}");
     assert_eq!((too_many[0]["type"].as_str(), too_many[0]["code"].as_str()), (Some("error"), Some("InsufficientResources")));
     let message = too_many[0]["message"].as_str().unwrap();
     assert!(
-        message.starts_with(&format!("Scout x{} costs {} metal, ", fits + 1, 200 * (fits + 1)))
+        message.starts_with(&format!("Light Fighter x{} costs {} metal and {} crystal; ", fits + 1, 3000 * (fits + 1), 1000 * (fits + 1)))
             && message.contains("; the stockpile is short by ")
             && message.ends_with(&format!("Nothing was ordered: a batch is paid in full when it is ordered. The stockpile covers {fits}.")),
         "{message}"
@@ -288,12 +309,12 @@ fn a_ship_batch_the_stockpile_does_not_cover_is_refused_and_costs_nothing() {
     assert_eq!(stock_of(&after), stock, "the refused batch cost nothing");
     assert_eq!(after["homeworld"]["shipyard_queue"], Value::Null);
 
-    let ordered = send(&mut machine, now, json!({"type": "command", "action": "build_ship", "ship_class": "Scout", "count": fits}));
+    let ordered = send(&mut machine, now, json!({"type": "command", "action": "build_ship", "ship_class": "LightFighter", "count": fits}));
     assert!(ordered.iter().all(|f| f["type"] != "error"), "{ordered:?}");
     let paid = send(&mut machine, now, json!({"type": "request_full_state"})).remove(0);
     let left = stock_of(&paid);
     for k in 0..3 {
-        assert!((stock[k] - SCOUT[k] * fits as f64 - left[k]).abs() < 0.01, "the whole batch is paid when it is ordered: {stock:?} to {left:?}");
+        assert!((stock[k] - FIGHTER[k] * fits as f64 - left[k]).abs() < 0.01, "the whole batch is paid when it is ordered: {stock:?} to {left:?}");
     }
     assert_eq!((paid["homeworld"]["shipyard_queue"]["count"].as_u64(), paid["homeworld"]["shipyard_queue"]["built"].as_u64()), (Some(fits), Some(0)));
 }
@@ -314,7 +335,7 @@ fn a_hold_loaded_at_the_dock_is_in_the_save_and_stays_aboard_after_a_reload() {
     let login = log_in(&mut watched, T0);
     let fleet = login[1]["fleets"][0]["id"].as_u64().unwrap();
     let hold = login[1]["fleets"][0]["cargo_capacity"].as_f64().unwrap();
-    assert!((hold - 126.49).abs() < 0.01 && login[1]["fleets"][0]["laden"] == false, "{}", login[1]["fleets"][0]);
+    assert!((hold - 316.23).abs() < 0.01 && login[1]["fleets"][0]["laden"] == false, "{}", login[1]["fleets"][0]);
 
     let ordered = send(&mut watched, T0, put_aboard("metal", json!(100), fleet));
     assert!(ordered.iter().all(|f| f["type"] != "error"), "{ordered:?}");
@@ -344,7 +365,7 @@ fn a_hold_loaded_at_the_dock_is_in_the_save_and_stays_aboard_after_a_reload() {
     assert!(send(&mut reloaded, now, put_aboard("crystal", Value::Null, fleet)).iter().all(|f| f["type"] != "error"));
     let no_room = send(&mut reloaded, now, put_aboard("deuterium", json!(5), fleet));
     assert_eq!((no_room[0]["type"].as_str(), no_room[0]["code"].as_str()), (Some("error"), Some("CargoFull")), "{no_room:?}");
-    assert_eq!(no_room[0]["message"], format!("the hold of fleet {fleet} is full: it carries 126 of 126"));
+    assert_eq!(no_room[0]["message"], format!("the hold of fleet {fleet} is full: it carries 316 of 316"));
     let full = fleet_of(&play(&mut reloaded, now, 1));
     assert!((hold_of(&full)[1] - (hold - 100.0)).abs() < 0.01, "with no amount, all that fits: {full}");
 
@@ -352,7 +373,7 @@ fn a_hold_loaded_at_the_dock_is_in_the_save_and_stays_aboard_after_a_reload() {
     let sent = play(&mut reloaded, now + 1000, 1);
     let emptied = fleet_of(&sent);
     assert_eq!((hold_of(&emptied), emptied["laden"].as_bool()), ([0.0, 0.0, 0.0], Some(false)), "{emptied}");
-    assert_eq!(events(&sent, "Alert")[0]["message"], format!("fleet {fleet} unloaded 100 metal and 27 crystal into the stockpile"));
+    assert_eq!(events(&sent, "Alert")[0]["message"], format!("fleet {fleet} unloaded 100 metal and 217 crystal into the stockpile"));
 }
 
 /// Play second by second from `*now` until a frame satisfies `done`.
@@ -422,9 +443,9 @@ fn an_outpost_is_founded_saved_replayed_and_raided_while_the_commander_is_away()
     let mut now = T0;
     accepted(order(&mut machine, now, json!({"action": "build", "building_type": "DeuteriumSynthesizer"})));
     play_until(&mut machine, &mut now, 600, |f| {
-        f["type"] == "tick_update" && amounts(&f["player"]["resources"]).iter().zip([1500.0, 900.0, 700.0]).all(|(have, need)| *have >= need)
+        f["type"] == "tick_update" && amounts(&f["player"]["resources"]).iter().zip([3500.0, 1900.0, 1100.0]).all(|(have, need)| *have >= need)
     });
-    for (resource, amount) in [("metal", 1500), ("crystal", 900), ("deuterium", 600)] {
+    for (resource, amount) in [("metal", 3500), ("crystal", 1900), ("deuterium", 1000)] {
         accepted(order(&mut machine, now, json!({"action": "load", "fleet_id": fleet, "resource": resource, "amount": amount})));
     }
     let refused = order(&mut machine, now, json!({"action": "found_outpost", "fleet_id": fleet}));
@@ -517,20 +538,20 @@ fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
         format!("this save is economy version 4, this build runs version {ECONOMY_VERSION}; start a new game"),
     );
 
-    let other_generator = text.replacen("\"worldgen_version\":3", "\"worldgen_version\":2", 1);
+    let other_generator = text.replacen("\"worldgen_version\":4", "\"worldgen_version\":2", 1);
     let (_, reply) = load(T0, other_generator.as_bytes());
-    assert!(reply["refused"].as_str().unwrap().contains("worldgen version 2, this build runs version 3"), "{reply}");
+    assert!(reply["refused"].as_str().unwrap().contains("worldgen version 2, this build runs version 4"), "{reply}");
 
-    assert_eq!(SAVE_FORMAT, 7);
-    let before_amounts_were_64_bit = text.replacen("\"format\":7", "\"format\":6", 1);
-    let (_, reply) = load(T0, before_amounts_were_64_bit.as_bytes());
+    assert_eq!(SAVE_FORMAT, 8);
+    let before_the_catalogue_was_ogames = text.replacen("\"format\":8", "\"format\":7", 1);
+    let (_, reply) = load(T0, before_the_catalogue_was_ogames.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert_eq!(reply["refused"], "this save is format 6, this build reads format 7; start a new game");
+    assert_eq!(reply["refused"], "this save is format 7, this build reads format 8; start a new game");
 
-    let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":8", 1);
+    let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":9", 1);
     let (_, reply) = load(T0, other_format.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert!(reply["refused"].as_str().unwrap().contains(&format!("format 8, this build reads format {SAVE_FORMAT}")), "{reply}");
+    assert!(reply["refused"].as_str().unwrap().contains(&format!("format 9, this build reads format {SAVE_FORMAT}")), "{reply}");
 
     let (_, reply) = load(T0, &document[..document.len() - 40]);
     assert_eq!(reply["refused"], "this save cannot be read: its contents do not match its checksum");

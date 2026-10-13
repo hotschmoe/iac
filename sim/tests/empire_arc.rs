@@ -70,8 +70,10 @@ fn item_started(events: &[QueueEvent], item: &str) -> Option<usize> {
 }
 
 fn build_the_foundations(e: &mut Empire) {
+    e.set_stockpile(Resources { metal: 5000.0, crystal: 5000.0, deuterium: 5000.0 });
     let mark = e.mark();
-    for building in [BuildingType::MetalMine, BuildingType::CrystalMine, BuildingType::Shipyard, BuildingType::ResearchLab] {
+    let line = [BuildingType::MetalMine, BuildingType::RoboticsFactory, BuildingType::RoboticsFactory, BuildingType::Shipyard];
+    for building in line {
         e.order(Command::Build { building_type: building, reserve: false }).expect("the line has room");
     }
     assert_eq!(
@@ -83,15 +85,15 @@ fn build_the_foundations(e: &mut Empire) {
     let waiting: Vec<_> = events.iter().filter(|q| q.action == QueueAction::Waiting).collect();
     assert_eq!(events[0].action, QueueAction::Started);
     assert_eq!(waiting.iter().map(|q| q.waiting_on).collect::<Vec<_>>(), [Some(WaitReason::Slot), Some(WaitReason::Prerequisite), Some(WaitReason::Prerequisite)]);
-    let lab = waiting[2].id;
+    let yard = waiting[2].id;
 
-    assert_eq!(e.order(Command::CancelBuild { queue_type: QueueType::Building, id: lab }), Err(ErrorCode::InvalidTarget), "waiting is not running");
-    assert_eq!(e.order(Command::CancelQueued { queue_type: QueueType::Ship, id: lab }), Err(ErrorCode::InvalidTarget), "wrong queue");
+    assert_eq!(e.order(Command::CancelBuild { queue_type: QueueType::Building, id: yard }), Err(ErrorCode::InvalidTarget), "waiting is not running");
+    assert_eq!(e.order(Command::CancelQueued { queue_type: QueueType::Ship, id: yard }), Err(ErrorCode::InvalidTarget), "wrong queue");
     let cancel_mark = e.mark();
-    e.order(Command::CancelQueued { queue_type: QueueType::Building, id: lab }).expect("cancel the waiting lab by id");
+    e.order(Command::CancelQueued { queue_type: QueueType::Building, id: yard }).expect("cancel the waiting yard by id");
     let cancelled = e.queue_events(cancel_mark);
-    assert_eq!((cancelled[0].id, cancelled[0].action, cancelled[0].refunded), (lab, QueueAction::Cancelled, Resources::default()));
-    assert_eq!(e.order(Command::CancelQueued { queue_type: QueueType::Building, id: lab }), Err(ErrorCode::InvalidTarget), "already gone");
+    assert_eq!((cancelled[0].id, cancelled[0].action, cancelled[0].refunded), (yard, QueueAction::Cancelled, Resources::default()));
+    assert_eq!(e.order(Command::CancelQueued { queue_type: QueueType::Building, id: yard }), Err(ErrorCode::InvalidTarget), "already gone");
 
     e.order(Command::Build { building_type: BuildingType::DeuteriumSynthesizer, reserve: false }).expect("room again");
     e.run_until(100, |e| {
@@ -104,7 +106,12 @@ fn build_the_foundations(e: &mut Empire) {
     });
     assert_eq!(
         done,
-        [(BuildingType::MetalMine, 2), (BuildingType::CrystalMine, 2), (BuildingType::Shipyard, 1), (BuildingType::DeuteriumSynthesizer, 1)],
+        [
+            (BuildingType::MetalMine, 2),
+            (BuildingType::RoboticsFactory, 1),
+            (BuildingType::RoboticsFactory, 2),
+            (BuildingType::DeuteriumSynthesizer, 1),
+        ],
         "the order the line ran in"
     );
 }
@@ -120,7 +127,7 @@ fn an_empire_grows_fights_charts_and_survives_a_raid() {
     mind_the_queue(&mut e);
     research_a_chain(&mut e);
     let (lair, power) = hostile_lair(&e);
-    let need = ((3.0 * power - e.fleet().power) / scaling::ship_power(ShipClass::Corvette)).ceil().max(3.0) as u16;
+    let need = ((3.0 * power - e.fleet().power) / scaling::ship_power(ShipClass::LightFighter)).ceil().max(3.0) as u16;
     build_a_battle_group(&mut e, need);
     hunt_pirates(&mut e, lair);
     withstand_a_raid(&mut e);
@@ -129,19 +136,23 @@ fn an_empire_grows_fights_charts_and_survives_a_raid() {
 }
 
 #[test]
-fn a_batch_larger_than_the_vault_is_refused_though_refunds_would_pay_for_it() {
+fn a_batch_larger_than_the_store_is_refused_though_refunds_would_pay_for_it() {
     let mut e = Empire::join(world("test"), "Hoard");
     let pid = e.pid;
-    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().buildings.shipyard = 1);
-    let scouts = |count: u16| Command::BuildShip { ship_class: ShipClass::Scout, count };
+    edit(&mut e.engine, |s| {
+        let player = s.players.get_mut(&pid).unwrap();
+        player.buildings.shipyard = 1;
+        player.research.combustion_drive = 1;
+    });
+    let scouts = |count: u16| Command::BuildShip { ship_class: ShipClass::LightFighter, count };
     let cap = e.state().homeworld.storage.cap;
-    let unit = ShipClass::Scout.build_cost();
+    let unit = ShipClass::LightFighter.build_cost();
     let fits = (cap.metal / unit.metal).floor() as u16;
     let whole = unit.scale(f64::from(fits));
 
     e.set_stockpile(cap);
     let mark = e.mark();
-    e.order(scouts(fits)).expect("the largest batch the Vault holds");
+    e.order(scouts(fits)).expect("the largest batch the store holds");
     let running = e.queue_events(mark)[0].id;
     e.set_stockpile(cap);
     e.order(Command::CancelBuild { queue_type: QueueType::Ship, id: running }).expect("cancel it");
@@ -157,7 +168,7 @@ fn a_batch_larger_than_the_vault_is_refused_though_refunds_would_pay_for_it() {
     assert_eq!(
         message,
         format!(
-            "Scout x{} costs {} metal, more than the {} metal your stockpile holds; needs Storage Vault level 1, or order {fits} or fewer at a time",
+            "Light Fighter x{} costs {} metal, more than the {} metal your stockpile holds; needs Metal Storage level 1, or order {fits} or fewer at a time",
             fits + 1,
             over.metal.ceil(),
             cap.metal.floor()
@@ -180,7 +191,7 @@ fn mind_the_queue(e: &mut Empire) {
     edit(&mut e.engine, |s| {
         let player = s.players.get_mut(&pid).unwrap();
         player.resources = cheap;
-        player.research.modular_fabrication = 1;
+        player.research.computer_technology = iac_shared::constants::BUILD_SLOT_LEVELS[0];
     });
     assert_eq!(e.state().homeworld.build_slots, 2);
     let mark = e.mark();
@@ -200,10 +211,10 @@ fn mind_the_queue(e: &mut Empire) {
 
     e.run(30);
     let mark = e.mark();
-    e.order(Command::Build { building_type: BuildingType::StorageVault, reserve: false }).expect("vault");
+    e.order(Command::Build { building_type: BuildingType::MetalStorage, reserve: false }).expect("storage");
     let running = e.queue_events(mark);
     let (id, paid) = (running[0].id, running[0].paid);
-    e.order(Command::CancelBuild { queue_type: QueueType::Building, id }).expect("cancel the running vault by id");
+    e.order(Command::CancelBuild { queue_type: QueueType::Building, id }).expect("cancel the running storage by id");
     let cancelled = e.queue_events(mark);
     let refund = cancelled.iter().find(|q| q.action == QueueAction::Cancelled).expect("cancel confirmed");
     assert_eq!(refund.id, id);
@@ -211,16 +222,31 @@ fn mind_the_queue(e: &mut Empire) {
 }
 
 fn research_a_chain(e: &mut Empire) {
+    e.set_stockpile(Resources { metal: 20_000.0, crystal: 20_000.0, deuterium: 20_000.0 });
     let mark = e.mark();
-    for building in [BuildingType::ResearchLab, BuildingType::ResearchLab] {
-        e.order(Command::Build { building_type: building, reserve: false }).expect("lab level queued");
+    for building in [BuildingType::ResearchLab, BuildingType::ResearchLab, BuildingType::Shipyard] {
+        e.order(Command::Build { building_type: building, reserve: false }).expect("a level queued");
     }
-    for tech in [ResearchType::Navigation, ResearchType::Navigation, ResearchType::CorvetteTech] {
+    let chain = [
+        ResearchType::ArmourTechnology,
+        ResearchType::ArmourTechnology,
+        ResearchType::EnergyTechnology,
+        ResearchType::CombustionDrive,
+    ];
+    for tech in chain {
         e.order(Command::Research { tech, reserve: false }).expect("research queues behind the lab that is itself queued");
     }
     let waiting = e.state().homeworld.research_pending;
-    assert_eq!((waiting[0].tech, waiting[0].target_level, waiting[0].waiting_on), (ResearchType::Navigation, 1, WaitReason::Prerequisite));
-    assert_eq!((waiting[1].tech, waiting[1].target_level), (ResearchType::Navigation, 2), "a second order builds on the first");
+    assert_eq!(
+        (waiting[0].tech, waiting[0].target_level, waiting[0].waiting_on),
+        (ResearchType::ArmourTechnology, 1, WaitReason::Prerequisite)
+    );
+    assert_eq!((waiting[1].tech, waiting[1].target_level), (ResearchType::ArmourTechnology, 2), "a second order builds on the first");
+    assert_eq!(
+        (waiting[3].tech, waiting[3].waiting_on),
+        (ResearchType::CombustionDrive, WaitReason::Prerequisite),
+        "an order may wait on a research that is itself queued"
+    );
 
     e.run_until(300, |e| {
         let home = e.state().homeworld;
@@ -236,8 +262,8 @@ fn research_a_chain(e: &mut Empire) {
         })
         .collect();
     let at = |name: &str| finished.iter().position(|f| f == name).unwrap_or_else(|| panic!("{name} missing from {finished:?}"));
-    assert!(at("lab2") < at("Navigation1") && at("Navigation1") < at("Navigation2"), "{finished:?}");
-    at("CorvetteTech1");
+    assert!(at("lab2") < at("ArmourTechnology1") && at("ArmourTechnology1") < at("ArmourTechnology2"), "{finished:?}");
+    assert!(at("EnergyTechnology1") < at("CombustionDrive1"), "{finished:?}");
 }
 
 fn hostile_lair(e: &Empire) -> (Hex, f32) {
@@ -248,7 +274,7 @@ fn hostile_lair(e: &Empire) -> (Hex, f32) {
         for r in -9i16..=9 {
             let at = Hex { q: home.q + q, r: home.r + r };
             let Some(t) = e.engine.world_gen.generate_sector(at).npc_template else { continue };
-            if t.behavior != NpcBehaviorType::Patrol || t.power() < 10.0 || homes.contains(&at) || e.engine.derelict_site_at(at).is_some() {
+            if t.behavior != NpcBehaviorType::Patrol || t.power() < 100.0 || homes.contains(&at) || e.engine.derelict_site_at(at).is_some() {
                 continue;
             }
             let Some(path) = lane_path(&e.engine, home, at, 8) else { continue };
@@ -266,23 +292,23 @@ fn yard_idle(e: &Empire) -> bool {
     home.shipyard_queue.is_none() && home.shipyard_pending.is_empty()
 }
 
-fn corvettes(count: u16) -> Command {
-    Command::BuildShip { ship_class: ShipClass::Corvette, count }
+fn fighters(count: u16) -> Command {
+    Command::BuildShip { ship_class: ShipClass::LightFighter, count }
 }
 
 fn build_a_battle_group(e: &mut Empire, count: u16) {
-    let unit = ShipClass::Corvette.build_cost();
+    let unit = ShipClass::LightFighter.build_cost();
     let batch = unit.scale(f64::from(count));
     let pair = unit.scale(2.0);
     let mark = e.mark();
 
     e.set_stockpile(pair);
-    let (code, message) = e.refusal(corvettes(count));
+    let (code, message) = e.refusal(fighters(count));
     assert_eq!(code, ErrorCode::InsufficientResources);
     let short = batch.sub(pair);
     let wanted = format!(
-        "Corvette x{count} costs {} metal, {} crystal and {} deuterium; the stockpile is short by {} metal, {} crystal and {} deuterium.",
-        batch.metal, batch.crystal, batch.deuterium, short.metal, short.crystal, short.deuterium
+        "Light Fighter x{count} costs {} metal and {} crystal; the stockpile is short by {} metal and {} crystal.",
+        batch.metal, batch.crystal, short.metal, short.crystal
     );
     assert!(
         message.starts_with(&wanted)
@@ -293,14 +319,14 @@ fn build_a_battle_group(e: &mut Empire, count: u16) {
     assert!(yard_idle(e) && e.queue_events(mark).is_empty());
 
     e.set_stockpile(batch);
-    e.order(corvettes(count)).expect("the stockpile covers the whole batch");
+    e.order(fighters(count)).expect("the stockpile covers the whole batch");
     let started = e.queue_events(mark);
     assert_eq!((started.len(), started[0].action, started[0].paid), (1, QueueAction::Started, batch), "a batch pays for every unit when it is ordered");
     assert_eq!(e.stockpile(), Resources::default());
 
     e.set_stockpile(pair.add(unit));
-    e.order(corvettes(2)).expect("a second batch behind the first");
-    e.order(corvettes(1)).expect("and a third");
+    e.order(fighters(2)).expect("a second batch behind the first");
+    e.order(fighters(1)).expect("and a third");
     assert_eq!(e.stockpile(), Resources::default(), "a batch waiting for the yard has paid as well");
     let (second, third) = (e.queue_events(mark)[1].clone(), e.queue_events(mark)[2].clone());
     assert_eq!((second.action, second.waiting_on, second.waiting_for, second.paid), (QueueAction::Waiting, Some(WaitReason::Slot), None, pair));
@@ -332,11 +358,11 @@ fn build_a_battle_group(e: &mut Empire, count: u16) {
     let rest = count.saturating_sub(running.built + 2);
     if rest > 0 {
         e.set_stockpile(unit.scale(f64::from(rest)));
-        e.order(corvettes(rest)).expect("the rest of the group");
+        e.order(fighters(rest)).expect("the rest of the group");
     }
     e.run_until(2000, yard_idle);
     let built: u16 = e.since(mark, |k| match k {
-        EventKind::ShipBuilt(b) if b.ship_class == ShipClass::Corvette => Some(b.count),
+        EventKind::ShipBuilt(b) if b.ship_class == ShipClass::LightFighter => Some(b.count),
         _ => None,
     }).iter().sum();
     assert_eq!(built, running.built + 2 + rest);
@@ -462,8 +488,8 @@ fn settle_the_score(e: &mut Empire) {
     assert!(table.you.is_none());
 }
 
-/// Order the corvettes home defence still lacks, as many as the stockpile
-/// covers, once the yard is clear. True while more are wanted.
+/// Order the Light Fighters home defence still lacks, as many as the
+/// stockpile covers, once the yard is clear. True while more are wanted.
 fn reinforce(e: &mut Empire) -> bool {
     let home = e.state().homeworld;
     let wanted = 1.6 * home.next_raid_estimate_power;
@@ -471,13 +497,13 @@ fn reinforce(e: &mut Empire) -> bool {
         return false;
     }
     if yard_idle(e) {
-        let lacking = ((wanted - home.home_defence_power) / scaling::ship_power(ShipClass::Corvette)).ceil();
-        let unit = ShipClass::Corvette.build_cost();
+        let lacking = ((wanted - home.home_defence_power) / scaling::ship_power(ShipClass::LightFighter)).ceil();
+        let unit = ShipClass::LightFighter.build_cost();
         let stock = e.stockpile();
-        let covered = (stock.metal / unit.metal).min(stock.crystal / unit.crystal).min(stock.deuterium / unit.deuterium).floor();
+        let covered = (stock.metal / unit.metal).min(stock.crystal / unit.crystal).floor();
         let count = f64::from(lacking).min(covered) as u16;
         if count > 0 {
-            e.order(corvettes(count)).expect("reinforcements the stockpile covers");
+            e.order(fighters(count)).expect("reinforcements the stockpile covers");
         }
     }
     true

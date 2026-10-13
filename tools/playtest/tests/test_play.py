@@ -59,11 +59,11 @@ class Events(unittest.TestCase):
 
     def test_identical_lines_get_a_count_and_ships_sum(self):
         hold = {"tick": 1, "kind": "PolicyAction", "fleet_id": 2, "preset": "prospect", "action": "hold", "reason": "nothing left"}
-        built = {"tick": 2, "kind": "ShipBuilt", "ship_class": "Scout", "count": 1}
+        built = {"tick": 2, "kind": "ShipBuilt", "ship_class": "LightFighter", "count": 1}
         lines = play.collapse_events([tick_msg(hold, built, dict(hold, tick=3), built)])
         self.assertTrue(any("hold" in l and "x2" in l for l in lines))
         self.assertEqual(len([l for l in lines if "hold" in l]), 1)
-        self.assertIn("  built 2x Scout", lines)
+        self.assertIn("  built 2x LightFighter", lines)
 
     def test_errors_can_be_hidden_and_completions_are_sentences(self):
         msgs = [{"type": "error", "code": "QueueFull", "message": "full"},
@@ -96,10 +96,10 @@ class Commands(unittest.TestCase):
         self.assertIsNotNone(play.parse_commands(["[1,2]"])[1])
 
     def test_errors_go_to_the_command_they_name(self):
-        cmds = [{"action": "build", "building_type": "MetalMine"}, {"action": "research", "tech": "Navigation"},
+        cmds = [{"action": "build", "building_type": "MetalMine"}, {"action": "research", "tech": "EspionageTechnology"},
                 {"action": "harvest", "fleet_id": 99, "resource": "Auto"}]
         errs = [{"code": "FleetNotFound", "message": "fleet 99 not found"},
-                {"code": "NoResearchLab", "message": "Navigation needs Research Lab level 2"}]
+                {"code": "NoResearchLab", "message": "Espionage Technology needs Research Lab level 3"}]
         got, left = play.match_errors(cmds, errs)
         self.assertIsNone(got[0])
         self.assertEqual(got[1]["code"], "NoResearchLab")
@@ -118,8 +118,8 @@ class Commands(unittest.TestCase):
         self.assertEqual(len(left) + sum(g is not None for g in got), 2)
 
     def test_spaced_server_names_match_their_order(self):
-        cmds = [{"action": "build", "building_type": "MetalMine"}, {"action": "research", "tech": "CorvetteTech"}]
-        errs = [{"code": "NoResearchLab", "message": "Corvette Tech needs Research Lab level 1 (you have 0)"}]
+        cmds = [{"action": "build", "building_type": "MetalMine"}, {"action": "research", "tech": "CombustionDrive"}]
+        errs = [{"code": "NoResearchLab", "message": "Combustion Drive needs Research Lab level 1 (you have 0)"}]
         got, left = play.match_errors(cmds, errs)
         self.assertEqual([g and g["code"] for g in got], [None, "NoResearchLab"])
         self.assertEqual(left, [])
@@ -231,12 +231,12 @@ class Costs(unittest.TestCase):
         self.assertEqual(play.future_steps("MetalMine", 20, 20, None, "buildings"), [])
 
     def test_unlock_text(self):
-        rows = [("ships", "Frigate", None, None, None, [{"name": "Shipyard", "need": 4, "have": 2, "met": False}]),
-                ("ships", "Cruiser", None, None, None, [{"name": "Shipyard", "need": 4, "have": 2, "met": False},
-                                                         {"name": "Cruiser Tech", "need": 1, "have": 0, "met": False}])]
-        text = play.unlock_text(rows, "Shipyard", 4)[0]
-        self.assertIn("Frigate", text)
-        self.assertIn("toward Cruiser", text)
+        rows = [("ships", "SmallCargo", None, None, None, [{"name": "Shipyard", "need": 2, "have": 1, "met": False}]),
+                ("ships", "Recycler", None, None, None, [{"name": "Shipyard", "need": 2, "have": 1, "met": False},
+                                                          {"name": "Combustion Drive", "need": 6, "have": 2, "met": False}])]
+        text = play.unlock_text(rows, "Shipyard", 2)[0]
+        self.assertIn("SmallCargo", text)
+        self.assertIn("toward Recycler", text)
 
 
 class Wait(unittest.TestCase):
@@ -276,7 +276,7 @@ class Wait(unittest.TestCase):
     def test_alert_always_returns_and_ordinary_events_only_for_event_mode(self):
         base = self.snap()
         alert = {"kind": "Alert", "level": "Critical", "message": "fleet lost", "tick": 1}
-        built = {"kind": "ShipBuilt", "ship_class": "Scout", "count": 1, "tick": 1}
+        built = {"kind": "ShipBuilt", "ship_class": "LightFighter", "count": 1, "tick": 1}
         for mode in ("any", "idle", "event", "done"):
             self.assertTrue(play.wait_reasons(base, base, [alert], mode), mode)
         self.assertEqual(play.wait_reasons(base, base, [built], "any"), [])

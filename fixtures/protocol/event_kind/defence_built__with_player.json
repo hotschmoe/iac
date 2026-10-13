@@ -1,6 +1,6 @@
 {
   "count": 1,
-  "defence": "PulseTurret",
+  "defence": "LargeShieldDome",
   "kind": "DefenceBuilt",
   "player_id": 42,
   "tick": 1234

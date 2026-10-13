@@ -30,12 +30,23 @@ use ResourceKind::{Crystal, Deuterium, Metal};
 
 const HUB: Hex = Hex::ORIGIN;
 
+/// Mines at the given levels, with a Solar Plant that powers them in full.
 fn set_mines(e: &mut Empire, metal: u8, crystal: u8, deuterium: u8) {
     let pid = e.pid;
     edit(&mut e.engine, |s| {
         let b = &mut s.players.get_mut(&pid).unwrap().buildings;
         (b.metal_mine, b.crystal_mine, b.deuterium_synthesizer) = (metal, crystal, deuterium);
+        b.solar_plant = scaling::MAX_BUILDING_LEVEL;
     });
+    assert_eq!(e.state().homeworld.energy.fraction, 1.0);
+}
+
+/// The hold these scenarios are written around: four Light Fighters carry
+/// 200 units between them before the pace's factor.
+const WING: [(ShipClass, usize); 1] = [(ShipClass::LightFighter, 4)];
+
+fn wings(count: usize) -> [(ShipClass, usize); 1] {
+    WING.map(|(class, ships)| (class, ships * count))
 }
 
 fn stow(e: &mut Empire, cargo: Resources) {
@@ -47,12 +58,12 @@ fn stow(e: &mut Empire, cargo: Resources) {
     });
 }
 
-/// An empire with mines at the given levels and `haulers` Haulers carrying `cargo` at the hub.
+/// An empire with mines at the given levels and `haulers` wings carrying `cargo` at the hub.
 fn trader(pace: &str, mines: (u8, u8, u8), haulers: usize, cargo: Resources) -> Empire {
     let mut e = Empire::join(world(pace), "Trader");
     set_mines(&mut e, mines.0, mines.1, mines.2);
     let fid = e.fid;
-    muster(&mut e.engine, fid, &[(ShipClass::Hauler, haulers)], HUB);
+    muster(&mut e.engine, fid, &wings(haulers), HUB);
     stow(&mut e, cargo);
     e
 }
@@ -100,16 +111,18 @@ fn close(a: f64, b: f64, tolerance: f64) -> bool {
 }
 
 #[test]
-fn a_hauler_flies_its_metal_to_the_hub_and_gets_the_quoted_deuterium() {
+fn a_wing_flies_its_metal_to_the_hub_and_gets_the_quoted_deuterium() {
     let mut e = Empire::join(world("season"), "Hauler");
     set_mines(&mut e, 10, 9, 8);
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
     let first = lane_path(&e.engine, home, HUB, 12).expect("a lane to the hub")[0];
-    muster(&mut e.engine, fid, &[(ShipClass::Hauler, 1)], first);
+    muster(&mut e.engine, fid, &WING, first);
     deploy(&mut e.engine, fid, first, Some(5000.0));
     let hold = e.fleet().cargo_capacity;
-    assert!((hold - 632.4555).abs() < 0.01, "one Hauler holds 200 x sqrt(10) at season pace: {hold}");
+    let each = f64::from(ShipClass::LightFighter.base_stats().cargo);
+    assert_eq!(hold, 4.0 * each * 10f64.sqrt(), "a hold is OGame's cargo figure times the pace's factor");
+    assert!((hold - 632.4555).abs() < 0.01, "four Light Fighters hold 200 x sqrt(10) at season pace: {hold}");
     stow(&mut e, Resources { metal: hold, ..Resources::default() });
 
     let afar = quote(&mut e, Metal, Deuterium, None);
@@ -126,7 +139,11 @@ fn a_hauler_flies_its_metal_to_the_hub_and_gets_the_quoted_deuterium() {
     let window = scaling::exchange_window(&pace);
     let span = EXCHANGE_METER_SHARE * weight(production) * window as f64;
     assert!((15_364..=15_365).contains(&window), "the window is 86400 s / 10^0.75: {window}");
-    assert!((span - 4185.0).abs() < 5.0, "the span is 15 percent of one window of mines 10/9/8: {span}");
+    let hourly = (778.0 + 20.0) + 1.5 * (424.0 + 10.0) + 2.0 * 171.0 * 1.2;
+    assert!(
+        (span - EXCHANGE_METER_SHARE * hourly * 10.0 / 3600.0 * window as f64).abs() < 0.01,
+        "the span is 15 percent of one window of OGame's mines at 10/9/8, natural production included: {span}"
+    );
 
     let empty = meter(&e);
     assert_eq!((empty.pressure, empty.fee, empty.clear_in, empty.window_ticks), (0.0, 0.25, Some(0), window));
@@ -134,9 +151,12 @@ fn a_hauler_flies_its_metal_to_the_hub_and_gets_the_quoted_deuterium() {
 
     let asked = quote(&mut e, Metal, Deuterium, None);
     assert_eq!(asked.refusal, None);
-    assert_eq!((asked.terms.amount, asked.terms.receive), (hold, 225.0), "632 metal gives 225 deuterium");
+    let fee = EXCHANGE_FEE_MIN + (EXCHANGE_FEE_MAX - EXCHANGE_FEE_MIN) * hold / span / 2.0;
+    let receive = (hold * (1.0 - fee) / 2.0).floor();
+    assert_eq!((asked.terms.amount, asked.terms.receive), (hold, receive), "632 metal gives 232 deuterium");
+    assert_eq!(receive, 232.0);
     assert!(close(asked.terms.par, hold / 2.0, 0.01));
-    assert!((0.28..0.30).contains(&asked.terms.fee), "about 29 percent: {}", asked.terms.fee);
+    assert!((0.26..0.27).contains(&asked.terms.fee), "about 26 percent: {}", asked.terms.fee);
     assert_eq!(e.fleet().cargo.metal, hold, "a quote changes nothing");
     assert_eq!(meter(&e), empty);
 
@@ -145,7 +165,7 @@ fn a_hauler_flies_its_metal_to_the_hub_and_gets_the_quoted_deuterium() {
     let made = trade(&mut e, Metal, Deuterium, None).expect("the trade goes through");
     assert_eq!(made, asked.terms, "the trade is the quote");
     let cargo = e.fleet().cargo;
-    assert_eq!((cargo.metal, cargo.crystal, cargo.deuterium), (0.0, 0.0, 225.0));
+    assert_eq!((cargo.metal, cargo.crystal, cargo.deuterium), (0.0, 0.0, receive));
     assert!(owned(&e) < before - 0.25 * hold);
     assert_eq!(e.score_row(), score, "a trade moves no score");
 
@@ -258,7 +278,7 @@ fn an_order_in_pieces_returns_what_the_whole_order_would() {
 
 #[test]
 fn the_meter_falls_one_span_per_window_and_survives_a_restart() {
-    let mut e = trader("season", (4, 4, 4), 12, Resources { metal: 6000.0, ..Resources::default() });
+    let mut e = trader("season", (2, 1, 1), 12, Resources { metal: 6000.0, ..Resources::default() });
     let pid = e.pid;
 
     let sold = trade(&mut e, Metal, Deuterium, Some(3000.0)).expect("a sale past the span");
@@ -296,11 +316,12 @@ fn the_meter_falls_one_span_per_window_and_survives_a_restart() {
     assert_eq!(again.receive, (scaling::exchange_return(0.0, 100.0, span) / 2.0).floor());
 
     let mut idle = trader("season", (0, 0, 0), 2, Resources { metal: 1000.0, ..Resources::default() });
+    let natural = idle.engine.players[&idle.pid].production_per_tick(&idle.engine.pace());
+    assert!(natural.metal > 0.0 && natural.crystal > 0.0 && natural.deuterium == 0.0, "{natural:?}");
     let flat = trade(&mut idle, Metal, Crystal, Some(600.0)).expect("an empire with no mines still trades");
-    assert_eq!((flat.receive, flat.meter.span, flat.meter.fee), (100.0, 0.0, 0.75), "at the top fee");
-    assert_eq!(flat.meter_after.clear_in, None);
-    idle.run(5000);
-    assert_eq!(meter(&idle).pressure, 600.0, "with no mine output the meter does not fall");
+    assert!(flat.meter.span > 0.0 && flat.meter.span < 600.0, "its span is its natural production's: {}", flat.meter.span);
+    assert_eq!(flat.meter_after.fee, 0.75, "and a sale past it ends at the top fee");
+    assert!(flat.meter_after.clear_in.is_some(), "with natural production the meter falls");
 }
 
 #[test]
@@ -388,19 +409,18 @@ fn the_hub_is_empty_space_and_no_hostile_group_enters_it() {
         "nothing to fight at the hub",
     );
 
-    let scout = ShipClass::Scout.base_stats();
+    let fighter = ShipClass::LightFighter.base_stats();
     let posts: Vec<Hex> = hex_ring(HUB, 1).collect();
     let patrol = |id: u64, at: Hex| {
         let mut ships = [Ship::default(); MAX_NPC_SHIPS];
         ships[0] = Ship {
             id,
-            ship_class: ShipClass::Scout,
-            hull: scout.hull,
-            hull_max: scout.hull,
-            shield: scout.shield,
-            shield_max: scout.shield,
-            weapon_power: scout.weapon,
-            speed: scout.speed,
+            ship_class: ShipClass::LightFighter,
+            hull: fighter.hull,
+            hull_max: fighter.hull,
+            shield: fighter.shield,
+            shield_max: fighter.shield,
+            weapon_power: fighter.weapon,
         };
         NpcFleet {
             id,
@@ -412,8 +432,8 @@ fn the_hub_is_empty_space_and_no_hostile_group_enters_it() {
             patrol_timer: 0,
             in_combat: false,
             bounty: Resources::default(),
-            power: scaling::ship_power(ShipClass::Scout),
-            label: "scout patrol".to_string(),
+            power: scaling::ship_power(ShipClass::LightFighter),
+            label: "light fighter patrol".to_string(),
         }
     };
     let mut moved = 0;
@@ -437,14 +457,18 @@ fn the_hub_is_empty_space_and_no_hostile_group_enters_it() {
     trade(&mut e, Metal, Crystal, None).expect("the exchange is open with patrols all around");
 }
 
-/// An empire with `haulers` Haulers standing at its home dock.
+/// An empire with `haulers` wings standing at its home dock.
 fn carrier(pace: &str, mines: (u8, u8, u8), haulers: usize) -> Empire {
     let mut e = Empire::join(world(pace), "Carrier");
     set_mines(&mut e, mines.0, mines.1, mines.2);
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
-    muster(&mut e.engine, fid, &[(ShipClass::Hauler, haulers)], home);
+    muster(&mut e.engine, fid, &wings(haulers), home);
     e
+}
+
+fn no_storage() -> scaling::BuildingLevels {
+    scaling::BuildingLevels::default()
 }
 
 fn stock(metal: f64, crystal: f64, deuterium: f64) -> Resources {
@@ -472,14 +496,14 @@ fn a_full_stockpile_is_carried_to_the_hub_traded_and_brought_home() {
         let fleet = s.fleets.get_mut(&fid).unwrap();
         (fleet.fuel, fleet.fuel_max) = (1e8, 1e8);
     });
-    let cap = scaling::storage_cap(0, &e.engine.pace());
+    let cap = scaling::storage_cap(&no_storage(), &e.engine.pace());
     e.set_stockpile(stock(cap.metal, 1000.0, 500.0));
     e.run(3);
     assert_eq!(e.stockpile().metal, cap.metal, "mine output at the cap is lost");
     assert_eq!(e.state().homeworld.storage.capped, [Metal]);
 
     let hold = e.fleet().cargo_capacity;
-    assert!((hold - 4.0 * 632.4555).abs() < 0.01, "four Haulers at season pace: {hold}");
+    assert!((hold - 4.0 * 632.4555).abs() < 0.01, "four wings at season pace: {hold}");
     let (score, before) = (e.score_row(), owned(&e));
     let mark = e.mark();
     e.order(put_aboard(fid, Metal, None)).expect("the hold takes all that fits");
@@ -525,7 +549,7 @@ fn a_full_stockpile_is_carried_to_the_hub_traded_and_brought_home() {
 fn unload_puts_a_laden_hold_back_as_far_as_the_cap_allows() {
     let mut e = carrier("season", (4, 4, 4), 2);
     let fid = e.fid;
-    let cap = scaling::storage_cap(0, &e.engine.pace());
+    let cap = scaling::storage_cap(&no_storage(), &e.engine.pace());
     e.set_stockpile(stock(3000.0, 2000.0, 1000.0));
     e.order(put_aboard(fid, Metal, Some(700.0))).expect("an exact amount");
     e.order(put_aboard(fid, Crystal, Some(300.5))).expect("a second resource in the same hold");
@@ -661,23 +685,32 @@ fn standing_orders_end_a_hand_loaded_hold() {
     assert!(e.engine.fleets.values().all(|f| !f.laden));
 }
 
-const RAIDED_STOCK: Resources = Resources { metal: 20_000.0, crystal: 9000.0, deuterium: 6000.0 };
+const RAIDED_STOCK: Resources = Resources { metal: 400_000.0, crystal: 300_000.0, deuterium: 250_000.0 };
 
-/// Eight Haulers docked under Vault 2 with `RAIDED_STOCK`, loaded as `loads`
-/// say, the stockpile then changed by `restock`, and a raid no defence
-/// stops: the empire after it, the raid's report and the alerts it raised.
+/// What stands at a homeworld whose three storage buildings are at level 2.
+fn stores_at_two() -> scaling::BuildingLevels {
+    scaling::BuildingLevels { metal_storage: 2, crystal_storage: 2, deuterium_tank: 2, ..no_storage() }
+}
+
+/// Eight wings docked under storage at level 2 with `RAIDED_STOCK`, loaded
+/// as `loads` say, the stockpile then changed by `restock`, and a raid no
+/// defence stops: the empire after it, the raid's report and the alerts it
+/// raised.
 fn raided(
     loads: &[(ResourceKind, Option<f64>)],
     restock: impl FnOnce(Resources, Resources) -> Resources,
 ) -> (Empire, RaidResolvedEvent, Vec<String>) {
     let mut e = carrier("season", (6, 5, 4), 8);
     let (pid, fid) = (e.pid, e.fid);
-    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().buildings.storage_vault = 2);
+    edit(&mut e.engine, |s| {
+        let b = &mut s.players.get_mut(&pid).unwrap().buildings;
+        (b.metal_storage, b.crystal_storage, b.deuterium_tank) = (2, 2, 2);
+    });
     e.set_stockpile(RAIDED_STOCK);
     for &(kind, amount) in loads {
         e.order(put_aboard(fid, kind, amount)).expect("room and stock for it");
     }
-    let cap = scaling::storage_cap(2, &e.engine.pace());
+    let cap = scaling::storage_cap(&stores_at_two(), &e.engine.pace());
     let stockpile = restock(e.stockpile(), cap);
     e.set_stockpile(stockpile);
     let arrival_tick = e.engine.current_tick() + 1;
@@ -717,10 +750,10 @@ fn a_lost_raid_counts_cargo_at_home_with_the_stockpile() {
     let (laden, laden_raid, told) = raided(&loads, |as_loaded, _| as_loaded);
     assert!(!told.iter().any(|m| m.contains("lost carried")), "the six holds left carry all of it: {told:?}");
     assert!(!plain_raid.defended && !laden_raid.defended);
-    assert_eq!((plain_raid.ships_lost, laden_raid.ships_lost), (2, 2), "a quarter of the docked ships");
+    assert_eq!((plain_raid.ships_lost, laden_raid.ships_lost), (8, 8), "a quarter of the docked ships");
 
     let pace = laden.engine.pace();
-    let protected = scaling::storage_protected(2, &pace);
+    let protected = scaling::storage_protected(&stores_at_two(), &pace);
     let whole = start.add(laden.engine.players[&laden.pid].production_per_tick(&pace));
     let exposed = whole.sub(protected);
     let expected = stock(
@@ -748,11 +781,11 @@ fn ships_lost_to_a_raid_at_the_dock_leave_their_share_of_the_hold_in_the_stockpi
     let (plain, plain_raid, _) = raided(&[], |as_loaded, _| as_loaded);
     let (roomy, roomy_raid, roomy_told) = raided(&[(Metal, None)], |as_loaded, _| as_loaded);
     let (full, full_raid, full_told) = raided(&[(Metal, None)], |as_loaded, cap| Resources { metal: cap.metal, ..as_loaded });
-    assert_eq!((roomy_raid.ships_lost, full_raid.ships_lost), (2, 2), "a quarter of the eight Haulers");
+    assert_eq!((roomy_raid.ships_lost, full_raid.ships_lost), (8, 8), "a quarter of the eight wings");
 
     for e in [&roomy, &full] {
         let fleet = e.fleet();
-        assert_eq!(fleet.ships.len(), 6);
+        assert_eq!(fleet.ships.len(), 24);
         assert!(fleet.cargo.total() <= fleet.cargo_capacity, "{} aboard a hold of {}", fleet.cargo.total(), fleet.cargo_capacity);
         assert!(fleet.cargo.total() > 0.9 * fleet.cargo_capacity, "the six holds left stay loaded");
     }
@@ -763,7 +796,7 @@ fn ships_lost_to_a_raid_at_the_dock_leave_their_share_of_the_hold_in_the_stockpi
     assert!((roomy_raid.resources_lost.metal - plain_raid.resources_lost.metal).abs() < 0.5);
     assert!(roomy_told.iter().any(|m| m.contains("lost carried") && m.ends_with("it went to the stockpile")), "{roomy_told:?}");
 
-    let cap = scaling::storage_cap(2, &full.engine.pace());
+    let cap = scaling::storage_cap(&stores_at_two(), &full.engine.pace());
     let had = cap.metal + hold + shed;
     let kept = owned_pile(&full).metal;
     assert!(
@@ -810,8 +843,9 @@ fn a_laden_fleet_split_at_the_dock_keeps_both_halves_laden() {
         e.engine.fleets.values().find(|f| f.owner_id == pid && f.id != fid).map(|f| f.id).expect("the detachment")
     };
 
-    let one = e.fleet().ships[0].id;
-    e.order(Command::Split { fleet_id: fid, ship_ids: vec![one] }).expect("split at the dock");
+    let one_wing = |e: &Empire| e.fleet().ships[..4].iter().map(|ship| ship.id).collect::<Vec<u64>>();
+    let one = one_wing(&e);
+    e.order(Command::Split { fleet_id: fid, ship_ids: one }).expect("split at the dock");
     let wing = other(&e);
     e.run(5);
     let (main, part) = (&e.engine.fleets[&fid], &e.engine.fleets[&wing]);
@@ -824,8 +858,8 @@ fn a_laden_fleet_split_at_the_dock_keeps_both_halves_laden() {
     assert!((merged.cargo.metal - hold).abs() < 0.01 && merged.laden, "the fleet that absorbs keeps its state");
 
     e.order(Command::Unload { fleet_id: fid }).expect("unload");
-    let one = e.fleet().ships[0].id;
-    e.order(Command::Split { fleet_id: fid, ship_ids: vec![one] }).expect("split again");
+    let one = one_wing(&e);
+    e.order(Command::Split { fleet_id: fid, ship_ids: one }).expect("split again");
     let wing = other(&e);
     e.order(put_aboard(wing, Metal, None)).expect("load the detachment only");
     e.order(Command::Merge { fleet_id: fid, other_fleet_id: wing }).expect("fold it into the unladen fleet");

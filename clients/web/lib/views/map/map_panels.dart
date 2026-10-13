@@ -344,7 +344,7 @@ class Inspector extends StatelessWidget {
                 fill: false),
           ),
         if (sec == null)
-          _box('No data. A scout must visit, or a scan from an adjacent sector will reveal it.', C.rare, C.rareDim, fill: false)
+          _box('No data. A fleet must visit, or a scan from an adjacent sector will reveal it.', C.rare, C.rareDim, fill: false)
         else if (it.live)
           _box('LIVE in sensor range. Hostiles shown are real.', C.own, C.ownDim, fill: false)
         else

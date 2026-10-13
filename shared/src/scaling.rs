@@ -1,18 +1,28 @@
 // Single source of truth for all balance formulas, costs, times, and modifiers.
 // Pure data/formula file -- no side effects, no allocations.
+//
+// The buildings, the research, the ships and the defences are classic
+// OGame's, with its numbers (`docs/design/ogame.md`, section 6). What this
+// game asks of them that OGame does not answer is a constant of its own in
+// `constants.rs`, named there as provisional.
 
 use serde::{Deserialize, Serialize};
 
 use crate::constants::{
-    Density, ResourceKind, Resources, ShipClass, ShipStats, Zone, EXCHANGE_FEE_MAX, EXCHANGE_FEE_MIN,
-    EXCHANGE_METER_SHARE, EXCHANGE_WINDOW_TICKS, FUEL_DEUT_PER_UNIT, OUTPOST_BUILD_RATE, OUTPOST_COST, OUTPOST_GROWTH,
-    OUTPOST_PLATFORM_POWER, OUTPOST_RAID_FACTOR, OUTPOST_REPAIR_SHARE, OUTPOST_STORE_BASE, OUTPOST_YIELD_PER_HOUR,
-    REFINE_LOSS,
+    Density, Drive, ResourceKind, Resources, ShipClass, ShipStats, Zone, BUILD_SLOT_LEVELS, EXCHANGE_FEE_MAX,
+    EXCHANGE_FEE_MIN, EXCHANGE_METER_SHARE, EXCHANGE_WINDOW_TICKS, FUEL_DEUT_PER_UNIT, FUEL_SAVING_MAX,
+    FUEL_SAVING_PER_LEVEL, HARVEST_YIELD_LEVELS, HARVEST_YIELD_PER_LEVEL, HOME_TEMPERATURE_MAX, JUMP_SPEED_REF,
+    MAP_PAYS, OUTPOST_BUILD_RATE, OUTPOST_COST, OUTPOST_GROWTH, OUTPOST_RAID_FACTOR, OUTPOST_REPAIR_SHARE,
+    OUTPOST_STORE_BASE, OUTPOST_YIELD_PER_HOUR, RECALL_SAVING_PER_LEVEL, REFINE_LOSS, SENSOR_HOPS_PER_LEVEL,
+    TANK_PER_DEUT_TANK_LEVEL,
 };
 use crate::maths;
 use crate::pace::Pace;
 
+/// OGame has no ceiling on a level. This game keeps one, as a bound on
+/// every table and every cost.
 pub const MAX_BUILDING_LEVEL: u8 = 20;
+pub const MAX_RESEARCH_LEVEL: u8 = 20;
 
 // ── Building System ──────────────────────────────────────────────
 
@@ -22,94 +32,107 @@ pub enum BuildingType {
     MetalMine = 0,
     CrystalMine,
     DeuteriumSynthesizer,
+    SolarPlant,
+    FusionReactor,
+    RoboticsFactory,
+    NaniteFactory,
     Shipyard,
+    MetalStorage,
+    CrystalStorage,
+    DeuteriumTank,
     ResearchLab,
-    FuelDepot,
-    SensorArray,
-    DefenseGrid,
-    StorageVault,
-    Fabricator,
 }
 
 impl BuildingType {
+    /// Number of building types.
+    pub const COUNT: usize = 12;
+    pub const ALL: [BuildingType; BuildingType::COUNT] = [
+        BuildingType::MetalMine,
+        BuildingType::CrystalMine,
+        BuildingType::DeuteriumSynthesizer,
+        BuildingType::SolarPlant,
+        BuildingType::FusionReactor,
+        BuildingType::RoboticsFactory,
+        BuildingType::NaniteFactory,
+        BuildingType::Shipyard,
+        BuildingType::MetalStorage,
+        BuildingType::CrystalStorage,
+        BuildingType::DeuteriumTank,
+        BuildingType::ResearchLab,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             BuildingType::MetalMine => "Metal Mine",
             BuildingType::CrystalMine => "Crystal Mine",
-            BuildingType::DeuteriumSynthesizer => "Deut Synthesizer",
+            BuildingType::DeuteriumSynthesizer => "Deuterium Synthesizer",
+            BuildingType::SolarPlant => "Solar Plant",
+            BuildingType::FusionReactor => "Fusion Reactor",
+            BuildingType::RoboticsFactory => "Robotics Factory",
+            BuildingType::NaniteFactory => "Nanite Factory",
             BuildingType::Shipyard => "Shipyard",
+            BuildingType::MetalStorage => "Metal Storage",
+            BuildingType::CrystalStorage => "Crystal Storage",
+            BuildingType::DeuteriumTank => "Deuterium Tank",
             BuildingType::ResearchLab => "Research Lab",
-            BuildingType::FuelDepot => "Fuel Depot",
-            BuildingType::SensorArray => "Sensor Array",
-            BuildingType::DefenseGrid => "Defense Grid",
-            BuildingType::StorageVault => "Storage Vault",
-            BuildingType::Fabricator => "Fabricator",
         }
     }
-
-    /// Number of building types.
-    pub const COUNT: usize = 10;
 
     pub fn short_label(self) -> &'static str {
         match self {
             BuildingType::MetalMine => "Metal",
             BuildingType::CrystalMine => "Crystal",
             BuildingType::DeuteriumSynthesizer => "Deut",
+            BuildingType::SolarPlant => "Solar",
+            BuildingType::FusionReactor => "Fusion",
+            BuildingType::RoboticsFactory => "Robots",
+            BuildingType::NaniteFactory => "Nanite",
             BuildingType::Shipyard => "Shipyd",
+            BuildingType::MetalStorage => "MStore",
+            BuildingType::CrystalStorage => "CStore",
+            BuildingType::DeuteriumTank => "DTank",
             BuildingType::ResearchLab => "Lab",
-            BuildingType::FuelDepot => "Depot",
-            BuildingType::SensorArray => "Sensor",
-            BuildingType::DefenseGrid => "DefGrd",
-            BuildingType::StorageVault => "Vault",
-            BuildingType::Fabricator => "Fab",
         }
     }
+
     pub fn from_usize(idx: usize) -> Option<Self> {
-        match idx {
-            0 => Some(BuildingType::MetalMine),
-            1 => Some(BuildingType::CrystalMine),
-            2 => Some(BuildingType::DeuteriumSynthesizer),
-            3 => Some(BuildingType::Shipyard),
-            4 => Some(BuildingType::ResearchLab),
-            5 => Some(BuildingType::FuelDepot),
-            6 => Some(BuildingType::SensorArray),
-            7 => Some(BuildingType::DefenseGrid),
-            8 => Some(BuildingType::StorageVault),
-            9 => Some(BuildingType::Fabricator),
-            _ => None,
-        }
+        Self::ALL.get(idx).copied()
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildingLevels {
     pub metal_mine: u8,
     pub crystal_mine: u8,
     pub deuterium_synthesizer: u8,
+    pub solar_plant: u8,
+    pub fusion_reactor: u8,
+    pub robotics_factory: u8,
+    pub nanite_factory: u8,
     pub shipyard: u8,
+    pub metal_storage: u8,
+    pub crystal_storage: u8,
+    pub deuterium_tank: u8,
     pub research_lab: u8,
-    pub fuel_depot: u8,
-    pub sensor_array: u8,
-    pub defense_grid: u8,
-    pub storage_vault: u8,
-    pub fabricator: u8,
 }
 
 impl Default for BuildingLevels {
-    /// New homeworlds start with level-1 metal and crystal mines.
+    /// A new homeworld has a Metal Mine and a Crystal Mine at level 1 and the
+    /// Solar Plant that powers exactly those two. OGame starts with nothing.
     fn default() -> Self {
         BuildingLevels {
             metal_mine: 1,
             crystal_mine: 1,
             deuterium_synthesizer: 0,
+            solar_plant: 1,
+            fusion_reactor: 0,
+            robotics_factory: 0,
+            nanite_factory: 0,
             shipyard: 0,
+            metal_storage: 0,
+            crystal_storage: 0,
+            deuterium_tank: 0,
             research_lab: 0,
-            fuel_depot: 0,
-            sensor_array: 0,
-            defense_grid: 0,
-            storage_vault: 0,
-            fabricator: 0,
         }
     }
 }
@@ -120,13 +143,15 @@ impl BuildingLevels {
             BuildingType::MetalMine => self.metal_mine,
             BuildingType::CrystalMine => self.crystal_mine,
             BuildingType::DeuteriumSynthesizer => self.deuterium_synthesizer,
+            BuildingType::SolarPlant => self.solar_plant,
+            BuildingType::FusionReactor => self.fusion_reactor,
+            BuildingType::RoboticsFactory => self.robotics_factory,
+            BuildingType::NaniteFactory => self.nanite_factory,
             BuildingType::Shipyard => self.shipyard,
+            BuildingType::MetalStorage => self.metal_storage,
+            BuildingType::CrystalStorage => self.crystal_storage,
+            BuildingType::DeuteriumTank => self.deuterium_tank,
             BuildingType::ResearchLab => self.research_lab,
-            BuildingType::FuelDepot => self.fuel_depot,
-            BuildingType::SensorArray => self.sensor_array,
-            BuildingType::DefenseGrid => self.defense_grid,
-            BuildingType::StorageVault => self.storage_vault,
-            BuildingType::Fabricator => self.fabricator,
         }
     }
 
@@ -135,34 +160,165 @@ impl BuildingLevels {
             BuildingType::MetalMine => self.metal_mine = level,
             BuildingType::CrystalMine => self.crystal_mine = level,
             BuildingType::DeuteriumSynthesizer => self.deuterium_synthesizer = level,
+            BuildingType::SolarPlant => self.solar_plant = level,
+            BuildingType::FusionReactor => self.fusion_reactor = level,
+            BuildingType::RoboticsFactory => self.robotics_factory = level,
+            BuildingType::NaniteFactory => self.nanite_factory = level,
             BuildingType::Shipyard => self.shipyard = level,
+            BuildingType::MetalStorage => self.metal_storage = level,
+            BuildingType::CrystalStorage => self.crystal_storage = level,
+            BuildingType::DeuteriumTank => self.deuterium_tank = level,
             BuildingType::ResearchLab => self.research_lab = level,
-            BuildingType::FuelDepot => self.fuel_depot = level,
-            BuildingType::SensorArray => self.sensor_array = level,
-            BuildingType::DefenseGrid => self.defense_grid = level,
-            BuildingType::StorageVault => self.storage_vault = level,
-            BuildingType::Fabricator => self.fabricator = level,
         }
     }
 }
 
-/// Per game hour at pace 1: `base * level * 1.1^level`.
-pub const PRODUCTION_PER_HOUR_METAL: f64 = 10.0;
-pub const PRODUCTION_PER_HOUR_CRYSTAL: f64 = 7.0;
-pub const PRODUCTION_PER_HOUR_DEUTERIUM: f64 = 5.0;
-pub const PRODUCTION_GROWTH: f64 = 1.1;
+// ── Production and energy ────────────────────────────────────────
+//
+// OGame's, an hour at universe speed 1, which is pace 1:
+//
+//   metal      floor(30 * L * 1.1^L) * fraction + 20
+//   crystal    floor(20 * L * 1.1^L) * fraction + 10
+//   deuterium  floor(10 * L * 1.1^L) * (1.28 - 0.002 * Tmax) * fraction
+//   fraction   min(1, energy made / energy needed)
+//
+// The curves are whole numbers of 1.1^L, and 1.1 is 11/10, so they are
+// worked in integers: a float puts 10 * 1.1 a hair above 11 and its ceiling
+// at 12.
+
+/// `base * level * 1.1^level` an hour: the mine's output at full power.
+pub const PRODUCTION_PER_HOUR_METAL: u32 = 30;
+pub const PRODUCTION_PER_HOUR_CRYSTAL: u32 = 20;
+pub const PRODUCTION_PER_HOUR_DEUTERIUM: u32 = 10;
+/// Made with no mine and no energy.
+pub const NATURAL_PER_HOUR_METAL: f64 = 20.0;
+pub const NATURAL_PER_HOUR_CRYSTAL: f64 = 10.0;
+/// `base * level * 1.1^level`: energy a mine needs and a plant makes.
+pub const ENERGY_PER_MINE: u32 = 10;
+pub const ENERGY_PER_SYNTHESIZER: u32 = 20;
+pub const ENERGY_PER_SOLAR_PLANT: u32 = 20;
+/// The Fusion Reactor makes `base * level * (1.05 + 0.01 * Energy Technology)^level`
+/// and burns `burn * level * 1.1^level` deuterium an hour.
+pub const ENERGY_PER_FUSION_REACTOR: f64 = 30.0;
+pub const FUSION_BURN_PER_HOUR: u32 = 10;
+/// Graviton Technology costs no resources: the homeworld must be making
+/// this much energy when the research is ordered and when it starts, and
+/// three times as much for each further level.
+pub const GRAVITON_ENERGY: u32 = 300_000;
+pub const GRAVITON_GROWTH: u32 = 3;
+
+/// `base * level * 1.1^level` as a whole number, cut off or (`up`) raised.
+fn tenth_curve(base: u32, level: u8, up: bool) -> u32 {
+    let level = u32::from(level);
+    let (above, below) = (u128::from(base) * u128::from(level) * 11u128.pow(level), 10u128.pow(level));
+    (if up { above.div_ceil(below) } else { above / below }) as u32
+}
+
+/// The share of OGame's deuterium figure a homeworld's temperature leaves.
+pub fn synthesizer_factor() -> f64 {
+    1.28 - 0.002 * f64::from(HOME_TEMPERATURE_MAX)
+}
+
+/// What a mine makes an hour at pace 1 with all the energy it needs,
+/// without the natural production. 0 for a building that is not a mine.
+pub fn mine_output_per_hour(building: BuildingType, level: u8) -> f64 {
+    match building {
+        BuildingType::MetalMine => f64::from(tenth_curve(PRODUCTION_PER_HOUR_METAL, level, false)),
+        BuildingType::CrystalMine => f64::from(tenth_curve(PRODUCTION_PER_HOUR_CRYSTAL, level, false)),
+        BuildingType::DeuteriumSynthesizer => {
+            f64::from(tenth_curve(PRODUCTION_PER_HOUR_DEUTERIUM, level, false)) * synthesizer_factor()
+        }
+        _ => 0.0,
+    }
+}
+
+/// Energy the building needs at `level`; 0 for one that needs none.
+pub fn energy_needed_by(building: BuildingType, level: u8) -> u32 {
+    match building {
+        BuildingType::MetalMine | BuildingType::CrystalMine => tenth_curve(ENERGY_PER_MINE, level, true),
+        BuildingType::DeuteriumSynthesizer => tenth_curve(ENERGY_PER_SYNTHESIZER, level, true),
+        _ => 0,
+    }
+}
+
+pub fn solar_plant_energy(level: u8) -> u32 {
+    tenth_curve(ENERGY_PER_SOLAR_PLANT, level, false)
+}
+
+pub fn fusion_energy(level: u8, energy_technology: u8) -> u32 {
+    let base = f64::from(105 + u32::from(energy_technology)) / 100.0;
+    (ENERGY_PER_FUSION_REACTOR * f64::from(level) * maths::powi(base, i32::from(level))).floor() as u32
+}
+
+/// Deuterium the Fusion Reactor burns an hour at pace 1.
+pub fn fusion_burn_per_hour(level: u8) -> u32 {
+    tenth_curve(FUSION_BURN_PER_HOUR, level, true)
+}
+
+/// Energy one Solar Satellite makes: `floor(Tmax / 4 + 20)`, at least 1.
+pub fn satellite_energy() -> u32 {
+    (HOME_TEMPERATURE_MAX.div_euclid(4) + 20).max(1) as u32
+}
+
+/// A homeworld's energy: what its mines need, what is made for them, and
+/// the deuterium the Fusion Reactor burns each tick to make its share.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Power {
+    pub made: u32,
+    pub needed: u32,
+    pub fusion_burn: f64,
+}
+
+impl Power {
+    /// The fraction of their output the mines run at.
+    pub fn fraction(&self) -> f64 {
+        if self.needed == 0 { 1.0 } else { (f64::from(self.made) / f64::from(self.needed)).min(1.0) }
+    }
+}
+
+/// Energy made and needed. The Fusion Reactor runs only while `fusion_fed`:
+/// the stockpile has deuterium for it to burn.
+pub fn home_power(
+    buildings: &BuildingLevels,
+    research: &ResearchLevels,
+    satellites: u32,
+    fusion_fed: bool,
+    pace: &Pace,
+) -> Power {
+    let needed = [BuildingType::MetalMine, BuildingType::CrystalMine, BuildingType::DeuteriumSynthesizer]
+        .into_iter()
+        .map(|mine| energy_needed_by(mine, buildings.get(mine)))
+        .sum();
+    let fusion = buildings.fusion_reactor;
+    let running = fusion_fed && fusion > 0;
+    let made = solar_plant_energy(buildings.solar_plant)
+        .saturating_add(satellites.saturating_mul(satellite_energy()))
+        .saturating_add(if running { fusion_energy(fusion, research.energy_technology) } else { 0 });
+    let fusion_burn = if running { pace.rate(f64::from(fusion_burn_per_hour(fusion)) / 3600.0) } else { 0.0 };
+    Power { made, needed, fusion_burn }
+}
+
+/// What the mines add to the stockpile each tick at `fraction` of their
+/// power, natural production included. The Fusion Reactor's burn is not
+/// taken off here.
+pub fn production_per_tick(buildings: &BuildingLevels, fraction: f64, pace: &Pace) -> Resources {
+    let mine = |building: BuildingType, natural: f64| {
+        pace.rate((mine_output_per_hour(building, buildings.get(building)) * fraction + natural) / 3600.0)
+    };
+    Resources {
+        metal: mine(BuildingType::MetalMine, NATURAL_PER_HOUR_METAL),
+        crystal: mine(BuildingType::CrystalMine, NATURAL_PER_HOUR_CRYSTAL),
+        deuterium: mine(BuildingType::DeuteriumSynthesizer, 0.0),
+    }
+}
+
+// ── Times and queues ─────────────────────────────────────────────
 
 /// (metal + crystal) of cost that one game hour of build, research or ship
-/// time pays for.
-pub const BUILD_RATE: f64 = 700.0;
-pub const RESEARCH_RATE: f64 = 500.0;
-pub const SHIP_RATE: f64 = 1200.0;
-/// Shipyard level divides ship time by `1 + this * level`.
-pub const SHIPYARD_SPEED: f64 = 0.10;
-/// Fabricator level divides building time by `1 + this * level`.
-pub const FABRICATOR_SPEED: f64 = 0.15;
-/// Research Lab level divides research time by `1 + this * level`.
-pub const LAB_SPEED: f64 = 0.10;
+/// time pays for, before the building that divides it. OGame's.
+pub const BUILD_RATE: f64 = 2500.0;
+pub const RESEARCH_RATE: f64 = 1000.0;
+pub const SHIP_RATE: f64 = 2500.0;
 /// Orders that may wait behind the running ones in each queue (building,
 /// research, shipyard). The running items come on top, so the building queue
 /// holds `slots + 3`. Three because a waiting order is a claim on future
@@ -171,61 +327,106 @@ pub const LAB_SPEED: f64 = 0.10;
 /// holds the line, since the queue is first in, first out.
 pub const QUEUE_WAITING: usize = 3;
 
-/// Stockpile cap with no Vault, before the pace multiplier.
-pub const STORAGE_BASE: Resources = Resources { metal: 5000.0, crystal: 3500.0, deuterium: 2500.0 };
-/// Each Vault level multiplies the caps by this.
-pub const STORAGE_GROWTH: f64 = 1.5;
-/// Share of the cap per Vault level that a raid cannot skim, up to the max.
+/// Building time is divided by `1 + Robotics Factory` and halved by each
+/// level of the Nanite Factory.
+pub fn building_speed(buildings: &BuildingLevels) -> f64 {
+    f64::from(1 + u32::from(buildings.robotics_factory)) * nanite_speed(buildings)
+}
+
+/// Ship and defence time is divided by `1 + Shipyard` and halved by each
+/// level of the Nanite Factory.
+pub fn shipyard_speed(buildings: &BuildingLevels) -> f64 {
+    f64::from(1 + u32::from(buildings.shipyard)) * nanite_speed(buildings)
+}
+
+/// Research time is divided by `1 + Research Lab`.
+pub fn research_speed(buildings: &BuildingLevels) -> f64 {
+    f64::from(1 + u32::from(buildings.research_lab))
+}
+
+fn nanite_speed(buildings: &BuildingLevels) -> f64 {
+    maths::powi(2.0, i32::from(buildings.nanite_factory))
+}
+
+// ── Storage ──────────────────────────────────────────────────────
+
+/// OGame's storage: `STORAGE_BASE + STORAGE_STEP * ceil(STORAGE_GROWTH^level - 1)`
+/// of each resource, by the level of its own building, before the pace
+/// multiplier (which is this game's). 100,000 with no building, so a new
+/// empire is not squeezed by its stores; `STORAGE_BASE` is the knob if it
+/// should be.
+pub const STORAGE_BASE: f64 = 100_000.0;
+pub const STORAGE_STEP: f64 = 50_000.0;
+pub const STORAGE_GROWTH: f64 = 1.6;
+/// Share of the cap per level of its storage building that a raid cannot
+/// skim, up to the max.
 pub const STORAGE_PROTECT_PER_LEVEL: f64 = 0.08;
 pub const STORAGE_PROTECT_MAX: f64 = 0.60;
 /// `StorageNearCap` fires at this fill ratio.
 pub const STORAGE_NEAR_CAP_RATIO: f64 = 0.85;
 
-/// Stockpile cap per resource: `base * 1.5^vault * P^0.75`.
-pub fn storage_cap(vault_level: u8, pace: &Pace) -> Resources {
-    STORAGE_BASE.scale(maths::powi(STORAGE_GROWTH, i32::from(vault_level)) * pace.cap_mult())
+/// The building that holds `kind`.
+pub fn storage_building(kind: ResourceKind) -> BuildingType {
+    match kind {
+        ResourceKind::Metal => BuildingType::MetalStorage,
+        ResourceKind::Crystal => BuildingType::CrystalStorage,
+        ResourceKind::Deuterium => BuildingType::DeuteriumTank,
+    }
+}
+
+/// The cap one storage building gives its resource at `level`.
+pub fn storage_cap_at(level: u8, pace: &Pace) -> f64 {
+    let steps = (maths::powi(STORAGE_GROWTH, i32::from(level)) - 1.0).ceil();
+    (STORAGE_BASE + STORAGE_STEP * steps) * pace.cap_mult()
+}
+
+fn per_storage(buildings: &BuildingLevels, amount: impl Fn(u8) -> f64) -> Resources {
+    let of = |kind: ResourceKind| amount(buildings.get(storage_building(kind)));
+    Resources {
+        metal: of(ResourceKind::Metal),
+        crystal: of(ResourceKind::Crystal),
+        deuterium: of(ResourceKind::Deuterium),
+    }
+}
+
+/// Stockpile cap per resource.
+pub fn storage_cap(buildings: &BuildingLevels, pace: &Pace) -> Resources {
+    per_storage(buildings, |level| storage_cap_at(level, pace))
+}
+
+/// The stock of one resource a raid cannot take, by its building's level.
+pub fn storage_protected_at(level: u8, pace: &Pace) -> f64 {
+    storage_cap_at(level, pace) * (STORAGE_PROTECT_PER_LEVEL * f64::from(level)).min(STORAGE_PROTECT_MAX)
 }
 
 /// Per resource, the stock a raid cannot take.
-pub fn storage_protected(vault_level: u8, pace: &Pace) -> Resources {
-    let share = (STORAGE_PROTECT_PER_LEVEL * f64::from(vault_level)).min(STORAGE_PROTECT_MAX);
-    storage_cap(vault_level, pace).scale(share)
+pub fn storage_protected(buildings: &BuildingLevels, pace: &Pace) -> Resources {
+    per_storage(buildings, |level| storage_protected_at(level, pace))
 }
 
-/// Smallest Vault level whose cap holds `amount` of `kind`; None when even
-/// level 20 cannot.
-pub fn vault_level_for(amount: f64, kind: ResourceKind, pace: &Pace) -> Option<u8> {
-    (0..=MAX_BUILDING_LEVEL).find(|&level| storage_cap(level, pace).get(kind) >= amount)
+/// Smallest level of a storage building whose cap holds `amount`; None
+/// when even the highest cannot.
+pub fn storage_level_for(amount: f64, pace: &Pace) -> Option<u8> {
+    (0..=MAX_BUILDING_LEVEL).find(|&level| storage_cap_at(level, pace) >= amount)
 }
 
-/// Mine output per tick at the world's pace.
-pub fn production_per_tick(building: BuildingType, level: u8, pace: &Pace) -> f64 {
-    if level == 0 {
-        return 0.0;
-    }
-    let per_hour = match building {
-        BuildingType::MetalMine => PRODUCTION_PER_HOUR_METAL,
-        BuildingType::CrystalMine => PRODUCTION_PER_HOUR_CRYSTAL,
-        BuildingType::DeuteriumSynthesizer => PRODUCTION_PER_HOUR_DEUTERIUM,
-        _ => return 0.0,
-    };
-    let level = level as f64;
-    pace.rate(per_hour / 3600.0 * level * maths::powf(PRODUCTION_GROWTH, level))
-}
+// ── Costs ────────────────────────────────────────────────────────
 
 /// Level-1 cost and the per-level growth factor of a building.
 pub fn building_cost_curve(building: BuildingType) -> ([f64; 3], f64) {
     match building {
         BuildingType::MetalMine => ([60.0, 15.0, 0.0], 1.5),
         BuildingType::CrystalMine => ([48.0, 24.0, 0.0], 1.6),
-        BuildingType::DeuteriumSynthesizer => ([150.0, 50.0, 0.0], 1.5),
-        BuildingType::Shipyard => ([200.0, 100.0, 50.0], 1.8),
-        BuildingType::ResearchLab => ([100.0, 200.0, 50.0], 1.8),
-        BuildingType::FuelDepot => ([150.0, 50.0, 100.0], 1.7),
-        BuildingType::SensorArray => ([100.0, 150.0, 75.0], 1.7),
-        BuildingType::DefenseGrid => ([300.0, 200.0, 100.0], 1.8),
-        BuildingType::StorageVault => ([200.0, 100.0, 0.0], 1.7),
-        BuildingType::Fabricator => ([120.0, 80.0, 40.0], 1.9),
+        BuildingType::DeuteriumSynthesizer => ([225.0, 75.0, 0.0], 1.5),
+        BuildingType::SolarPlant => ([75.0, 30.0, 0.0], 1.5),
+        BuildingType::FusionReactor => ([900.0, 360.0, 180.0], 1.8),
+        BuildingType::RoboticsFactory => ([400.0, 120.0, 200.0], 2.0),
+        BuildingType::NaniteFactory => ([1_000_000.0, 500_000.0, 100_000.0], 2.0),
+        BuildingType::Shipyard => ([400.0, 200.0, 100.0], 2.0),
+        BuildingType::MetalStorage => ([2_000.0, 0.0, 0.0], 2.0),
+        BuildingType::CrystalStorage => ([2_000.0, 1_000.0, 0.0], 2.0),
+        BuildingType::DeuteriumTank => ([2_000.0, 2_000.0, 0.0], 2.0),
+        BuildingType::ResearchLab => ([200.0, 400.0, 200.0], 2.0),
     }
 }
 
@@ -242,69 +443,65 @@ pub fn building_cost(building: BuildingType, level: u8) -> Resources {
     grown_cost(base, growth, level)
 }
 
-/// Seconds (= ticks at pace 1) that `cost` takes at `rate` cost-units per hour.
+/// Seconds (= ticks at pace 1) that `cost` takes at `rate` cost-units per
+/// hour. Deuterium in a cost adds no time.
 fn cost_seconds(cost: Resources, rate: f64, speed_divisor: f64) -> f64 {
     (cost.metal + cost.crystal) / rate * 3600.0 / speed_divisor
 }
 
 /// Ticks to build level N: derived from the cost, so time and cost share an
 /// exponent.
-pub fn building_time(building: BuildingType, level: u8, fabricator_level: u8, pace: &Pace) -> u64 {
+pub fn building_time(building: BuildingType, level: u8, buildings: &BuildingLevels, pace: &Pace) -> u64 {
     if level == 0 {
         return 0;
     }
-    let divisor = 1.0 + FABRICATOR_SPEED * fabricator_level as f64;
-    pace.econ_ticks(cost_seconds(building_cost(building, level), BUILD_RATE, divisor))
+    pace.econ_ticks(cost_seconds(building_cost(building, level), BUILD_RATE, building_speed(buildings)))
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Prerequisite {
-    pub building: BuildingType,
-    pub level: u8,
+// ── Requirements ─────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrereqRef {
+    Building(BuildingType),
+    Research(ResearchType),
 }
 
-pub fn building_prerequisites(building: BuildingType) -> Option<Prerequisite> {
+/// What must stand at what level before something can be ordered.
+pub type Prereqs = &'static [(PrereqRef, u8)];
+
+pub fn prerequisites_met(prereqs: Prereqs, buildings: &BuildingLevels, research: &ResearchLevels) -> bool {
+    prereqs.iter().all(|(p, need)| match p {
+        PrereqRef::Building(b) => buildings.get(*b) >= *need,
+        PrereqRef::Research(t) => research.get(*t) >= *need,
+    })
+}
+
+pub fn building_prerequisites(building: BuildingType) -> Prereqs {
+    use BuildingType as B;
+    use PrereqRef::{Building, Research};
+    use ResearchType as R;
     match building {
-        BuildingType::MetalMine
-        | BuildingType::CrystalMine
-        | BuildingType::DeuteriumSynthesizer => None,
-        BuildingType::Shipyard => Some(Prerequisite {
-            building: BuildingType::MetalMine,
-            level: 2,
-        }),
-        BuildingType::ResearchLab => Some(Prerequisite {
-            building: BuildingType::CrystalMine,
-            level: 2,
-        }),
-        BuildingType::FuelDepot => Some(Prerequisite {
-            building: BuildingType::DeuteriumSynthesizer,
-            level: 2,
-        }),
-        BuildingType::SensorArray => Some(Prerequisite {
-            building: BuildingType::ResearchLab,
-            level: 1,
-        }),
-        BuildingType::DefenseGrid => Some(Prerequisite {
-            building: BuildingType::Shipyard,
-            level: 3,
-        }),
-        BuildingType::StorageVault => Some(Prerequisite {
-            building: BuildingType::MetalMine,
-            level: 2,
-        }),
-        BuildingType::Fabricator => Some(Prerequisite {
-            building: BuildingType::Shipyard,
-            level: 2,
-        }),
+        B::FusionReactor => &[(Building(B::DeuteriumSynthesizer), 5), (Research(R::EnergyTechnology), 3)],
+        B::NaniteFactory => &[(Building(B::RoboticsFactory), 10), (Research(R::ComputerTechnology), 10)],
+        B::Shipyard => &[(Building(B::RoboticsFactory), 2)],
+        B::MetalMine
+        | B::CrystalMine
+        | B::DeuteriumSynthesizer
+        | B::SolarPlant
+        | B::RoboticsFactory
+        | B::MetalStorage
+        | B::CrystalStorage
+        | B::DeuteriumTank
+        | B::ResearchLab => &[],
     }
 }
 
-pub fn building_prerequisites_met(building: BuildingType, levels: &BuildingLevels) -> bool {
-    if let Some(prereq) = building_prerequisites(building) {
-        levels.get(prereq.building) >= prereq.level
-    } else {
-        true
-    }
+pub fn building_prerequisites_met(
+    building: BuildingType,
+    buildings: &BuildingLevels,
+    research: &ResearchLevels,
+) -> bool {
+    prerequisites_met(building_prerequisites(building), buildings, research)
 }
 
 // ── Research System ──────────────────────────────────────────────
@@ -312,289 +509,215 @@ pub fn building_prerequisites_met(building: BuildingType, levels: &BuildingLevel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum ResearchType {
-    FuelEfficiency = 0,
-    ExtendedFuelTanks,
-    ReinforcedHulls,
-    AdvancedShields,
-    WeaponsResearch,
-    Navigation,
-    HarvestingEfficiency,
-    CorvetteTech,
-    FrigateTech,
-    CruiserTech,
-    HaulerTech,
-    EmergencyJump,
-    ModularFabrication,
+    EspionageTechnology = 0,
+    ComputerTechnology,
+    WeaponsTechnology,
+    ShieldingTechnology,
+    ArmourTechnology,
+    EnergyTechnology,
+    HyperspaceTechnology,
+    CombustionDrive,
+    ImpulseDrive,
+    HyperspaceDrive,
+    LaserTechnology,
+    IonTechnology,
+    PlasmaTechnology,
+    GravitonTechnology,
 }
 
 impl ResearchType {
-    pub const ALL: [ResearchType; 13] = [
-        ResearchType::FuelEfficiency,
-        ResearchType::ExtendedFuelTanks,
-        ResearchType::ReinforcedHulls,
-        ResearchType::AdvancedShields,
-        ResearchType::WeaponsResearch,
-        ResearchType::Navigation,
-        ResearchType::HarvestingEfficiency,
-        ResearchType::CorvetteTech,
-        ResearchType::FrigateTech,
-        ResearchType::CruiserTech,
-        ResearchType::HaulerTech,
-        ResearchType::EmergencyJump,
-        ResearchType::ModularFabrication,
+    /// Number of research types.
+    pub const COUNT: usize = 14;
+    pub const ALL: [ResearchType; ResearchType::COUNT] = [
+        ResearchType::EspionageTechnology,
+        ResearchType::ComputerTechnology,
+        ResearchType::WeaponsTechnology,
+        ResearchType::ShieldingTechnology,
+        ResearchType::ArmourTechnology,
+        ResearchType::EnergyTechnology,
+        ResearchType::HyperspaceTechnology,
+        ResearchType::CombustionDrive,
+        ResearchType::ImpulseDrive,
+        ResearchType::HyperspaceDrive,
+        ResearchType::LaserTechnology,
+        ResearchType::IonTechnology,
+        ResearchType::PlasmaTechnology,
+        ResearchType::GravitonTechnology,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
-            ResearchType::FuelEfficiency => "Fuel Efficiency",
-            ResearchType::ExtendedFuelTanks => "Extended Tanks",
-            ResearchType::ReinforcedHulls => "Reinforced Hulls",
-            ResearchType::AdvancedShields => "Advanced Shields",
-            ResearchType::WeaponsResearch => "Weapons Research",
-            ResearchType::Navigation => "Navigation",
-            ResearchType::HarvestingEfficiency => "Harvesting Eff.",
-            ResearchType::CorvetteTech => "Corvette Tech",
-            ResearchType::FrigateTech => "Frigate Tech",
-            ResearchType::CruiserTech => "Cruiser Tech",
-            ResearchType::HaulerTech => "Hauler Tech",
-            ResearchType::EmergencyJump => "Emergency Jump",
-            ResearchType::ModularFabrication => "Modular Fabrication",
+            ResearchType::EspionageTechnology => "Espionage Technology",
+            ResearchType::ComputerTechnology => "Computer Technology",
+            ResearchType::WeaponsTechnology => "Weapons Technology",
+            ResearchType::ShieldingTechnology => "Shielding Technology",
+            ResearchType::ArmourTechnology => "Armour Technology",
+            ResearchType::EnergyTechnology => "Energy Technology",
+            ResearchType::HyperspaceTechnology => "Hyperspace Technology",
+            ResearchType::CombustionDrive => "Combustion Drive",
+            ResearchType::ImpulseDrive => "Impulse Drive",
+            ResearchType::HyperspaceDrive => "Hyperspace Drive",
+            ResearchType::LaserTechnology => "Laser Technology",
+            ResearchType::IonTechnology => "Ion Technology",
+            ResearchType::PlasmaTechnology => "Plasma Technology",
+            ResearchType::GravitonTechnology => "Graviton Technology",
         }
     }
 
-    /// Number of research types.
-    pub const COUNT: usize = 13;
-
     pub fn from_usize(idx: usize) -> Option<Self> {
-        match idx {
-            0 => Some(ResearchType::FuelEfficiency),
-            1 => Some(ResearchType::ExtendedFuelTanks),
-            2 => Some(ResearchType::ReinforcedHulls),
-            3 => Some(ResearchType::AdvancedShields),
-            4 => Some(ResearchType::WeaponsResearch),
-            5 => Some(ResearchType::Navigation),
-            6 => Some(ResearchType::HarvestingEfficiency),
-            7 => Some(ResearchType::CorvetteTech),
-            8 => Some(ResearchType::FrigateTech),
-            9 => Some(ResearchType::CruiserTech),
-            10 => Some(ResearchType::HaulerTech),
-            11 => Some(ResearchType::EmergencyJump),
-            12 => Some(ResearchType::ModularFabrication),
-            _ => None,
-        }
+        Self::ALL.get(idx).copied()
     }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResearchLevels {
-    pub fuel_efficiency: u8,
-    pub extended_fuel_tanks: u8,
-    pub reinforced_hulls: u8,
-    pub advanced_shields: u8,
-    pub weapons_research: u8,
-    pub navigation: u8,
-    pub harvesting_efficiency: u8,
-    pub corvette_tech: u8,
-    pub frigate_tech: u8,
-    pub cruiser_tech: u8,
-    pub hauler_tech: u8,
-    pub emergency_jump: u8,
-    pub modular_fabrication: u8,
+    pub espionage_technology: u8,
+    pub computer_technology: u8,
+    pub weapons_technology: u8,
+    pub shielding_technology: u8,
+    pub armour_technology: u8,
+    pub energy_technology: u8,
+    pub hyperspace_technology: u8,
+    pub combustion_drive: u8,
+    pub impulse_drive: u8,
+    pub hyperspace_drive: u8,
+    pub laser_technology: u8,
+    pub ion_technology: u8,
+    pub plasma_technology: u8,
+    pub graviton_technology: u8,
 }
 
 impl ResearchLevels {
     pub fn get(&self, tech: ResearchType) -> u8 {
         match tech {
-            ResearchType::FuelEfficiency => self.fuel_efficiency,
-            ResearchType::ExtendedFuelTanks => self.extended_fuel_tanks,
-            ResearchType::ReinforcedHulls => self.reinforced_hulls,
-            ResearchType::AdvancedShields => self.advanced_shields,
-            ResearchType::WeaponsResearch => self.weapons_research,
-            ResearchType::Navigation => self.navigation,
-            ResearchType::HarvestingEfficiency => self.harvesting_efficiency,
-            ResearchType::CorvetteTech => self.corvette_tech,
-            ResearchType::FrigateTech => self.frigate_tech,
-            ResearchType::CruiserTech => self.cruiser_tech,
-            ResearchType::HaulerTech => self.hauler_tech,
-            ResearchType::EmergencyJump => self.emergency_jump,
-            ResearchType::ModularFabrication => self.modular_fabrication,
+            ResearchType::EspionageTechnology => self.espionage_technology,
+            ResearchType::ComputerTechnology => self.computer_technology,
+            ResearchType::WeaponsTechnology => self.weapons_technology,
+            ResearchType::ShieldingTechnology => self.shielding_technology,
+            ResearchType::ArmourTechnology => self.armour_technology,
+            ResearchType::EnergyTechnology => self.energy_technology,
+            ResearchType::HyperspaceTechnology => self.hyperspace_technology,
+            ResearchType::CombustionDrive => self.combustion_drive,
+            ResearchType::ImpulseDrive => self.impulse_drive,
+            ResearchType::HyperspaceDrive => self.hyperspace_drive,
+            ResearchType::LaserTechnology => self.laser_technology,
+            ResearchType::IonTechnology => self.ion_technology,
+            ResearchType::PlasmaTechnology => self.plasma_technology,
+            ResearchType::GravitonTechnology => self.graviton_technology,
         }
     }
 
     pub fn set(&mut self, tech: ResearchType, level: u8) {
         match tech {
-            ResearchType::FuelEfficiency => self.fuel_efficiency = level,
-            ResearchType::ExtendedFuelTanks => self.extended_fuel_tanks = level,
-            ResearchType::ReinforcedHulls => self.reinforced_hulls = level,
-            ResearchType::AdvancedShields => self.advanced_shields = level,
-            ResearchType::WeaponsResearch => self.weapons_research = level,
-            ResearchType::Navigation => self.navigation = level,
-            ResearchType::HarvestingEfficiency => self.harvesting_efficiency = level,
-            ResearchType::CorvetteTech => self.corvette_tech = level,
-            ResearchType::FrigateTech => self.frigate_tech = level,
-            ResearchType::CruiserTech => self.cruiser_tech = level,
-            ResearchType::HaulerTech => self.hauler_tech = level,
-            ResearchType::EmergencyJump => self.emergency_jump = level,
-            ResearchType::ModularFabrication => self.modular_fabrication = level,
+            ResearchType::EspionageTechnology => self.espionage_technology = level,
+            ResearchType::ComputerTechnology => self.computer_technology = level,
+            ResearchType::WeaponsTechnology => self.weapons_technology = level,
+            ResearchType::ShieldingTechnology => self.shielding_technology = level,
+            ResearchType::ArmourTechnology => self.armour_technology = level,
+            ResearchType::EnergyTechnology => self.energy_technology = level,
+            ResearchType::HyperspaceTechnology => self.hyperspace_technology = level,
+            ResearchType::CombustionDrive => self.combustion_drive = level,
+            ResearchType::ImpulseDrive => self.impulse_drive = level,
+            ResearchType::HyperspaceDrive => self.hyperspace_drive = level,
+            ResearchType::LaserTechnology => self.laser_technology = level,
+            ResearchType::IonTechnology => self.ion_technology = level,
+            ResearchType::PlasmaTechnology => self.plasma_technology = level,
+            ResearchType::GravitonTechnology => self.graviton_technology = level,
+        }
+    }
+
+    pub fn drive(&self, drive: Drive) -> u8 {
+        match drive {
+            Drive::Combustion => self.combustion_drive,
+            Drive::Impulse => self.impulse_drive,
+            Drive::Hyperspace => self.hyperspace_drive,
         }
     }
 }
 
+/// Graviton does nothing past its first level; the rest stop at this
+/// game's ceiling.
 pub fn research_max_level(tech: ResearchType) -> u8 {
     match tech {
-        ResearchType::CorvetteTech
-        | ResearchType::FrigateTech
-        | ResearchType::CruiserTech
-        | ResearchType::HaulerTech => 1,
-        ResearchType::EmergencyJump => 3,
-        ResearchType::ModularFabrication => 2,
-        _ => 5,
+        ResearchType::GravitonTechnology => 1,
+        _ => MAX_RESEARCH_LEVEL,
     }
 }
 
-/// Level-1 cost and per-level growth. Ship techs are one-shot (growth 1).
+/// Per-level cost growth of every research but Graviton.
+pub const RESEARCH_GROWTH: f64 = 2.0;
+
+/// Level-1 cost and per-level growth.
 pub fn research_cost_curve(tech: ResearchType) -> ([f64; 3], f64) {
-    match tech {
-        ResearchType::CorvetteTech => ([400.0, 200.0, 100.0], 1.0),
-        ResearchType::FrigateTech => ([2000.0, 1200.0, 600.0], 1.0),
-        ResearchType::CruiserTech => ([8000.0, 5000.0, 2500.0], 1.0),
-        ResearchType::HaulerTech => ([600.0, 300.0, 200.0], 1.0),
-        ResearchType::FuelEfficiency => ([200.0, 100.0, 100.0], RESEARCH_GROWTH),
-        ResearchType::ExtendedFuelTanks => ([150.0, 75.0, 150.0], RESEARCH_GROWTH),
-        ResearchType::ReinforcedHulls => ([300.0, 100.0, 0.0], RESEARCH_GROWTH),
-        ResearchType::AdvancedShields => ([100.0, 300.0, 50.0], RESEARCH_GROWTH),
-        ResearchType::WeaponsResearch => ([200.0, 200.0, 100.0], RESEARCH_GROWTH),
-        ResearchType::Navigation => ([100.0, 150.0, 50.0], RESEARCH_GROWTH),
-        ResearchType::HarvestingEfficiency => ([150.0, 100.0, 75.0], RESEARCH_GROWTH),
-        ResearchType::EmergencyJump => ([500.0, 400.0, 300.0], RESEARCH_GROWTH),
-        ResearchType::ModularFabrication => ([1500.0, 1200.0, 500.0], 2.0),
-    }
+    let base = match tech {
+        ResearchType::EspionageTechnology => [200.0, 1_000.0, 200.0],
+        ResearchType::ComputerTechnology => [0.0, 400.0, 600.0],
+        ResearchType::WeaponsTechnology => [800.0, 200.0, 0.0],
+        ResearchType::ShieldingTechnology => [200.0, 600.0, 0.0],
+        ResearchType::ArmourTechnology => [1_000.0, 0.0, 0.0],
+        ResearchType::EnergyTechnology => [0.0, 800.0, 400.0],
+        ResearchType::HyperspaceTechnology => [0.0, 4_000.0, 2_000.0],
+        ResearchType::CombustionDrive => [400.0, 0.0, 600.0],
+        ResearchType::ImpulseDrive => [2_000.0, 4_000.0, 600.0],
+        ResearchType::HyperspaceDrive => [10_000.0, 20_000.0, 6_000.0],
+        ResearchType::LaserTechnology => [200.0, 100.0, 0.0],
+        ResearchType::IonTechnology => [1_000.0, 300.0, 100.0],
+        ResearchType::PlasmaTechnology => [2_000.0, 4_000.0, 1_000.0],
+        ResearchType::GravitonTechnology => return ([0.0, 0.0, 0.0], f64::from(GRAVITON_GROWTH)),
+    };
+    (base, RESEARCH_GROWTH)
 }
-
-/// Per-level cost growth of the leveled techs.
-pub const RESEARCH_GROWTH: f64 = 1.6;
 
 pub fn research_cost(tech: ResearchType, level: u8) -> Resources {
     let (base, growth) = research_cost_curve(tech);
     grown_cost(base, growth, level)
 }
 
-pub fn research_time(tech: ResearchType, level: u8, lab_level: u8, pace: &Pace) -> u64 {
+/// Energy the homeworld must be making for `tech` to be researched to
+/// `level`; 0 for every research but Graviton. It is not used up.
+pub fn research_energy(tech: ResearchType, level: u8) -> u32 {
+    match tech {
+        ResearchType::GravitonTechnology => {
+            GRAVITON_ENERGY.saturating_mul(GRAVITON_GROWTH.saturating_pow(u32::from(level.max(1)) - 1))
+        }
+        _ => 0,
+    }
+}
+
+pub fn research_time(tech: ResearchType, level: u8, buildings: &BuildingLevels, pace: &Pace) -> u64 {
     if level == 0 {
         return 0;
     }
-    let divisor = 1.0 + LAB_SPEED * lab_level as f64;
-    pace.econ_ticks(cost_seconds(research_cost(tech, level), RESEARCH_RATE, divisor))
+    pace.econ_ticks(cost_seconds(research_cost(tech, level), RESEARCH_RATE, research_speed(buildings)))
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum ResearchPrereqKind {
-    Building(Prerequisite),
-    Research { tech: ResearchType, level: u8 },
-}
-
-pub fn research_prerequisites(tech: ResearchType) -> [Option<ResearchPrereqKind>; 2] {
+pub fn research_prerequisites(tech: ResearchType) -> Prereqs {
+    use BuildingType::ResearchLab as Lab;
+    use PrereqRef::{Building, Research};
+    use ResearchType as R;
     match tech {
-        ResearchType::FuelEfficiency => [
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::DeuteriumSynthesizer,
-                level: 3,
-            })),
-            None,
+        R::EspionageTechnology => &[(Building(Lab), 3)],
+        R::ComputerTechnology => &[(Building(Lab), 1)],
+        R::WeaponsTechnology => &[(Building(Lab), 4)],
+        R::ShieldingTechnology => &[(Building(Lab), 6), (Research(R::EnergyTechnology), 3)],
+        R::ArmourTechnology => &[(Building(Lab), 2)],
+        R::EnergyTechnology => &[(Building(Lab), 1)],
+        R::HyperspaceTechnology => {
+            &[(Building(Lab), 7), (Research(R::EnergyTechnology), 5), (Research(R::ShieldingTechnology), 5)]
+        }
+        R::CombustionDrive => &[(Research(R::EnergyTechnology), 1)],
+        R::ImpulseDrive => &[(Building(Lab), 2), (Research(R::EnergyTechnology), 1)],
+        R::HyperspaceDrive => &[(Research(R::HyperspaceTechnology), 3)],
+        R::LaserTechnology => &[(Research(R::EnergyTechnology), 2)],
+        R::IonTechnology => {
+            &[(Building(Lab), 4), (Research(R::LaserTechnology), 5), (Research(R::EnergyTechnology), 4)]
+        }
+        R::PlasmaTechnology => &[
+            (Research(R::EnergyTechnology), 8),
+            (Research(R::LaserTechnology), 10),
+            (Research(R::IonTechnology), 5),
         ],
-        ResearchType::ExtendedFuelTanks => [
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::FuelDepot,
-                level: 2,
-            })),
-            None,
-        ],
-        ResearchType::ReinforcedHulls => [
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::Shipyard,
-                level: 2,
-            })),
-            None,
-        ],
-        ResearchType::AdvancedShields => [
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::ResearchLab,
-                level: 3,
-            })),
-            None,
-        ],
-        ResearchType::WeaponsResearch => [
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::ResearchLab,
-                level: 3,
-            })),
-            None,
-        ],
-        ResearchType::Navigation => [
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::ResearchLab,
-                level: 2,
-            })),
-            None,
-        ],
-        ResearchType::HarvestingEfficiency => [
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::ResearchLab,
-                level: 2,
-            })),
-            None,
-        ],
-        ResearchType::CorvetteTech => [
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::Shipyard,
-                level: 1,
-            })),
-            None,
-        ],
-        ResearchType::FrigateTech => [
-            Some(ResearchPrereqKind::Research {
-                tech: ResearchType::CorvetteTech,
-                level: 1,
-            }),
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::Shipyard,
-                level: 4,
-            })),
-        ],
-        ResearchType::CruiserTech => [
-            Some(ResearchPrereqKind::Research {
-                tech: ResearchType::FrigateTech,
-                level: 1,
-            }),
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::Shipyard,
-                level: 6,
-            })),
-        ],
-        ResearchType::HaulerTech => [
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::Shipyard,
-                level: 3,
-            })),
-            None,
-        ],
-        ResearchType::EmergencyJump => [
-            Some(ResearchPrereqKind::Research {
-                tech: ResearchType::Navigation,
-                level: 1,
-            }),
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::ResearchLab,
-                level: 4,
-            })),
-        ],
-        ResearchType::ModularFabrication => [
-            Some(ResearchPrereqKind::Building(Prerequisite {
-                building: BuildingType::ResearchLab,
-                level: 4,
-            })),
-            None,
-        ],
+        R::GravitonTechnology => &[(Building(Lab), 12)],
     }
 }
 
@@ -603,56 +726,41 @@ pub fn research_prerequisites_met(
     buildings: &BuildingLevels,
     research: &ResearchLevels,
 ) -> bool {
-    for p in research_prerequisites(tech).into_iter().flatten() {
-        match p {
-            ResearchPrereqKind::Building(b) => {
-                if buildings.get(b.building) < b.level {
-                    return false;
-                }
-            }
-            ResearchPrereqKind::Research { tech: t, level: l } => {
-                if research.get(t) < l {
-                    return false;
-                }
-            }
-        }
-    }
-    true
+    prerequisites_met(research_prerequisites(tech), buildings, research)
 }
 
 // ── Research Modifier Functions ──────────────────────────────────
 
+/// Weapons, Shielding and Armour Technology: a tenth a level each.
 pub fn apply_research_to_stats(base: ShipStats, research: &ResearchLevels) -> ShipStats {
-    let hull_bonus = 1.0 + 0.10 * research.reinforced_hulls as f32;
-    let shield_bonus = 1.0 + 0.10 * research.advanced_shields as f32;
-    let weapon_bonus = 1.0 + 0.10 * research.weapons_research as f32;
-    let fuel_cap = fuel_capacity_modifier(research.extended_fuel_tanks);
+    let bonus = |level: u8| 1.0 + 0.10 * f32::from(level);
     ShipStats {
-        hull: base.hull * hull_bonus,
-        shield: base.shield * shield_bonus,
-        weapon: base.weapon * weapon_bonus,
-        speed: base.speed,
-        cargo: base.cargo,
-        fuel: (f64::from(base.fuel) * fuel_cap) as u16,
+        hull: base.hull * bonus(research.armour_technology),
+        shield: base.shield * bonus(research.shielding_technology),
+        weapon: base.weapon * bonus(research.weapons_technology),
+        ..base
     }
 }
 
-/// Buildings that can be under construction at once: one, plus one per
-/// Modular Fabrication level.
+/// Buildings that can be under construction at once: one, plus one for
+/// each of `BUILD_SLOT_LEVELS` that Computer Technology has reached.
 pub fn building_slots(research: &ResearchLevels) -> u8 {
-    1 + research.modular_fabrication
+    1 + BUILD_SLOT_LEVELS.iter().filter(|&&level| research.computer_technology >= level).count() as u8
 }
 
-pub fn fuel_rate_modifier(fuel_eff_level: u8) -> f64 {
-    1.0 - 0.10 * f64::from(fuel_eff_level)
+/// The level of Computer Technology that opens the next building slot.
+pub fn next_building_slot_level(research: &ResearchLevels) -> Option<u8> {
+    BUILD_SLOT_LEVELS.into_iter().find(|&level| research.computer_technology < level)
 }
 
-pub fn fuel_capacity_modifier(tanks_level: u8) -> f64 {
-    1.0 + 0.15 * f64::from(tanks_level)
+/// The share of a jump's burn that Energy Technology leaves.
+pub fn fuel_rate_modifier(energy_technology: u8) -> f64 {
+    1.0 - (FUEL_SAVING_PER_LEVEL * f64::from(energy_technology)).min(FUEL_SAVING_MAX)
 }
 
-pub fn fuel_depot_modifier(depot_level: u8) -> f64 {
-    1.0 + 0.25 * f64::from(depot_level)
+/// What the Deuterium Tank multiplies every fleet's tank by.
+pub fn tank_modifier(deuterium_tank: u8) -> f64 {
+    1.0 + TANK_PER_DEUT_TANK_LEVEL * f64::from(deuterium_tank)
 }
 
 /// Fuel one unit of deuterium becomes when a fleet refines it from its hold:
@@ -661,68 +769,172 @@ pub fn refined_fuel_per_deuterium() -> f64 {
     (1.0 - REFINE_LOSS) / FUEL_DEUT_PER_UNIT
 }
 
-pub fn sensor_range(sensor_level: u8) -> u8 {
-    sensor_level
+/// Hops around the homeworld that Espionage Technology shows.
+pub fn sensor_range(espionage_technology: u8) -> u8 {
+    espionage_technology.saturating_mul(SENSOR_HOPS_PER_LEVEL)
 }
 
-pub fn navigation_cooldown_reduction(nav_level: u8) -> u16 {
-    nav_level as u16
+/// Cargo gained per raw unit extracted. Laser Technology raises the yield,
+/// not the extraction speed, so it does not strip small tiles faster.
+pub fn harvest_yield(laser_technology: u8) -> f64 {
+    1.0 + HARVEST_YIELD_PER_LEVEL * f64::from(laser_technology.min(HARVEST_YIELD_LEVELS))
 }
 
-/// Cargo gained per raw unit extracted. Research raises the yield, not the
-/// extraction speed, so it does not strip small tiles faster.
-pub fn harvest_yield(harvest_eff_level: u8) -> f64 {
-    1.0 + 0.20 * f64::from(harvest_eff_level)
+pub fn recall_damage_reduction(hyperspace_technology: u8) -> f32 {
+    RECALL_SAVING_PER_LEVEL * f32::from(hyperspace_technology)
 }
 
-pub fn recall_damage_reduction(ej_level: u8) -> f32 {
-    0.05 * ej_level as f32
+// ── Ships in flight ──────────────────────────────────────────────
+
+/// The Small Cargo flies on the Impulse Drive from this level of it, at
+/// twice its speed and twice its fuel.
+pub const SMALL_CARGO_IMPULSE_LEVEL: u8 = 5;
+pub const SMALL_CARGO_IMPULSE_SPEED: u32 = 10_000;
+pub const SMALL_CARGO_IMPULSE_FUEL: u32 = 20;
+/// The Bomber flies on the Hyperspace Drive from this level of it; its fuel
+/// does not change.
+pub const BOMBER_HYPERSPACE_LEVEL: u8 = 8;
+pub const BOMBER_HYPERSPACE_SPEED: u32 = 5_000;
+
+/// The drive a ship of `class` flies on with `research`, the base speed it
+/// has on that drive and the fuel one jump burns. None for a ship that does
+/// not fly.
+pub fn ship_drive(class: ShipClass, research: &ResearchLevels) -> Option<(Drive, u32, u32)> {
+    let stats = class.base_stats();
+    let built_with = class.drive()?;
+    Some(match class {
+        ShipClass::SmallCargo if research.impulse_drive >= SMALL_CARGO_IMPULSE_LEVEL => {
+            (Drive::Impulse, SMALL_CARGO_IMPULSE_SPEED, SMALL_CARGO_IMPULSE_FUEL)
+        }
+        ShipClass::Bomber if research.hyperspace_drive >= BOMBER_HYPERSPACE_LEVEL => {
+            (Drive::Hyperspace, BOMBER_HYPERSPACE_SPEED, stats.fuel)
+        }
+        _ => (built_with, stats.speed, stats.fuel),
+    })
 }
 
-/// The research that unlocks a ship class, if it needs one.
-pub fn ship_class_tech(class: ShipClass) -> Option<ResearchType> {
+/// Speed of a ship of `class`: its base speed and the share its drive's
+/// research adds. 0 for a ship that does not fly.
+pub fn ship_speed(class: ShipClass, research: &ResearchLevels) -> f64 {
+    ship_drive(class, research).map_or(0.0, |(drive, speed, _)| {
+        f64::from(speed) * (1.0 + drive.speed_per_level() * f64::from(research.drive(drive)))
+    })
+}
+
+/// Ticks one jump takes at `speed`.
+pub fn jump_ticks(speed: f64) -> u16 {
+    if speed <= 0.0 {
+        return u16::MAX;
+    }
+    (JUMP_SPEED_REF / speed).sqrt().ceil().clamp(1.0, f64::from(u16::MAX)) as u16
+}
+
+/// Fuel one jump burns for a ship of `class`, before Energy Technology's saving.
+pub fn ship_burn(class: ShipClass, research: &ResearchLevels) -> f64 {
+    ship_drive(class, research).map_or(0.0, |(_, _, fuel)| f64::from(fuel))
+}
+
+/// A ship's tank before the Deuterium Tank: `tank_jumps` of its burn.
+pub fn ship_tank(class: ShipClass, research: &ResearchLevels) -> f64 {
+    f64::from(class.tank_jumps()) * ship_burn(class, research)
+}
+
+pub fn ship_prerequisites(class: ShipClass) -> Prereqs {
+    use BuildingType::Shipyard;
+    use PrereqRef::{Building, Research};
+    use ResearchType as R;
     match class {
-        ShipClass::Scout => None,
-        ShipClass::Corvette => Some(ResearchType::CorvetteTech),
-        ShipClass::Frigate => Some(ResearchType::FrigateTech),
-        ShipClass::Cruiser => Some(ResearchType::CruiserTech),
-        ShipClass::Hauler => Some(ResearchType::HaulerTech),
+        ShipClass::LightFighter => &[(Building(Shipyard), 1), (Research(R::CombustionDrive), 1)],
+        ShipClass::SmallCargo => &[(Building(Shipyard), 2), (Research(R::CombustionDrive), 2)],
+        ShipClass::HeavyFighter => {
+            &[(Building(Shipyard), 3), (Research(R::ArmourTechnology), 2), (Research(R::ImpulseDrive), 2)]
+        }
+        ShipClass::EspionageProbe => {
+            &[(Building(Shipyard), 3), (Research(R::CombustionDrive), 3), (Research(R::EspionageTechnology), 2)]
+        }
+        ShipClass::LargeCargo => &[(Building(Shipyard), 4), (Research(R::CombustionDrive), 6)],
+        ShipClass::Recycler => {
+            &[(Building(Shipyard), 4), (Research(R::CombustionDrive), 6), (Research(R::ShieldingTechnology), 2)]
+        }
+        ShipClass::Cruiser => {
+            &[(Building(Shipyard), 5), (Research(R::ImpulseDrive), 4), (Research(R::IonTechnology), 2)]
+        }
+        ShipClass::Battleship => &[(Building(Shipyard), 7), (Research(R::HyperspaceDrive), 4)],
+        ShipClass::Battlecruiser => &[
+            (Building(Shipyard), 8),
+            (Research(R::HyperspaceTechnology), 5),
+            (Research(R::HyperspaceDrive), 5),
+            (Research(R::LaserTechnology), 12),
+        ],
+        ShipClass::Bomber => {
+            &[(Building(Shipyard), 8), (Research(R::ImpulseDrive), 6), (Research(R::PlasmaTechnology), 5)]
+        }
+        ShipClass::Destroyer => &[
+            (Building(Shipyard), 9),
+            (Research(R::HyperspaceTechnology), 5),
+            (Research(R::HyperspaceDrive), 6),
+        ],
+        ShipClass::Deathstar => &[
+            (Building(Shipyard), 12),
+            (Research(R::HyperspaceTechnology), 6),
+            (Research(R::HyperspaceDrive), 7),
+            (Research(R::GravitonTechnology), 1),
+        ],
+        ShipClass::SolarSatellite => &[(Building(Shipyard), 1)],
     }
 }
 
-pub fn ship_class_unlocked(class: ShipClass, research: &ResearchLevels) -> bool {
-    ship_class_tech(class).is_none_or(|tech| research.get(tech) >= 1)
+pub fn ship_class_unlocked(class: ShipClass, buildings: &BuildingLevels, research: &ResearchLevels) -> bool {
+    prerequisites_met(ship_prerequisites(class), buildings, research)
 }
 
-/// Ticks to build one ship; the Shipyard divides it by `1 + 0.1 * level`.
-pub fn ship_build_time(class: ShipClass, shipyard_level: u8, pace: &Pace) -> u64 {
-    let divisor = 1.0 + SHIPYARD_SPEED * shipyard_level as f64;
-    pace.econ_ticks(cost_seconds(class.build_cost(), SHIP_RATE, divisor))
+/// Ticks to build one ship.
+pub fn ship_build_time(class: ShipClass, buildings: &BuildingLevels, pace: &Pace) -> u64 {
+    pace.econ_ticks(cost_seconds(class.build_cost(), SHIP_RATE, shipyard_speed(buildings)))
 }
 
 pub const CANCEL_REFUND_FRACTION: f64 = 0.50;
 
-// ── Defence structures ───────────────────────────────────────────
+// ── Defences ─────────────────────────────────────────────────────
 
-/// Home defences built from the shipyard queue. They never move, burn no
-/// fuel, and a raid can wear them down.
+/// OGame's defences, without the two missiles, built from the shipyard
+/// queue. They never move, burn no fuel, and a raid can wear them down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum DefenceKind {
-    PulseTurret = 0,
-    LancerBattery,
-    IonBastion,
+    RocketLauncher = 0,
+    LightLaser,
+    HeavyLaser,
+    GaussCannon,
+    IonCannon,
+    PlasmaTurret,
+    SmallShieldDome,
+    LargeShieldDome,
 }
 
 impl DefenceKind {
-    pub const COUNT: usize = 3;
-    pub const ALL: [DefenceKind; 3] = [DefenceKind::PulseTurret, DefenceKind::LancerBattery, DefenceKind::IonBastion];
+    pub const COUNT: usize = 8;
+    pub const ALL: [DefenceKind; DefenceKind::COUNT] = [
+        DefenceKind::RocketLauncher,
+        DefenceKind::LightLaser,
+        DefenceKind::HeavyLaser,
+        DefenceKind::GaussCannon,
+        DefenceKind::IonCannon,
+        DefenceKind::PlasmaTurret,
+        DefenceKind::SmallShieldDome,
+        DefenceKind::LargeShieldDome,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
-            DefenceKind::PulseTurret => "Pulse Turret",
-            DefenceKind::LancerBattery => "Lancer Battery",
-            DefenceKind::IonBastion => "Ion Bastion",
+            DefenceKind::RocketLauncher => "Rocket Launcher",
+            DefenceKind::LightLaser => "Light Laser",
+            DefenceKind::HeavyLaser => "Heavy Laser",
+            DefenceKind::GaussCannon => "Gauss Cannon",
+            DefenceKind::IonCannon => "Ion Cannon",
+            DefenceKind::PlasmaTurret => "Plasma Turret",
+            DefenceKind::SmallShieldDome => "Small Shield Dome",
+            DefenceKind::LargeShieldDome => "Large Shield Dome",
         }
     }
 
@@ -731,75 +943,109 @@ impl DefenceKind {
     }
 
     pub fn build_cost(self) -> Resources {
+        let cost = |metal: f64, crystal: f64, deuterium: f64| Resources { metal, crystal, deuterium };
         match self {
-            DefenceKind::PulseTurret => Resources { metal: 120.0, crystal: 20.0, deuterium: 0.0 },
-            DefenceKind::LancerBattery => Resources { metal: 400.0, crystal: 120.0, deuterium: 20.0 },
-            DefenceKind::IonBastion => Resources { metal: 1200.0, crystal: 500.0, deuterium: 100.0 },
+            DefenceKind::RocketLauncher => cost(2_000.0, 0.0, 0.0),
+            DefenceKind::LightLaser => cost(1_500.0, 500.0, 0.0),
+            DefenceKind::HeavyLaser => cost(6_000.0, 2_000.0, 0.0),
+            DefenceKind::GaussCannon => cost(20_000.0, 15_000.0, 2_000.0),
+            DefenceKind::IonCannon => cost(2_000.0, 6_000.0, 0.0),
+            DefenceKind::PlasmaTurret => cost(50_000.0, 50_000.0, 30_000.0),
+            DefenceKind::SmallShieldDome => cost(10_000.0, 10_000.0, 0.0),
+            DefenceKind::LargeShieldDome => cost(50_000.0, 50_000.0, 0.0),
         }
     }
 
-    /// (weapon, hull, shield), the same stats ships carry.
-    fn stats(self) -> (f32, f32, f32) {
+    /// OGame's figures as a ship carries them; a defence has no speed, hold
+    /// or fuel. Its hull is a tenth of its structure.
+    pub fn base_stats(self) -> ShipStats {
+        let unit = |structure: f32, shield: f32, weapon: f32| ShipStats {
+            hull: structure / 10.0,
+            shield,
+            weapon,
+            speed: 0,
+            cargo: 0,
+            fuel: 0,
+        };
         match self {
-            DefenceKind::PulseTurret => (12.0, 40.0, 10.0),
-            DefenceKind::LancerBattery => (35.0, 120.0, 40.0),
-            DefenceKind::IonBastion => (90.0, 300.0, 150.0),
+            DefenceKind::RocketLauncher => unit(2_000.0, 20.0, 80.0),
+            DefenceKind::LightLaser => unit(2_000.0, 25.0, 100.0),
+            DefenceKind::HeavyLaser => unit(8_000.0, 100.0, 250.0),
+            DefenceKind::GaussCannon => unit(35_000.0, 200.0, 1_100.0),
+            DefenceKind::IonCannon => unit(8_000.0, 500.0, 150.0),
+            DefenceKind::PlasmaTurret => unit(100_000.0, 300.0, 3_000.0),
+            DefenceKind::SmallShieldDome => unit(20_000.0, 2_000.0, 1.0),
+            DefenceKind::LargeShieldDome => unit(100_000.0, 10_000.0, 1.0),
         }
     }
 
     /// `weapon + (hull + shield) / 10`, the scale ships, raids and threat
     /// ratings share.
     pub fn power(self) -> f32 {
-        let (weapon, hull, shield) = self.stats();
-        weapon + (hull + shield) / 10.0
+        stats_power(&self.base_stats())
+    }
+
+    /// The most that may stand: one dome of each kind, as in OGame.
+    pub fn max_count(self) -> Option<u32> {
+        match self {
+            DefenceKind::SmallShieldDome | DefenceKind::LargeShieldDome => Some(1),
+            _ => None,
+        }
     }
 
     /// Building and research levels needed before this can be ordered.
-    pub fn prerequisites(self) -> &'static [(PrereqRef, u8)] {
+    pub fn prerequisites(self) -> Prereqs {
+        use BuildingType::Shipyard;
+        use PrereqRef::{Building, Research};
+        use ResearchType as R;
         match self {
-            DefenceKind::PulseTurret => &[(PrereqRef::Building(BuildingType::DefenseGrid), 1)],
-            DefenceKind::LancerBattery => &[
-                (PrereqRef::Building(BuildingType::DefenseGrid), 2),
-                (PrereqRef::Research(ResearchType::WeaponsResearch), 2),
+            DefenceKind::RocketLauncher => &[(Building(Shipyard), 1)],
+            DefenceKind::LightLaser => {
+                &[(Building(Shipyard), 2), (Research(R::EnergyTechnology), 1), (Research(R::LaserTechnology), 3)]
+            }
+            DefenceKind::HeavyLaser => {
+                &[(Building(Shipyard), 4), (Research(R::EnergyTechnology), 3), (Research(R::LaserTechnology), 6)]
+            }
+            DefenceKind::IonCannon => &[(Building(Shipyard), 4), (Research(R::IonTechnology), 4)],
+            DefenceKind::GaussCannon => &[
+                (Building(Shipyard), 6),
+                (Research(R::EnergyTechnology), 6),
+                (Research(R::WeaponsTechnology), 3),
+                (Research(R::ShieldingTechnology), 1),
             ],
-            DefenceKind::IonBastion => &[
-                (PrereqRef::Building(BuildingType::DefenseGrid), 4),
-                (PrereqRef::Research(ResearchType::WeaponsResearch), 4),
-                (PrereqRef::Research(ResearchType::AdvancedShields), 3),
-            ],
+            DefenceKind::PlasmaTurret => &[(Building(Shipyard), 8), (Research(R::PlasmaTechnology), 7)],
+            DefenceKind::SmallShieldDome => &[(Building(Shipyard), 1), (Research(R::ShieldingTechnology), 2)],
+            DefenceKind::LargeShieldDome => &[(Building(Shipyard), 6), (Research(R::ShieldingTechnology), 6)],
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrereqRef {
-    Building(BuildingType),
-    Research(ResearchType),
-}
-
 pub fn defence_prerequisites_met(kind: DefenceKind, buildings: &BuildingLevels, research: &ResearchLevels) -> bool {
-    kind.prerequisites().iter().all(|(p, need)| match p {
-        PrereqRef::Building(b) => buildings.get(*b) >= *need,
-        PrereqRef::Research(t) => research.get(*t) >= *need,
-    })
+    prerequisites_met(kind.prerequisites(), buildings, research)
 }
 
-/// Ticks to build one structure; the Shipyard speeds it like ships.
-pub fn defence_build_time(kind: DefenceKind, shipyard_level: u8, pace: &Pace) -> u64 {
-    let divisor = 1.0 + SHIPYARD_SPEED * shipyard_level as f64;
-    pace.econ_ticks(cost_seconds(kind.build_cost(), SHIP_RATE, divisor))
+/// Ticks to build one defence; the Shipyard speeds it like ships.
+pub fn defence_build_time(kind: DefenceKind, buildings: &BuildingLevels, pace: &Pace) -> u64 {
+    pace.econ_ticks(cost_seconds(kind.build_cost(), SHIP_RATE, shipyard_speed(buildings)))
 }
 
-/// Each Defense Grid level strengthens every structure by this much.
-pub const DEFENCE_GRID_BONUS: f32 = 0.04;
-
-/// Power of one structure at a Defense Grid level.
-pub fn structure_power(kind: DefenceKind, grid_level: u8) -> f32 {
-    kind.power() * (1.0 + DEFENCE_GRID_BONUS * grid_level as f32)
+fn stats_power(stats: &ShipStats) -> f32 {
+    stats.weapon + (stats.hull + stats.shield) / 10.0
 }
 
-/// What the shipyard queue builds: a ship class or a defence structure.
-/// On the wire it is just the name ("Corvette", "PulseTurret").
+/// Power of one defence with the owner's Weapons, Shielding and Armour
+/// Technology: a defence stands at home and is always current.
+pub fn structure_power(kind: DefenceKind, research: &ResearchLevels) -> f32 {
+    stats_power(&apply_research_to_stats(kind.base_stats(), research))
+}
+
+/// Power of one Solar Satellite at home, with the owner's research.
+pub fn satellite_power(research: &ResearchLevels) -> f32 {
+    stats_power(&apply_research_to_stats(ShipClass::SolarSatellite.base_stats(), research))
+}
+
+/// What the shipyard queue builds: a ship class or a defence.
+/// On the wire it is just the name ("Cruiser", "RocketLauncher").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ShipyardItem {
@@ -826,12 +1072,105 @@ impl ShipyardItem {
         self.unit_cost().scale(f64::from(count))
     }
 
-    pub fn unit_ticks(self, shipyard_level: u8, pace: &Pace) -> u64 {
+    pub fn unit_ticks(self, buildings: &BuildingLevels, pace: &Pace) -> u64 {
         match self {
-            ShipyardItem::Ship(c) => ship_build_time(c, shipyard_level, pace),
-            ShipyardItem::Defence(d) => defence_build_time(d, shipyard_level, pace),
+            ShipyardItem::Ship(c) => ship_build_time(c, buildings, pace),
+            ShipyardItem::Defence(d) => defence_build_time(d, buildings, pace),
         }
     }
+
+    pub fn prerequisites(self) -> Prereqs {
+        match self {
+            ShipyardItem::Ship(c) => ship_prerequisites(c),
+            ShipyardItem::Defence(d) => d.prerequisites(),
+        }
+    }
+}
+
+// ── Rapid fire ───────────────────────────────────────────────────
+//
+// A figure r means: after a shot at a unit of that kind, the firing unit
+// fires again with probability (r - 1) / r. No defence has rapid fire, and
+// nothing has it against the Plasma Turret, the domes or the Deathstar.
+
+/// Every armed ship against an Espionage Probe and a Solar Satellite.
+pub const RAPID_FIRE_UNARMED: u16 = 5;
+pub const RAPID_FIRE_UNARMED_DEATHSTAR: u16 = 1250;
+
+fn rapid_fire_table(class: ShipClass) -> &'static [(ShipyardItem, u16)] {
+    use DefenceKind as D;
+    use ShipClass as S;
+    use ShipyardItem::{Defence, Ship};
+    match class {
+        S::HeavyFighter => &[(Ship(S::SmallCargo), 3)],
+        S::Cruiser => &[(Ship(S::LightFighter), 6), (Defence(D::RocketLauncher), 10)],
+        S::Bomber => &[
+            (Defence(D::RocketLauncher), 20),
+            (Defence(D::LightLaser), 20),
+            (Defence(D::HeavyLaser), 10),
+            (Defence(D::IonCannon), 10),
+        ],
+        S::Destroyer => &[(Ship(S::Battlecruiser), 2), (Defence(D::LightLaser), 10)],
+        S::Battlecruiser => &[
+            (Ship(S::SmallCargo), 3),
+            (Ship(S::LargeCargo), 3),
+            (Ship(S::HeavyFighter), 4),
+            (Ship(S::Cruiser), 4),
+            (Ship(S::Battleship), 7),
+        ],
+        S::Deathstar => &[
+            (Ship(S::SmallCargo), 250),
+            (Ship(S::LargeCargo), 250),
+            (Ship(S::LightFighter), 200),
+            (Ship(S::HeavyFighter), 100),
+            (Ship(S::Cruiser), 33),
+            (Ship(S::Battleship), 30),
+            (Ship(S::Recycler), 250),
+            (Ship(S::Bomber), 25),
+            (Ship(S::Destroyer), 5),
+            (Ship(S::Battlecruiser), 15),
+            (Defence(D::RocketLauncher), 200),
+            (Defence(D::LightLaser), 200),
+            (Defence(D::HeavyLaser), 100),
+            (Defence(D::GaussCannon), 50),
+            (Defence(D::IonCannon), 100),
+        ],
+        S::SmallCargo
+        | S::LargeCargo
+        | S::LightFighter
+        | S::Battleship
+        | S::Recycler
+        | S::EspionageProbe
+        | S::SolarSatellite => &[],
+    }
+}
+
+/// Rapid fire of a ship of `class` against `target`; 0 for none.
+pub fn rapid_fire_against(class: ShipClass, target: ShipyardItem) -> u16 {
+    use ShipClass::{Deathstar, EspionageProbe, SolarSatellite};
+    let unarmed = matches!(target, ShipyardItem::Ship(EspionageProbe | SolarSatellite));
+    match class {
+        EspionageProbe | SolarSatellite => 0,
+        Deathstar if unarmed => RAPID_FIRE_UNARMED_DEATHSTAR,
+        _ if unarmed => RAPID_FIRE_UNARMED,
+        _ => rapid_fire_table(class).iter().find(|(against, _)| *against == target).map_or(0, |(_, r)| *r),
+    }
+}
+
+/// Rapid fire of one ship class against another; 0 for none.
+pub fn rapid_fire_vs(class: ShipClass, target: ShipClass) -> u16 {
+    rapid_fire_against(class, ShipyardItem::Ship(target))
+}
+
+/// Everything a ship of `class` has rapid fire against, ships first, each
+/// in catalogue order.
+pub fn rapid_fire(class: ShipClass) -> impl Iterator<Item = (ShipyardItem, u16)> {
+    let ships = ShipClass::ALL.into_iter().map(ShipyardItem::Ship);
+    let defences = DefenceKind::ALL.into_iter().map(ShipyardItem::Defence);
+    ships.chain(defences).filter_map(move |target| {
+        let figure = rapid_fire_against(class, target);
+        (figure > 0).then_some((target, figure))
+    })
 }
 
 // ── Raids and score points ───────────────────────────────────────
@@ -904,7 +1243,7 @@ pub fn exchange_pressure_after(pressure: f64, elapsed: u64, span: f64, window: u
 /// Fleets and defences do not count.
 pub fn econ_points(buildings: &BuildingLevels, research: &ResearchLevels) -> f32 {
     let mut points = 0.0;
-    for b in (0..BuildingType::COUNT).filter_map(BuildingType::from_usize) {
+    for b in BuildingType::ALL {
         for level in 1..=buildings.get(b) {
             points += resource_weight(&building_cost(b, level));
         }
@@ -918,8 +1257,12 @@ pub fn econ_points(buildings: &BuildingLevels, research: &ResearchLevels) -> f32
 }
 
 /// A raid's mean power is `RAID_POWER_FLOOR + RAID_POWER_PER_POINT * econ^RAID_POWER_EXPONENT`.
-pub const RAID_POWER_FLOOR: f32 = 5.0;
-pub const RAID_POWER_PER_POINT: f32 = 11.0;
+/// The law is this game's; the two figures are provisional. The floor is
+/// about half a Light Fighter, and a point spent on Rocket Launchers is 51
+/// power: an empire of 1,000 points meets its raid (1,650) with 33 of them,
+/// 3 percent of what it is worth, and one of 10,000 (9,050) with 2 percent.
+pub const RAID_POWER_FLOOR: f32 = 50.0;
+pub const RAID_POWER_PER_POINT: f32 = 9.0;
 pub const RAID_POWER_EXPONENT: f32 = 0.75;
 
 /// Mean power of the next raid on a player with `econ` points; the actual
@@ -954,9 +1297,21 @@ pub fn outpost_store_cap(level: u8, pace: &Pace) -> Resources {
     OUTPOST_STORE_BASE.scale(outpost_growth(level) * pace.cargo_mult())
 }
 
+/// The defences an outpost's platform stands for at each level. Until a
+/// raid is fought as a battle they count as their power and nothing else.
+/// Provisional: it sets an undefended outpost's odds.
+pub fn outpost_platform(level: u8) -> &'static [(DefenceKind, u32)] {
+    match level {
+        0 => &[],
+        1 => &[(DefenceKind::RocketLauncher, 4)],
+        2 => &[(DefenceKind::RocketLauncher, 8), (DefenceKind::LightLaser, 4)],
+        _ => &[(DefenceKind::RocketLauncher, 16), (DefenceKind::LightLaser, 8), (DefenceKind::HeavyLaser, 4)],
+    }
+}
+
 /// Defence power of the platform; none before level 1 is finished.
 pub fn outpost_platform_power(level: u8) -> f32 {
-    if level == 0 { 0.0 } else { OUTPOST_PLATFORM_POWER * outpost_growth(level) as f32 }
+    outpost_platform(level).iter().map(|&(kind, count)| count as f32 * kind.power()).sum()
 }
 
 /// The grade of a site whose three ores are all Pristine: the most a grade can be.
@@ -1100,20 +1455,24 @@ pub fn ore_density_odds(dist: u16) -> [f32; 4] {
 
 // ── Loot ─────────────────────────────────────────────────────────
 
-pub const WRECK_VALUE_K: f64 = 1.2;
+/// A destroyed group leaves `WRECK_VALUE_K * power^WRECK_VALUE_EXPONENT`
+/// units: 1.2 * `MAP_PAYS` / 10^0.8, the 10 being what a group's power
+/// grew by with `NPC_POWER_BASE`, so the wreckage of a ring follows
+/// `MAP_PAYS` and not the scale power is counted on. Provisional.
+pub const WRECK_VALUE_K: f64 = 0.57;
 pub const WRECK_VALUE_EXPONENT: f64 = 0.8;
 /// Metal, crystal and deuterium shares of any loot value.
 pub const LOOT_SPLIT: [f64; 3] = [0.55, 0.30, 0.15];
 /// A derelict in ring `DERELICT_VALUE_RING` is worth `DERELICT_VALUE_BASE`;
 /// each ring further out multiplies that by `DERELICT_VALUE_GROWTH`.
-pub const DERELICT_VALUE_BASE: f64 = 240.0;
+pub const DERELICT_VALUE_BASE: f64 = 240.0 * MAP_PAYS;
 pub const DERELICT_VALUE_GROWTH: f64 = 1.14;
 pub const DERELICT_VALUE_RING: u16 = 4;
 /// A site pays between these shares of its value, uniformly.
 pub const DERELICT_ROLL_MIN: f32 = 0.6;
 pub const DERELICT_ROLL_MAX: f32 = 1.4;
 /// Score points an ancient relic is worth.
-pub const RELIC_POINTS: f32 = 30.0;
+pub const RELIC_POINTS: f32 = 300.0;
 
 /// Anti-farming: every kill in a sector adds one point of heat, and the next
 /// kill's loot and score are multiplied by `FARM_DECAY^heat`. Heat halves
@@ -1157,7 +1516,7 @@ pub fn derelict_tier(dist: u16) -> u8 {
     threat_band(threat_rating(npc_power(dist)))
 }
 
-/// Chance a boarding wakes the guard, before scouts and earlier failures.
+/// Chance a boarding wakes the guard, before a probe's read and earlier failures.
 pub fn derelict_ambush(rating: u8) -> f32 {
     (0.10 + 0.03 * (f32::from(rating) - 1.0)).min(0.35)
 }
@@ -1187,10 +1546,16 @@ pub fn relic_chance(rating: u8) -> f32 {
 
 // ── Threat and the NPC gradient ──────────────────────────────────
 
-pub const NPC_POWER_BASE: f32 = 4.0;
-/// NPC group power grows by this factor per ring.
+/// The power of a group at ring 1, on the scale a Light Fighter is 91 on.
+/// Provisional: it sets every ring's strength against a starting fleet.
+pub const NPC_POWER_BASE: f32 = 40.0;
+/// NPC group power grows by this factor per ring. With `NPC_MAX_SHIPS` it
+/// decides whether pirates come in hundreds. Provisional.
 pub const NPC_POWER_GROWTH: f32 = 1.22;
 pub const NPC_MAX_SHIPS: usize = 32;
+/// The last ring of Cruiser packs, and of Battlecruiser packs.
+pub const NPC_CRUISER_RING: u16 = 12;
+pub const NPC_BATTLECRUISER_RING: u16 = 20;
 /// The most an NPC ship's hull, shield and weapon are scaled by.
 pub const NPC_STAT_MULT_MAX: f32 = 1.3;
 /// The highest threat rating.
@@ -1201,8 +1566,7 @@ pub const THREAT_AGGRESSIVE_BONUS: f32 = 1.25;
 
 /// How much one ship counts on the scale raids, threat and ratios share.
 pub fn ship_power(class: ShipClass) -> f32 {
-    let s = class.base_stats();
-    s.weapon + (s.hull + s.shield) / 10.0
+    stats_power(&class.base_stats())
 }
 
 /// Target combat power of the NPC group guarding a sector `dist` rings out.
@@ -1210,16 +1574,18 @@ pub fn npc_power(dist: u16) -> f32 {
     NPC_POWER_BASE * maths::powi(NPC_POWER_GROWTH, i32::from(dist.max(1)) - 1)
 }
 
-/// Scouts through the Inner Ring: the first heavier class waits past it.
+/// Light Fighters through the Inner Ring: the first heavier class waits past
+/// it. Each rung has rapid fire against the one below. Provisional: it sets
+/// where the steps in danger fall.
 pub fn npc_class(dist: u16) -> ShipClass {
     if dist <= Zone::INNER_RING_RADIUS {
-        ShipClass::Scout
-    } else if dist <= 12 {
-        ShipClass::Corvette
-    } else if dist <= 20 {
-        ShipClass::Frigate
-    } else {
+        ShipClass::LightFighter
+    } else if dist <= NPC_CRUISER_RING {
         ShipClass::Cruiser
+    } else if dist <= NPC_BATTLECRUISER_RING {
+        ShipClass::Battlecruiser
+    } else {
+        ShipClass::Destroyer
     }
 }
 
@@ -1269,7 +1635,7 @@ pub fn npc_respawn_hours(dist: u16) -> f32 {
     2.0 + 0.25 * dist as f32
 }
 
-/// T1 to T9: one step per doubling of `power` over 4.
+/// T1 to T9: one step per doubling of `power` over `NPC_POWER_BASE`.
 pub fn threat_rating(power: f32) -> u8 {
     if power.is_nan() || power <= NPC_POWER_BASE {
         return 1;

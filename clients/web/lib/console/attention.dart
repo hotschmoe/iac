@@ -182,7 +182,7 @@ class Attention extends ChangeNotifier {
         case proto.AlertEvent(level: proto.AlertLevel.critical, :final message, :final fleetId) when fleetId == null || !lost.contains(fleetId):
           out.add(Notice(fleetId == null ? 'alert' : 'fleet-$fleetId', 'Alert', message, critical: true));
         case proto.StorageFullEvent(:final resource):
-          out.add(Notice('storage-${resource.name}', 'Storage full', 'Your ${resource.name} storage is full: production is wasted until you spend it or raise the Storage Vault.'));
+          out.add(Notice('storage-${resource.name}', 'Storage full', 'Your ${resource.name} storage is full: production is wasted until you spend it or raise the ${resource.storage}.'));
         default:
           break;
       }

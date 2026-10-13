@@ -20,7 +20,7 @@
 // (it scans first), it treats a cleared lair it cannot watch as occupied,
 // and it reads off each sector's chart mark whether a visit still pays.
 // Hull damage is never repaired, so it fights only with shields up and at
-// odds that end the fight before the shields are through. The odds are the
+// odds that cost it a few percent of its hull at most. The odds are the
 // server's: before its orders the admiral asks (`odds`) how each fleet it
 // may move would fare in every sector where that decides something, and it
 // stays out of any sector it has no answer for.
@@ -34,7 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use iac_shared::constants::{
     EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL,
-    POLICY_DEFAULT_FUEL_BUDGET_PCT, SCAN_BASE_RANGE, SCAN_COOLDOWN, SCAN_SCOUT_RANGE, ShipClass,
+    POLICY_DEFAULT_FUEL_BUDGET_PCT, SCAN_COOLDOWN, ShipClass,
 };
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
@@ -49,8 +49,12 @@ use super::Personality;
 use crate::engine::MAX_SHIPS_PER_FLEET;
 use crate::script::Order;
 
-/// Odds ratio (`SectorOdds::ratio`) at which a pilot accepts a fight.
-const SAFE_ODDS: f32 = 3.0;
+/// Odds ratio (`SectorOdds::ratio`) at which a pilot accepts a fight: a sure
+/// win that keeps about 97 percent of the hull. OGame's ships carry a
+/// shield a fifth of their weapon, so a fight that costs no hull at all
+/// takes a fleet many times its enemy, and a pilot who waited for one would
+/// not fight.
+const SAFE_ODDS: f32 = 2.0;
 /// How far around a fleet its pilot asks the server for odds. A guarded
 /// sector farther off stays closed to it until it is nearer.
 const ODDS_HORIZON: u16 = 12;
@@ -58,9 +62,8 @@ const ODDS_HORIZON: u16 = 12;
 /// (the game's default).
 const DOCTRINE_RATIO_X10: u8 = 15;
 /// The ratio a wing of at least `CAREFUL_WING_SHIPS` ships flies at when its
-/// doctrine or its hulls take it into fights: SAFE, a fight that keeps 98
-/// percent of the hull or more.
-const CAREFUL_RATIO_X10: u8 = 25;
+/// doctrine or its hulls take it into fights: the pilot's own.
+const CAREFUL_RATIO_X10: u8 = 20;
 const CAREFUL_WING_SHIPS: usize = 4;
 /// Doctrines are leashed by odds and fuel, not by distance.
 const DOCTRINE_RANGE: u8 = 30;
@@ -117,9 +120,9 @@ impl Wing {
     /// doctrine starts a fight where it has to. A patrol hunts, and fights
     /// only what it beats without lasting damage. `prospect` has to enter a
     /// lair to chart it, and a wing with warships is the one strong enough
-    /// to go where every lane has a fight: both fly at SAFE odds once they
-    /// have the ships to leave home at them. The hauling doctrines pick no
-    /// fight for a payday, so for scouts and haulers under them the ratio
+    /// to go where every lane has a fight: both fly at the pilot's odds once
+    /// they have the ships to leave home at them. The hauling doctrines pick no
+    /// fight for a payday, so for probes and cargo ships under them the ratio
     /// gates quiet space, and stays at the game's default. Doctrines that
     /// bring resources home earn their fuel back and get the larger budget;
     /// the ones that fly for points get the game's default.
@@ -631,8 +634,7 @@ impl<'a> Admiral<'a> {
     fn survey(&mut self, unit: Unit) -> u64 {
         let fleet = unit.fleet;
         let Some(here) = self.chart.get(fleet.location) else { return WAIT };
-        let scout = fleet.ships.iter().any(|s| s.ship_class == ShipClass::Scout);
-        let range = if scout { SCAN_SCOUT_RANGE } else { SCAN_BASE_RANGE };
+        let range = fleet.scan_range;
         if self.blind_spot(here, 1) {
             return self.scan(fleet);
         }

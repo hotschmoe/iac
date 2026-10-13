@@ -2,11 +2,11 @@
   "canonical": {
     "action": "build_ship",
     "count": 1,
-    "ship_class": "Scout"
+    "ship_class": "LightFighter"
   },
   "input": {
     "action": "build_ship",
-    "ship_class": "Scout"
+    "ship_class": "LightFighter"
   },
   "type": "Command"
 }

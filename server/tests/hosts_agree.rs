@@ -178,15 +178,16 @@ fn orders(fleet_id: u64, home: Hex) -> Vec<(u64, Vec<Value>)> {
     vec![
         (1, vec![build(BuildingType::MetalMine), build(BuildingType::CrystalMine), command(Command::Scan { fleet_id }), board()]),
         (3, vec![
-            command(Command::BuildShip { ship_class: ShipClass::Scout, count: 2 }),
+            command(Command::BuildShip { ship_class: ShipClass::LightFighter, count: 2 }),
             command(Command::PreviewMove { fleet_id, target: next }),
             command(Command::Odds { fleet_id, sectors: vec![next, home] }),
         ]),
         (5, vec![command(Command::Move { fleet_id, target: next })]),
         (9, vec![command(Command::Harvest { fleet_id, resource: HarvestResource::Auto }), board()]),
         (13, vec![
+            build(BuildingType::SolarPlant),
             build(BuildingType::Shipyard),
-            command(Command::Research { tech: ResearchType::CorvetteTech, reserve: false }),
+            command(Command::Research { tech: ResearchType::EnergyTechnology, reserve: false }),
             command(Command::CancelQueued { queue_type: QueueType::Building, id: 999_999 }),
         ]),
         (18, vec![standing("prospect"), board()]),

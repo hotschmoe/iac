@@ -296,7 +296,7 @@ class WindshieldSim {
     final out = <Unit>[];
     var synth = 1;
     for (final g in f.ships) {
-      final cls = proto.ShipClass.values.firstWhere((c) => c.label.toLowerCase() == g.shipClass.toLowerCase(), orElse: () => proto.ShipClass.scout);
+      final cls = proto.ShipClass.values.firstWhere((c) => c.label.toLowerCase() == g.shipClass.toLowerCase(), orElse: () => proto.ShipClass.lightFighter);
       for (var i = 0; i < g.count; i++) {
         final id = i < g.ids.length ? g.ids[i] : f.id * 1000 + synth++;
         final prev = old[id];
@@ -495,7 +495,7 @@ class WindshieldSim {
     _burst(t.x, t.y, const Color(0xFFFFCC66), 22, 1.5);
     _burst(t.x, t.y, const Color(0xFFFF5A3C), 14, 1);
     rings.add(Ring(t.x, t.y, now, sz));
-    final def = t.enemy ? Sym.hostile[t.cls]! : Sym.own[t.cls]!;
+    final def = t.enemy ? Sym.hostile(t.cls) : Sym.own(t.cls);
     final vs = Sym.verts(def);
     for (var i = 0; i < vs.length && frags.length < 80; i++) {
       final a = math.atan2(vs[i].dy, vs[i].dx);
@@ -506,12 +506,22 @@ class WindshieldSim {
     onCue?.call('hit');
   }
 
+  /// How large a class is drawn on the scope, in pixels at the reference
+  /// scale: a drawing size, larger for the heavier hulls.
   static double _pxOf(proto.ShipClass c) => switch (c) {
-        proto.ShipClass.scout => 11,
-        proto.ShipClass.corvette => 15,
-        proto.ShipClass.frigate => 21,
-        proto.ShipClass.cruiser => 29,
-        proto.ShipClass.hauler => 19,
+        proto.ShipClass.espionageProbe => 8,
+        proto.ShipClass.solarSatellite => 10,
+        proto.ShipClass.lightFighter => 11,
+        proto.ShipClass.heavyFighter => 15,
+        proto.ShipClass.smallCargo => 16,
+        proto.ShipClass.cruiser => 21,
+        proto.ShipClass.largeCargo => 21,
+        proto.ShipClass.recycler => 22,
+        proto.ShipClass.battlecruiser => 25,
+        proto.ShipClass.battleship => 28,
+        proto.ShipClass.bomber => 28,
+        proto.ShipClass.destroyer => 31,
+        proto.ShipClass.deathstar => 44,
       };
 
   static double shipPx(proto.ShipClass c) => _pxOf(c);

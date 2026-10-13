@@ -76,9 +76,29 @@ String groupDigits(int v) {
   return b.toString();
 }
 
+/// Ticks in a game hour, which is what the rules quote a rate by.
+const ticksAnHour = 3600;
+
+/// "77.9" or "1,204": what [perTick] comes to in a game hour, unsigned.
+String anHour(double perTick) {
+  final v = (perTick * ticksAnHour).abs();
+  return v >= 100 ? groupDigits(v.round()) : v.toStringAsFixed(1);
+}
+
+/// "+77.9" or "-1,204": [anHour] with its sign, for a stockpile that may fall.
+String signedAnHour(double perTick) => '${perTick < 0 ? '-' : '+'}${anHour(perTick)}';
+
+/// "12", "1.5": [v] without decimals it does not have, at most [places].
+String trimmed(double v, [int places = 2]) {
+  final s = v.toStringAsFixed(places);
+  return s.contains('.') ? s.replaceFirst(RegExp(r'\.?0+$'), '') : s;
+}
+
+/// "0:40", "1:02:05", "3d 4:10:22".
 String clockFmt(int t) {
   t = t < 0 ? 0 : t;
-  final h = t ~/ 3600, m = t % 3600 ~/ 60, s = t % 60;
+  final d = t ~/ 86400, h = t % 86400 ~/ 3600, m = t % 3600 ~/ 60, s = t % 60;
   final ss = s.toString().padLeft(2, '0');
-  return h > 0 ? '$h:${m.toString().padLeft(2, '0')}:$ss' : '$m:$ss';
+  final hms = '$h:${m.toString().padLeft(2, '0')}:$ss';
+  return d > 0 ? '${d}d $hms' : h > 0 ? hms : '$m:$ss';
 }

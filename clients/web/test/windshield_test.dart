@@ -127,22 +127,22 @@ GameState world(List<ui.FleetState> fleets, Map<proto.Hex, proto.SectorState> se
     );
 
 GameState calm() => world([
-      fleet(1, [('Scout', 1), ('Corvette', 2)]),
-      fleet(2, [('Hauler', 1)], at: home),
+      fleet(1, [('Light Fighter', 1), ('Heavy Fighter', 2)]),
+      fleet(2, [('Small Cargo', 1)], at: home),
     ], {
       here: sector(here, lanes: [const proto.Hex(2, -1), const proto.Hex(3, -1), const proto.Hex(3, 0)], salvage: const proto.Resources(metal: 40, crystal: 10, deuterium: 3)),
       const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
       const proto.Hex(3, -1): sector(const proto.Hex(3, -1), lanes: [here], hostiles: const [
-        proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.corvette, count: 2)], behavior: proto.NpcBehavior.patrol)
+        proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.heavyFighter, count: 2)], behavior: proto.NpcBehavior.patrol)
       ]),
       home: sector(home, lanes: [const proto.Hex(1, 0)]),
     });
 
-GameState hostileHere({ui.FleetStatus status = ui.FleetStatus.idle, int scouts = 1}) => world([
-      fleet(1, [('Scout', scouts)], status: status),
+GameState hostileHere({ui.FleetStatus status = ui.FleetStatus.idle, int fighters = 1}) => world([
+      fleet(1, [('Light Fighter', fighters)], status: status),
     ], {
       here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: const [
-        proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.frigate, count: 1), proto.NpcShipInfo(shipClass: proto.ShipClass.corvette, count: 2)], behavior: proto.NpcBehavior.aggressive)
+        proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.cruiser, count: 1), proto.NpcShipInfo(shipClass: proto.ShipClass.heavyFighter, count: 2)], behavior: proto.NpcBehavior.aggressive)
       ]),
       const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
     });
@@ -180,7 +180,7 @@ proto.ExchangeQuote quoteOf({
   );
 }
 
-/// One Hauler of fleet 1 at [at] in a world whose hub, with its exchange, is the origin.
+/// One Small Cargo of fleet 1 at [at] in a world whose hub, with its exchange, is the origin.
 GameState atHub({
   proto.Hex at = proto.Hex.origin,
   proto.Resources hold = const proto.Resources(metal: 632, crystal: 0.4),
@@ -189,7 +189,7 @@ GameState atHub({
   const none = proto.SectorResources(metal: proto.Density.none, crystal: proto.Density.none, deuterium: proto.Density.none);
   const beside = proto.Hex(1, 0);
   final s = world([
-    fleet(1, [('Hauler', 1)], at: at),
+    fleet(1, [('Small Cargo', 1)], at: at),
   ], {
     proto.Hex.origin: sector(proto.Hex.origin, lanes: [beside, const proto.Hex(0, 1)], res: none, terrain: proto.TerrainType.empty),
     beside: sector(beside, lanes: [proto.Hex.origin], res: none, terrain: proto.TerrainType.empty),
@@ -374,7 +374,7 @@ void main() {
 
     await key(tester, LogicalKeyboardKey.keyE, 'e');
     expect(moves(), 3);
-    final there = fleet(1, [('Scout', 1), ('Corvette', 2)], at: const proto.Hex(3, -1));
+    final there = fleet(1, [('Light Fighter', 1), ('Heavy Fighter', 2)], at: const proto.Hex(3, -1));
     c.push(c.fake.copyWith(fleets: [there, ...c.fake.fleets.skip(1)]));
     await tester.pump(const Duration(milliseconds: 100));
     await key(tester, LogicalKeyboardKey.keyX, 'x');
@@ -433,7 +433,7 @@ void main() {
   testWidgets('favourable odds fire at once', (tester) async {
     final s = world([fleet(1, [('Cruiser', 3)])], {
       here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: const [
-        proto.NpcFleetInfo(id: 5, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.scout, count: 1)], behavior: proto.NpcBehavior.patrol)
+        proto.NpcFleetInfo(id: 5, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.lightFighter, count: 1)], behavior: proto.NpcBehavior.patrol)
       ]),
     });
     final c = await pumpFake(tester, rated(s, here, 2.1, proto.RatioLabel.favourable));
@@ -465,10 +465,10 @@ void main() {
 
   testWidgets('a derelict is boarded with a group in the sector, as the engine allows; with no derelict the order is not sent', (tester) async {
     GameState beside({proto.SiteBrief? site, ui.FleetStatus status = ui.FleetStatus.idle}) => world([
-          fleet(1, [('Scout', 1)], status: status),
+          fleet(1, [('Light Fighter', 1)], status: status),
         ], {
           here: sector(here, lanes: [const proto.Hex(2, -1)], site: site, hostiles: const [
-            proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.scout, count: 2)], behavior: proto.NpcBehavior.passive)
+            proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.lightFighter, count: 2)], behavior: proto.NpcBehavior.passive)
           ]),
           const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
         });
@@ -487,8 +487,8 @@ void main() {
   });
 
   testWidgets('combat events draw and the scene survives a kill', (tester) async {
-    final c = await pumpFake(tester, hostileHere(scouts: 3));
-    c.push(hostileHere(status: ui.FleetStatus.combat, scouts: 3));
+    final c = await pumpFake(tester, hostileHere(fighters: 3));
+    c.push(hostileHere(status: ui.FleetStatus.combat, fighters: 3));
     c.ev.add(const proto.GameEvent(tick: 501, kind: proto.CombatStartedEvent(playerFleetId: 1, owner: 'Pilot', enemyFleetId: 77, sector: here, mine: true)));
     for (var i = 0; i < 6; i++) {
       c.ev.add(proto.GameEvent(
@@ -499,7 +499,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 150));
     await shot(tester, 'ws-combat-1440');
     await tester.pump(const Duration(milliseconds: 250));
-    c.ev.add(const proto.GameEvent(tick: 502, kind: proto.ShipDestroyedEvent(shipId: 0, shipClass: proto.ShipClass.corvette, ownerFleetId: 77, isNpc: true, sector: here, owner: null, mine: false)));
+    c.ev.add(const proto.GameEvent(tick: 502, kind: proto.ShipDestroyedEvent(shipId: 0, shipClass: proto.ShipClass.heavyFighter,ownerFleetId: 77, isNpc: true, sector: here, owner: null, mine: false)));
     await tester.pump(const Duration(milliseconds: 100));
     await shot(tester, 'ws-kill-1440');
     expect(tester.takeException(), isNull);
@@ -662,7 +662,7 @@ void main() {
     await tester.ensureVisible(find.byKey(const ValueKey('hold-load')));
     await tester.tap(find.byKey(const ValueKey('hold-load')));
     await tester.pump(const Duration(milliseconds: 100));
-    expect(c.state.holds[101]!.metal, 250, reason: 'all that fits of the first resource');
+    expect(c.state.holds[101]!.metal, c.currentFleet.holdCapacity, reason: 'all that fits of the first resource');
 
     Console.of(tester.element(find.byType(Rail))).go(Screen.windshield);
     await tester.pump(const Duration(milliseconds: 300));
@@ -734,8 +734,8 @@ void main() {
     expect(button().reason, startsWith('Refining turns the deuterium in the hold into fuel, 15% less of it than a dock gives.'));
 
     c.push(calm().copyWith(fleets: [
-      fleet(1, [('Scout', 1), ('Corvette', 2)], refine: const proto.Refining(deuterium: 0.8, fuel: 8.5)),
-      fleet(2, [('Hauler', 1)], at: home),
+      fleet(1, [('Light Fighter', 1), ('Heavy Fighter', 2)], refine: const proto.Refining(deuterium: 0.8, fuel: 8.5)),
+      fleet(2, [('Small Cargo', 1)], at: home),
     ]));
     await tester.pump();
     expect(line(), '0.8 DE MAKES 8.5 FUEL');
@@ -750,14 +750,15 @@ void main() {
     c.place(101, proto.Hex.origin, const proto.Resources(metal: 7, deuterium: 1.6));
     await pumpShell(tester, screen: Screen.windshield, controller: c);
     String line() => tester.widget<Text>(find.byKey(const Key('status-refine-yield'))).data!;
-    expect(c.currentFleet.fuel, 96);
+    final fuel = c.currentFleet.fuel, tank = c.currentFleet.fuelMax;
+    expect(tank - fuel, greaterThan(17), reason: 'the script opens on a tank with room in it');
     expect(line(), '1.6 DE MAKES 17 FUEL', reason: 'the dock would give 20 for it');
 
     await tester.tap(find.byKey(const ValueKey('status-refine')));
     await tester.pump(const Duration(milliseconds: 100));
     expect(c.state.events.map((e) => e.message),
-        contains('fleet 101 refined 1.6 deuterium into 17 fuel: the tank stands at 113 of 120, and the hold has no deuterium left'));
-    expect((c.currentFleet.fuel, c.state.holds[101]!.deuterium, c.state.holds[101]!.metal), (113, 0, 7));
+        contains('fleet 101 refined 1.6 deuterium into 17 fuel: the tank stands at ${fuel + 17} of $tank, and the hold has no deuterium left'));
+    expect((c.currentFleet.fuel, c.state.holds[101]!.deuterium, c.state.holds[101]!.metal), (fuel + 17, 0, 7));
     expect(line(), 'NOTHING TO REFINE');
     expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('status-refine'))).onPressed, isNull);
 
@@ -769,10 +770,10 @@ void main() {
     c.place(101, proto.Hex.origin, const proto.Resources(deuterium: 40));
     c.handleCommand('refine');
     await tester.pump(const Duration(milliseconds: 100));
-    expect(c.currentFleet.fuel, 120, reason: 'the tank is full');
-    expect(c.state.holds[101]!.deuterium, closeTo(40 - 7 / 10.625, 1e-6), reason: 'and the rest stays aboard');
+    expect(c.currentFleet.fuel, tank, reason: 'the tank is full');
+    expect(c.state.holds[101]!.deuterium, closeTo(40 - (tank - fuel - 17) / 10.625, 1e-6), reason: 'and the rest stays aboard');
     c.handleCommand('refine');
-    expect(c.state.events.first.message, endsWith('the tank of fleet 101 is full (120 of 120 fuel); refining would add nothing'));
+    expect(c.state.events.first.message, endsWith('the tank of fleet 101 is full ($tank of $tank fuel); refining would add nothing'));
     expect(tester.takeException(), isNull);
     await endShell(tester, c);
   });
@@ -833,7 +834,7 @@ void main() {
 
     const held = 'refuelling on a fuel budget of 50% of deuterium income (tank 80 of 120, full in about 236 s)';
     c.push(world([
-      fleet(1, [('Scout', 1), ('Corvette', 2)],
+      fleet(1, [('Light Fighter', 1), ('Heavy Fighter', 2)],
           orders: const proto.StandingOrders(
               preset: proto.PolicyPreset.mineAndReturn,
               params: proto.PolicyParams(minFuelPct: 15, cargoReturnPct: 60, maxRange: 6, engageRatioX10: 30, fuelBudgetPct: 50))),
@@ -999,7 +1000,7 @@ void main() {
         expect(under.left <= at.left && under.right >= at.right && under.top <= at.top && under.bottom >= at.bottom, isTrue, reason: 'the ground is under every panel of the sheet');
       }
 
-      c.push(world([fleet(1, [('Scout', 1), ('Corvette', 2)], at: const proto.Hex(2, -1)), fleet(2, [('Hauler', 1)], at: home)], calm().sectors, tick: 503));
+      c.push(world([fleet(1, [('Light Fighter', 1), ('Heavy Fighter', 2)], at: const proto.Hex(2, -1)), fleet(2, [('Small Cargo', 1)], at: home)], calm().sectors, tick: 503));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 600));
       expect(find.descendant(of: find.byKey(const ValueKey('banner')), matching: find.textContaining('SECTOR')), findsOneWidget, reason: 'a banner is up');
@@ -1014,8 +1015,8 @@ void main() {
 
   testWidgets('with eight fleets the desktop fleet rail ends above the feed and scrolls; the fleet selected is brought into view', (tester) async {
     final eight = world([
-      fleet(1, [('Scout', 1), ('Corvette', 2)]),
-      for (var id = 2; id <= 8; id++) fleet(id, [('Hauler', 1)], at: home),
+      fleet(1, [('Light Fighter', 1), ('Heavy Fighter', 2)]),
+      for (var id = 2; id <= 8; id++) fleet(id, [('Small Cargo', 1)], at: home),
     ], calm().sectors).copyWith(events: [
       for (var i = 0; i < 12; i++) LogEntry(tick: 480 + i, message: 'F1 harvested 40 Fe, 12 Cr over 10s', level: EventLevel.normal),
     ]);
@@ -1054,7 +1055,7 @@ void main() {
         action: 'hold',
         reason: 'refuelling: a fuel budget of 35% of deuterium income earns nothing (tank 18 of 180); raise fuel_budget_pct or wait for the store to fill');
     const shields = PolicyAct(tick: 501, since: 501, preset: proto.PolicyPreset.prospect, action: 'hold', reason: 'shields recharging (76%)');
-    final under = calm().copyWith(fleets: [fleet(1, [('Scout', 1), ('Corvette', 2)], orders: orders), fleet(2, [('Hauler', 1)], at: home)]);
+    final under = calm().copyWith(fleets: [fleet(1, [('Light Fighter', 1), ('Heavy Fighter', 2)], orders: orders), fleet(2, [('Small Cargo', 1)], at: home)]);
     const form = [
       ValueKey('orders-doctrine-manual'),
       ValueKey('orders-doctrine-patrolHome'),
@@ -1186,12 +1187,12 @@ void main() {
         LogEntry(
             tick: 400 + i,
             message: i.isEven
-                ? 'Refused: Scout x1 costs 200 metal, 50 crystal and 30 deuterium; the stockpile is short by 78 metal and 10 deuterium. Nothing was ordered: a batch is paid in full when it is ordered.'
+                ? 'Refused: Cruiser x1 costs 20000 metal, 7000 crystal and 2000 deuterium; the stockpile is short by 7800 metal and 100 deuterium. Nothing was ordered: a batch is paid in full when it is ordered.'
                 : 'F1 scan at [2,0]: 18 sectors revealed, 4 hostiles, worst T2, 9 faint contacts (threat band 1/1/1/1/1/1/1/1/1)',
             level: EventLevel.normal),
     ];
     final state = world([
-      fleet(1, [('Scout', 1), ('Corvette', 2)]),
+      fleet(1, [('Light Fighter', 1), ('Heavy Fighter', 2)]),
     ], {
       here: sector(here, lanes: all),
       for (final h in all) h: sector(h, lanes: [here]),

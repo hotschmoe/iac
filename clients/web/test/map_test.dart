@@ -59,7 +59,7 @@ ui.FleetState _fleet(proto.Hex at, {int fuel = 100, double? jumpFuelExact}) => u
       sector: at,
       status: ui.FleetStatus.idle,
       shipCount: 3,
-      ships: const [ui.ShipState(shipClass: 'Corvette', count: 3, hull: 150, hullMax: 150, ids: [1, 2, 3])],
+      ships: const [ui.ShipState(shipClass: 'Light Fighter', count: 3, hull: 1200, hullMax: 1200, ids: [1, 2, 3])],
       fuel: fuel,
       fuelMax: 120,
       jumpFuel: 5,
@@ -81,7 +81,7 @@ GameState _state(int tick, List<ui.FleetState> fleets) {
       hostiles: hostile
           ? const [proto.NpcFleetInfo(id: 9, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.cruiser, count: 1)], behavior: proto.NpcBehavior.aggressive)]
           : minor
-              ? const [proto.NpcFleetInfo(id: 10, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.scout, count: 1)], behavior: proto.NpcBehavior.patrol)]
+              ? const [proto.NpcFleetInfo(id: 10, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.lightFighter, count: 1)], behavior: proto.NpcBehavior.patrol)]
               : null,
       threat: hostile
           ? const proto.ThreatInfo(rating: 6, estPower: 137.5, basis: proto.ThreatBasis.observed)

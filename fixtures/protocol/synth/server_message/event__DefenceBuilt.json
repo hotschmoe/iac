@@ -1,7 +1,12 @@
 [
-{"canonical":{"count":75,"defence":"PulseTurret","kind":"DefenceBuilt","player_id":76,"tick":11,"type":"event"},"input":{"count":75,"defence":"PulseTurret","kind":"DefenceBuilt","player_id":76,"tick":11,"type":"event"}},
-{"canonical":{"count":75,"defence":"LancerBattery","kind":"DefenceBuilt","player_id":76,"tick":11,"type":"event"},"input":{"count":75,"defence":"LancerBattery","kind":"DefenceBuilt","player_id":76,"tick":11,"type":"event"}},
-{"canonical":{"count":75,"defence":"IonBastion","kind":"DefenceBuilt","player_id":76,"tick":11,"type":"event"},"input":{"count":75,"defence":"IonBastion","kind":"DefenceBuilt","player_id":76,"tick":11,"type":"event"}},
-{"canonical":{"count":75,"defence":"IonBastion","kind":"DefenceBuilt","tick":11,"type":"event"},"input":{"count":75,"defence":"IonBastion","kind":"DefenceBuilt","tick":11,"type":"event"}},
-{"canonical":{"count":75,"defence":"IonBastion","kind":"DefenceBuilt","tick":11,"type":"event"},"input":{"count":75,"defence":"IonBastion","kind":"DefenceBuilt","player_id":null,"tick":11,"type":"event"}}
+{"canonical":{"count":36,"defence":"RocketLauncher","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"},"input":{"count":36,"defence":"RocketLauncher","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"}},
+{"canonical":{"count":36,"defence":"LightLaser","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"},"input":{"count":36,"defence":"LightLaser","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"}},
+{"canonical":{"count":36,"defence":"HeavyLaser","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"},"input":{"count":36,"defence":"HeavyLaser","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"}},
+{"canonical":{"count":36,"defence":"GaussCannon","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"},"input":{"count":36,"defence":"GaussCannon","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"}},
+{"canonical":{"count":36,"defence":"IonCannon","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"},"input":{"count":36,"defence":"IonCannon","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"}},
+{"canonical":{"count":36,"defence":"PlasmaTurret","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"},"input":{"count":36,"defence":"PlasmaTurret","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"}},
+{"canonical":{"count":36,"defence":"SmallShieldDome","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"},"input":{"count":36,"defence":"SmallShieldDome","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"}},
+{"canonical":{"count":36,"defence":"LargeShieldDome","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"},"input":{"count":36,"defence":"LargeShieldDome","kind":"DefenceBuilt","player_id":37,"tick":69,"type":"event"}},
+{"canonical":{"count":36,"defence":"LargeShieldDome","kind":"DefenceBuilt","tick":69,"type":"event"},"input":{"count":36,"defence":"LargeShieldDome","kind":"DefenceBuilt","tick":69,"type":"event"}},
+{"canonical":{"count":36,"defence":"LargeShieldDome","kind":"DefenceBuilt","tick":69,"type":"event"},"input":{"count":36,"defence":"LargeShieldDome","kind":"DefenceBuilt","player_id":null,"tick":69,"type":"event"}}
 ]

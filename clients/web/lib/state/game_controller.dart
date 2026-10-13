@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import '../console/economy_view.dart' show shortfall;
+import '../console/economy_view.dart' show batchCost, defenceBatch, limitReason, shortfall;
 import '../console/outpost.dart' show surveyReport;
 import '../models/fleet.dart';
 import '../models/game_state.dart';
@@ -535,8 +535,8 @@ class GameController extends ChangeNotifier {
     final String name;
     final proto.Command command;
     final String echo;
-    proto.Resources batch(proto.Resources unit) =>
-        proto.Resources(metal: unit.metal * shipBatch, crystal: unit.crystal * shipBatch, deuterium: unit.deuterium * shipBatch);
+    var count = shipBatch;
+    String? limit;
     proto.Resources? missing;
     switch (hwTab) {
       case HomeworldTab.buildings:
@@ -558,17 +558,19 @@ class GameController extends ChangeNotifier {
         requires = o.requires;
         maxed = false;
         name = o.shipClass.label;
-        command = proto.BuildShipCommand(shipClass: o.shipClass, count: shipBatch);
-        echo = 'ship ${o.shipClass.label} x$shipBatch';
-        missing = shortfall(_state.stock, batch(o.unitCost));
+        command = proto.BuildShipCommand(shipClass: o.shipClass, count: count);
+        echo = 'ship ${o.shipClass.label} x$count';
+        missing = shortfall(_state.stock, batchCost(o.unitCost, count));
       case HomeworldTab.defence:
         final o = c.defences[i];
         requires = o.requires;
         maxed = false;
         name = o.kind.label;
-        command = proto.BuildDefenceCommand(kind: o.kind, count: shipBatch);
-        echo = 'defence ${o.kind.label} x$shipBatch';
-        missing = shortfall(_state.stock, batch(o.unitCost));
+        limit = limitReason(o);
+        count = defenceBatch(o, shipBatch);
+        command = proto.BuildDefenceCommand(kind: o.kind, count: count);
+        echo = 'defence ${o.kind.label} x$count';
+        missing = shortfall(_state.stock, batchCost(o.unitCost, count));
       case HomeworldTab.storage:
         return;
     }
@@ -578,8 +580,10 @@ class GameController extends ChangeNotifier {
       note('$name is locked: needs ${unmet.join(', ')}', level: EventLevel.bright);
     } else if (maxed) {
       note('$name is already at its maximum level', level: EventLevel.bright);
+    } else if (limit != null) {
+      note('$name not ordered: $limit', level: EventLevel.bright);
     } else if (missing != null) {
-      note('$name x$shipBatch not ordered: ${shortBy(missing)}. A batch is paid in full when it is ordered.', level: EventLevel.bright);
+      note('$name x$count not ordered: ${shortBy(missing)}. A batch is paid in full when it is ordered.', level: EventLevel.bright);
     } else {
       note('> $echo', level: EventLevel.full);
       sendCommand(command);
@@ -662,9 +666,9 @@ class GameController extends ChangeNotifier {
   /// Cancel the queue that belongs to the open homeworld tab.
   void cancelCurrentHomeworldQueue() => cancelHomeworldQueue(switch (hwTab) {
         HomeworldTab.buildings => proto.QueueType.building,
-        HomeworldTab.shipyard => proto.QueueType.ship,
+        HomeworldTab.shipyard || HomeworldTab.defence => proto.QueueType.ship,
         HomeworldTab.research => proto.QueueType.research,
-        HomeworldTab.defence || HomeworldTab.storage => proto.QueueType.building,
+        HomeworldTab.storage => proto.QueueType.building,
       });
 
   // ── Commands ──────────────────────────────────────────────────

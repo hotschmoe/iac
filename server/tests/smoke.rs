@@ -331,10 +331,10 @@ async fn a_server_refuses_a_world_another_holds_or_this_build_does_not_play() {
         )) && old_economy.contains("new --world path"),
         "unclear refusal: {old_economy}",
     );
-    write(text.replacen("\"worldgen_version\":3", "\"worldgen_version\":1", 1).as_bytes());
-    assert!(refusal(&file, &[]).contains("worldgen version 1, this build runs version 3"));
-    write(text.replacen("\"format\":7", "\"format\":6", 1).as_bytes());
-    assert!(refusal(&file, &[]).contains("this world file is format 6, this build reads format 7"));
+    write(text.replacen("\"worldgen_version\":4", "\"worldgen_version\":1", 1).as_bytes());
+    assert!(refusal(&file, &[]).contains("worldgen version 1, this build runs version 4"));
+    write(text.replacen("\"format\":8", "\"format\":7", 1).as_bytes());
+    assert!(refusal(&file, &[]).contains("this world file is format 7, this build reads format 8"));
 
     write(&document[..document.len() - 40]);
     let cut_short = refusal(&file, &[]);

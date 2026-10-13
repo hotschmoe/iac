@@ -301,9 +301,10 @@ class BuildShipCommand extends Command {
   Json toJson() => {'action': 'build_ship', 'ship_class': shipClass.toJson(), 'count': count};
 }
 
-/// Order `count` defence structures in the shipyard queue; same rule as
+/// Order `count` defences in the shipyard queue; same rule as
 /// `build_ship`. They stay at home and never burn fuel; rejected with
-/// `DefenceLocked` until the Defense Grid and research it needs are in place.
+/// `DefenceLocked` until the Shipyard and research it needs are in
+/// place, and with `MaxLevelReached` for a second dome of a kind.
 class BuildDefenceCommand extends Command {
   final DefenceKind kind;
   final int count;
@@ -1583,7 +1584,7 @@ class TickUpdate extends ServerMessage {
 /// Full snapshot, sent on login and on `request_full_state`.
 ///
 /// `known_sectors` is the player's whole chart: every sector the player has
-/// ever had eyes on (fleet present, sensor array, active scan), not only the
+/// ever had eyes on (fleet present, the homeworld's sensors, active scan), not only the
 /// ones with fresh intel. Entries with `live: true` are current; the rest
 /// carry what was last observed and the tick it was observed (`last_seen`).
 class GameState extends ServerMessage {
@@ -1943,6 +1944,10 @@ class WorldInfo {
   /// it offers. A hub sector has no ore, no hostile group and no derelict.
   final List<HubSite> hub;
 
+  /// Every rapid-fire figure of the catalogue: which ship class fires
+  /// again at what, ships and defences alike. It never changes.
+  final List<RapidFire> rapidFire;
+
   const WorldInfo({
     required this.pace,
     this.preset,
@@ -1951,6 +1956,7 @@ class WorldInfo {
     required this.worldgenVersion,
     this.estimate,
     this.hub = const [],
+    this.rapidFire = const [],
   });
 
   factory WorldInfo.fromJson(Object? json) {
@@ -1963,6 +1969,7 @@ class WorldInfo {
       worldgenVersion: _int(m['worldgen_version']),
       estimate: _opt(m['estimate'], WorldEstimate.fromJson),
       hub: _opt(m['hub'], (v) => _list(v, HubSite.fromJson)) ?? const [],
+      rapidFire: _opt(m['rapid_fire'], (v) => _list(v, RapidFire.fromJson)) ?? const [],
     );
   }
 
@@ -1974,7 +1981,31 @@ class WorldInfo {
     'worldgen_version': worldgenVersion,
     'estimate': ?estimate?.toJson(),
     'hub': hub.map((e) => e.toJson()).toList(),
+    'rapid_fire': rapidFire.map((e) => e.toJson()).toList(),
   };
+}
+
+/// After a shot at a unit of `against`, a ship of `ship_class` fires again
+/// with probability `(shots - 1) / shots`.
+class RapidFire {
+  final ShipClass shipClass;
+
+  /// A ship class or a defence: the wire carries just its name.
+  final ShipyardItem against;
+  final int shots;
+
+  const RapidFire({required this.shipClass, required this.against, required this.shots});
+
+  factory RapidFire.fromJson(Object? json) {
+    final m = _obj(json);
+    return RapidFire(
+      shipClass: ShipClass.fromJson(m['class']),
+      against: ShipyardItem.fromJson(m['against']),
+      shots: _int(m['shots']),
+    );
+  }
+
+  Json toJson() => {'class': shipClass.toJson(), 'against': against.toJson(), 'shots': shots};
 }
 
 /// One sector of the hub.
@@ -2055,8 +2086,8 @@ class FleetState {
   final double fuel;
   final double fuelMax;
 
-  /// Fuel one jump costs this fleet right now (it scales with the fleet's
-  /// hull mass and fuel research). A fleet with less than this and away
+  /// Fuel one jump costs this fleet right now: the fuel figure of each of
+  /// its ships, less Energy Technology's saving. A fleet with less than this and away
   /// from home is stranded and only regains fuel from the emergency
   /// reserve, one jump per five minutes.
   final double jumpFuel;
@@ -2075,11 +2106,14 @@ class FleetState {
   /// where it stands. An emergency recall does not fly these hops.
   final int hopsHome;
 
-  /// Ticks one jump takes this fleet from the order to the arrival: the
-  /// charge, which its slowest ship and Navigation set, and the tick it
-  /// lands on. A route of `n` jumps flown without a pause takes
-  /// `n * jump_ticks`.
+  /// Ticks one jump takes this fleet from the order to the arrival, set
+  /// by its slowest ship and that ship's drive. A route of `n` jumps flown
+  /// without a pause takes `n * jump_ticks`.
   final int jumpTicks;
+
+  /// Hops a `scan` by this fleet reveals: `SCAN_PROBE_RANGE` with an
+  /// Espionage Probe aboard, `SCAN_BASE_RANGE` without.
+  final int scanRange;
 
   /// Ticks before the fleet takes its next order. While it boards a
   /// derelict (`Exploring`) it is what the boarding has left, out of
@@ -2135,6 +2169,7 @@ class FleetState {
     this.homeFuel = 0,
     required this.hopsHome,
     required this.jumpTicks,
+    required this.scanRange,
     this.cooldownRemaining = 0,
     this.power = 0,
     this.rangeHops = 0,
@@ -2161,6 +2196,7 @@ class FleetState {
       homeFuel: _opt(m['home_fuel'], _double) ?? 0,
       hopsHome: _int(m['hops_home']),
       jumpTicks: _int(m['jump_ticks']),
+      scanRange: _int(m['scan_range']),
       cooldownRemaining: _opt(m['cooldown_remaining'], _int) ?? 0,
       power: _opt(m['power'], _double) ?? 0,
       rangeHops: _opt(m['range_hops'], _int) ?? 0,
@@ -2186,6 +2222,7 @@ class FleetState {
     'home_fuel': homeFuel,
     'hops_home': hopsHome,
     'jump_ticks': jumpTicks,
+    'scan_range': scanRange,
     'cooldown_remaining': cooldownRemaining,
     'power': power,
     'range_hops': rangeHops,
@@ -2278,7 +2315,7 @@ class ShipState {
 /// One sector as the player knows it.
 ///
 /// `live: true` means the server is watching the sector this tick (a fleet
-/// is there, the sensor array covers it, or a scan has not expired) and every
+/// is there, the homeworld's sensors cover it, or a scan has not expired) and every
 /// field is current. `live: false` is chart memory: `resources`, `hostiles`,
 /// `salvage` and `site` are what was last observed at tick `last_seen` and
 /// may have changed since (a wreck despawns, a hostile moves, a derelict is
@@ -2568,14 +2605,11 @@ class FleetBrief {
   final int id;
   final String ownerName;
   final int shipCount;
-  final ShipClassCounts shipClasses;
 
-  const FleetBrief({
-    required this.id,
-    required this.ownerName,
-    required this.shipCount,
-    this.shipClasses = const ShipClassCounts(),
-  });
+  /// Its ships by class, in catalogue order; a class it has none of is left out.
+  final List<ShipCount> shipClasses;
+
+  const FleetBrief({required this.id, required this.ownerName, required this.shipCount, this.shipClasses = const []});
 
   factory FleetBrief.fromJson(Object? json) {
     final m = _obj(json);
@@ -2583,42 +2617,46 @@ class FleetBrief {
       id: _int(m['id']),
       ownerName: _string(m['owner_name']),
       shipCount: _int(m['ship_count']),
-      shipClasses: _opt(m['ship_classes'], ShipClassCounts.fromJson) ?? const ShipClassCounts(),
+      shipClasses: _opt(m['ship_classes'], (v) => _list(v, ShipCount.fromJson)) ?? const [],
     );
   }
 
-  Json toJson() => {'id': id, 'owner_name': ownerName, 'ship_count': shipCount, 'ship_classes': shipClasses.toJson()};
+  Json toJson() => {
+    'id': id,
+    'owner_name': ownerName,
+    'ship_count': shipCount,
+    'ship_classes': shipClasses.map((e) => e.toJson()).toList(),
+  };
 }
 
-class ShipClassCounts {
-  final int scout;
-  final int corvette;
-  final int frigate;
-  final int cruiser;
-  final int hauler;
+class ShipCount {
+  final ShipClass shipClass;
+  final int count;
 
-  const ShipClassCounts({this.scout = 0, this.corvette = 0, this.frigate = 0, this.cruiser = 0, this.hauler = 0});
+  const ShipCount({required this.shipClass, required this.count});
 
-  factory ShipClassCounts.fromJson(Object? json) {
+  factory ShipCount.fromJson(Object? json) {
     final m = _obj(json);
-    return ShipClassCounts(
-      scout: _int(m['scout']),
-      corvette: _int(m['corvette']),
-      frigate: _int(m['frigate']),
-      cruiser: _int(m['cruiser']),
-      hauler: _int(m['hauler']),
-    );
+    return ShipCount(shipClass: ShipClass.fromJson(m['class']), count: _int(m['count']));
   }
 
-  Json toJson() => {'scout': scout, 'corvette': corvette, 'frigate': frigate, 'cruiser': cruiser, 'hauler': hauler};
+  Json toJson() => {'class': shipClass.toJson(), 'count': count};
 }
 
 class HomeworldState {
   final Hex location;
 
-  /// What the mines make each tick at current levels (before the storage
-  /// cap discards the excess; see `storage`).
+  /// What the stockpile gains each tick at current levels and the energy
+  /// there is (before the storage cap discards the excess; see
+  /// `storage`): the mines at `energy.fraction`, the natural production,
+  /// less the deuterium the Fusion Reactor burns, so deuterium may be
+  /// negative.
   final Resources production;
+  final EnergyState energy;
+
+  /// Solar Satellites at home. They are built in the shipyard queue as
+  /// the ship class `SolarSatellite` and never join a fleet.
+  final int satellites;
   final StorageState storage;
   final List<BuildingState> buildings;
   final List<ResearchState> research;
@@ -2632,6 +2670,9 @@ class HomeworldState {
   /// How many buildings may be under construction at once.
   final int buildSlots;
 
+  /// What opens one more building slot; absent when every slot is open.
+  final Requirement? buildSlotUnlock;
+
   /// Orders that may wait behind the running ones in each queue. An order
   /// that fits is always accepted, started or not; only a full waiting
   /// line (or an order that can never start) is refused with `QueueFull`.
@@ -2642,13 +2683,22 @@ class HomeworldState {
   final List<QueuedResearch> researchPending;
   final List<ShipState> dockedShips;
 
-  /// Structures standing at home (those being rebuilt after a raid are
+  /// Defences standing at home (those being rebuilt after a raid are
   /// counted in `restoring`, not `count`).
   final List<DefenceState> defences;
 
-  /// Docked ships, the Defense Grid and all structures together: what the
+  /// Docked ships, Solar Satellites and all defences together: what the
   /// next raid meets.
   final double homeDefencePower;
+
+  /// The share of `home_defence_power` the ships standing at home add.
+  final double dockedPower;
+
+  /// The Solar Satellites' share of `home_defence_power`.
+  final double satellitePower;
+
+  /// The standing defences' share of `home_defence_power`.
+  final double structurePower;
 
   /// Typical power of the next raid, from the empire's building and
   /// research points; the actual raid rolls 0.80 to 1.15 times this.
@@ -2660,12 +2710,15 @@ class HomeworldState {
   const HomeworldState({
     required this.location,
     required this.production,
+    required this.energy,
+    required this.satellites,
     required this.storage,
     required this.buildings,
     required this.research,
     required this.buildQueue,
     required this.buildPending,
     required this.buildSlots,
+    this.buildSlotUnlock,
     required this.queueWaitingMax,
     this.shipyardQueue,
     required this.shipyardPending,
@@ -2674,6 +2727,9 @@ class HomeworldState {
     required this.dockedShips,
     required this.defences,
     required this.homeDefencePower,
+    required this.dockedPower,
+    required this.satellitePower,
+    required this.structurePower,
     required this.nextRaidEstimatePower,
     required this.catalog,
   });
@@ -2683,12 +2739,15 @@ class HomeworldState {
     return HomeworldState(
       location: Hex.fromJson(m['location']),
       production: Resources.fromJson(m['production']),
+      energy: EnergyState.fromJson(m['energy']),
+      satellites: _int(m['satellites']),
       storage: StorageState.fromJson(m['storage']),
       buildings: _list(m['buildings'], BuildingState.fromJson),
       research: _list(m['research'], ResearchState.fromJson),
       buildQueue: _list(m['build_queue'], BuildQueueItem.fromJson),
       buildPending: _list(m['build_pending'], QueuedBuild.fromJson),
       buildSlots: _int(m['build_slots']),
+      buildSlotUnlock: _opt(m['build_slot_unlock'], Requirement.fromJson),
       queueWaitingMax: _int(m['queue_waiting_max']),
       shipyardQueue: _opt(m['shipyard_queue'], ShipyardQueueItem.fromJson),
       shipyardPending: _list(m['shipyard_pending'], QueuedShip.fromJson),
@@ -2697,6 +2756,9 @@ class HomeworldState {
       dockedShips: _list(m['docked_ships'], ShipState.fromJson),
       defences: _list(m['defences'], DefenceState.fromJson),
       homeDefencePower: _double(m['home_defence_power']),
+      dockedPower: _double(m['docked_power']),
+      satellitePower: _double(m['satellite_power']),
+      structurePower: _double(m['structure_power']),
       nextRaidEstimatePower: _double(m['next_raid_estimate_power']),
       catalog: HomeworldCatalog.fromJson(m['catalog']),
     );
@@ -2705,12 +2767,15 @@ class HomeworldState {
   Json toJson() => {
     'location': location.toJson(),
     'production': production.toJson(),
+    'energy': energy.toJson(),
+    'satellites': satellites,
     'storage': storage.toJson(),
     'buildings': buildings.map((e) => e.toJson()).toList(),
     'research': research.map((e) => e.toJson()).toList(),
     'build_queue': buildQueue.map((e) => e.toJson()).toList(),
     'build_pending': buildPending.map((e) => e.toJson()).toList(),
     'build_slots': buildSlots,
+    'build_slot_unlock': ?buildSlotUnlock?.toJson(),
     'queue_waiting_max': queueWaitingMax,
     'shipyard_queue': ?shipyardQueue?.toJson(),
     'shipyard_pending': shipyardPending.map((e) => e.toJson()).toList(),
@@ -2719,6 +2784,9 @@ class HomeworldState {
     'docked_ships': dockedShips.map((e) => e.toJson()).toList(),
     'defences': defences.map((e) => e.toJson()).toList(),
     'home_defence_power': homeDefencePower,
+    'docked_power': dockedPower,
+    'satellite_power': satellitePower,
+    'structure_power': structurePower,
     'next_raid_estimate_power': nextRaidEstimatePower,
     'catalog': catalog.toJson(),
   };
@@ -2731,7 +2799,7 @@ class DefenceState {
   /// Structures a repelled raid destroyed that come back for free.
   final int restoring;
 
-  /// Power of one structure at the current Defense Grid level.
+  /// Power of one with the owner's Weapons, Shielding and Armour Technology.
   final double power;
 
   const DefenceState({required this.kind, required this.count, required this.restoring, required this.power});
@@ -2749,8 +2817,59 @@ class DefenceState {
   Json toJson() => {'kind': kind.toJson(), 'count': count, 'restoring': restoring, 'power': power};
 }
 
-/// Stockpile limits, from the Storage Vault level and the world pace.
-/// Mines stop at `cap`; docking cargo unloads only up to it.
+/// A homeworld's energy. The mines need it and the Solar Plant, the Fusion
+/// Reactor and the Solar Satellites make it; it is not stored.
+class EnergyState {
+  final int made;
+  final int needed;
+
+  /// The fraction of their output the mines run at: `made / needed`, at
+  /// most 1, and 1 when nothing is needed.
+  final double fraction;
+
+  /// Energy each Solar Satellite makes.
+  final int perSatellite;
+
+  /// Deuterium the Fusion Reactor burns each tick while it runs.
+  final double fusionBurn;
+
+  /// The Fusion Reactor stands and makes nothing: the stockpile has no
+  /// deuterium for it to burn.
+  final bool fusionStarved;
+
+  const EnergyState({
+    required this.made,
+    required this.needed,
+    required this.fraction,
+    required this.perSatellite,
+    required this.fusionBurn,
+    required this.fusionStarved,
+  });
+
+  factory EnergyState.fromJson(Object? json) {
+    final m = _obj(json);
+    return EnergyState(
+      made: _int(m['made']),
+      needed: _int(m['needed']),
+      fraction: _double(m['fraction']),
+      perSatellite: _int(m['per_satellite']),
+      fusionBurn: _double(m['fusion_burn']),
+      fusionStarved: _bool(m['fusion_starved']),
+    );
+  }
+
+  Json toJson() => {
+    'made': made,
+    'needed': needed,
+    'fraction': fraction,
+    'per_satellite': perSatellite,
+    'fusion_burn': fusionBurn,
+    'fusion_starved': fusionStarved,
+  };
+}
+
+/// Stockpile limits, each from the level of its own storage building and
+/// the world pace. Mines stop at `cap`; docking cargo unloads only up to it.
 class StorageState {
   final Resources cap;
 
@@ -2804,11 +2923,14 @@ class ResourceEta {
 }
 
 /// Everything a client needs to offer homeworld actions without knowing any
-/// balance formulas: costs, build times and prerequisites, computed by the
-/// server from `scaling.rs` for the player's current levels. Resent with
-/// every `HomeworldState`, so it tracks level changes the tick they land.
-/// Whether the player can pay is left to the client (compare `cost` with the
-/// stockpile in `PlayerState.resources`).
+/// balance formulas: costs, build times, prerequisites and what each level
+/// does, computed by the server from `scaling.rs` for the player's current
+/// levels. Resent with every `HomeworldState`, so it tracks level changes
+/// the tick they land. What never changes (a class's base figures, its
+/// label, the rapid-fire table) is not here: the figures are columns of the
+/// enums and the table is `WorldInfo.rapid_fire`. Whether the player can
+/// pay is left to the client (compare `cost` with the stockpile in
+/// `PlayerState.resources`).
 class HomeworldCatalog {
   /// One entry per `BuildingType`, in declaration order.
   final List<BuildingOption> buildings;
@@ -2847,24 +2969,122 @@ class HomeworldCatalog {
   };
 }
 
-/// One prerequisite: a building or tech that must reach `need`, with the
-/// player's current level. The server's "prerequisites not met" errors are
-/// written from the same values.
+/// One prerequisite: a building or tech that must reach level `need`, with
+/// the player's current level, or (`energy`) an amount of energy the
+/// homeworld must be making, with what it makes. The server's
+/// "prerequisites not met" errors are written from the same values.
 class Requirement {
-  /// Building or tech label ("Shipyard", "Frigate Tech").
+  /// Building or tech label ("Shipyard", "Impulse Drive"), or "Energy".
   final String name;
   final int need;
   final int have;
   final bool met;
 
-  const Requirement({required this.name, required this.need, required this.have, required this.met});
+  /// `need` and `have` are energy made, not levels.
+  final bool energy;
+
+  const Requirement({
+    required this.name,
+    required this.need,
+    required this.have,
+    required this.met,
+    required this.energy,
+  });
 
   factory Requirement.fromJson(Object? json) {
     final m = _obj(json);
-    return Requirement(name: _string(m['name']), need: _int(m['need']), have: _int(m['have']), met: _bool(m['met']));
+    return Requirement(
+      name: _string(m['name']),
+      need: _int(m['need']),
+      have: _int(m['have']),
+      met: _bool(m['met']),
+      energy: _bool(m['energy']),
+    );
   }
 
-  Json toJson() => {'name': name, 'need': need, 'have': have, 'met': met};
+  Json toJson() => {'name': name, 'need': need, 'have': have, 'met': met, 'energy': energy};
+}
+
+/// What a level of a building or a research does, as a figure a client
+/// prints beside its label. Rates are a tick at the world's pace.
+enum EffectKind {
+  /// What the mine makes with all the energy it needs; the natural
+  /// production is not counted.
+  metalPerTick('metal_per_tick', label: 'metal'),
+
+  crystalPerTick('crystal_per_tick', label: 'crystal'),
+  deuteriumPerTick('deuterium_per_tick', label: 'deuterium'),
+  energyUsed('energy_used', label: 'energy used'),
+  energyMade('energy_made', label: 'energy made'),
+
+  /// Deuterium the Fusion Reactor burns while it runs.
+  fusionBurnPerTick('fusion_burn_per_tick', label: 'deuterium burned'),
+
+  /// What building, ship and defence, or research time is divided by,
+  /// with every other building as it stands.
+  buildingSpeed('building_speed', label: 'building speed'),
+
+  shipyardSpeed('shipyard_speed', label: 'shipyard speed'),
+  researchSpeed('research_speed', label: 'research speed'),
+
+  /// The cap of the building's own resource, and the share of it a raid
+  /// cannot take.
+  storageCap('storage_cap', label: 'storage'),
+
+  storageProtected('storage_protected', label: 'safe from raids'),
+
+  /// What every fleet's tank is multiplied by.
+  tankFactor('tank_factor', label: 'fleet tanks'),
+
+  /// What attack, shield or hull is multiplied by, for ships built from
+  /// now on and for defences.
+  attack('attack', label: 'attack'),
+
+  shield('shield', label: 'shield'),
+  hull('hull', label: 'hull'),
+
+  /// What the speed of the ships on this drive is multiplied by.
+  speed('speed', label: 'speed'),
+
+  /// What a jump's burn is multiplied by.
+  jumpFuel('jump_fuel', label: 'fuel a jump'),
+
+  /// Taken off the chance that an emergency jump harms a ship, as a share.
+  recallRisk('recall_risk', label: 'emergency jump risk'),
+
+  buildSlots('build_slots', label: 'building slots'),
+
+  /// Hops around the homeworld that are seen.
+  sensorHops('sensor_hops', label: 'sensor range'),
+
+  /// What a unit of ore yields.
+  oreYield('ore_yield', label: 'ore yield');
+
+  const EffectKind(this.wire, {required this.label});
+
+  final String wire;
+  final String label;
+
+  static EffectKind fromJson(Object? json) => _named(values, (v) => v.wire, json);
+
+  String toJson() => wire;
+}
+
+/// One figure of a building or research: at the level it stands at, and at
+/// the next (absent at the highest level).
+class Effect {
+  final EffectKind kind;
+  final double now;
+  final double? next;
+
+  const Effect({required this.kind, required this.now, this.next});
+
+  factory Effect.fromJson(Object? json) {
+    final m = _obj(json);
+    return Effect(kind: EffectKind.fromJson(m['kind']), now: _double(m['now']), next: _opt(m['next'], _double));
+  }
+
+  Json toJson() => {'kind': kind.toJson(), 'now': now, 'next': ?next};
 }
 
 /// Cost and duration of the next level of a building or tech.
@@ -2894,12 +3114,16 @@ class BuildingOption {
   /// All prerequisites with their status; the entry is locked while any is unmet.
   final List<Requirement> requires;
 
+  /// What the building does at its level and at the next.
+  final List<Effect> effects;
+
   const BuildingOption({
     required this.buildingType,
     required this.level,
     required this.maxLevel,
     this.next,
     required this.requires,
+    required this.effects,
   });
 
   factory BuildingOption.fromJson(Object? json) {
@@ -2910,6 +3134,7 @@ class BuildingOption {
       maxLevel: _int(m['max_level']),
       next: _opt(m['next'], UpgradeStep.fromJson),
       requires: _list(m['requires'], Requirement.fromJson),
+      effects: _list(m['effects'], Effect.fromJson),
     );
   }
 
@@ -2919,6 +3144,7 @@ class BuildingOption {
     'max_level': maxLevel,
     'next': ?next?.toJson(),
     'requires': requires.map((e) => e.toJson()).toList(),
+    'effects': effects.map((e) => e.toJson()).toList(),
   };
 }
 
@@ -2933,12 +3159,17 @@ class ResearchOption {
   /// Includes the Research Lab the server requires before any research.
   final List<Requirement> requires;
 
+  /// What the research does at its level and at the next; empty for one
+  /// that is only a requirement of other things.
+  final List<Effect> effects;
+
   const ResearchOption({
     required this.tech,
     required this.level,
     required this.maxLevel,
     this.next,
     required this.requires,
+    required this.effects,
   });
 
   factory ResearchOption.fromJson(Object? json) {
@@ -2949,6 +3180,7 @@ class ResearchOption {
       maxLevel: _int(m['max_level']),
       next: _opt(m['next'], UpgradeStep.fromJson),
       requires: _list(m['requires'], Requirement.fromJson),
+      effects: _list(m['effects'], Effect.fromJson),
     );
   }
 
@@ -2958,6 +3190,7 @@ class ResearchOption {
     'max_level': maxLevel,
     'next': ?next?.toJson(),
     'requires': requires.map((e) => e.toJson()).toList(),
+    'effects': effects.map((e) => e.toJson()).toList(),
   };
 }
 
@@ -2967,17 +3200,61 @@ class ShipOption {
   /// Cost of one ship; a batch of `count` costs `count` times this.
   final Resources unitCost;
 
-  /// Ticks to build one ship at the current shipyard level.
+  /// Ticks to build one ship at the current Shipyard and Nanite Factory levels.
   final int ticksPerShip;
-
-  /// Includes the Shipyard the server requires before any ship.
   final List<Requirement> requires;
+
+  /// What a ship built now fights with: the class's figures with the
+  /// owner's Armour, Shielding and Weapons Technology. A ship keeps what
+  /// it was built with.
+  final double hull;
+  final double shield;
+  final double weapon;
+
+  /// `weapon + (hull + shield) / 10` of those.
+  final double power;
+
+  /// One ship's hold at the world's pace.
+  final double cargo;
+
+  /// False for the Solar Satellite: it stays at the homeworld, counted in
+  /// `HomeworldState.satellites`, and the flight figures below are 0.
+  final bool flies;
+
+  /// The drive it flies on with the owner's research; the Small Cargo and
+  /// the Bomber change theirs.
+  final Drive? drive;
+  final double speed;
+
+  /// Ticks one jump takes a fleet whose slowest ship this is.
+  final int jumpTicks;
+
+  /// Fuel one jump burns, with Energy Technology's saving.
+  final double jumpFuel;
+
+  /// The tank one ship adds to a fleet, with the Deuterium Tank counted.
+  final double tank;
+
+  /// Raw units of ore a tick it extracts at density multiplier 1.
+  final double harvest;
 
   const ShipOption({
     required this.shipClass,
     required this.unitCost,
     required this.ticksPerShip,
     required this.requires,
+    required this.hull,
+    required this.shield,
+    required this.weapon,
+    required this.power,
+    required this.cargo,
+    required this.flies,
+    this.drive,
+    required this.speed,
+    required this.jumpTicks,
+    required this.jumpFuel,
+    required this.tank,
+    required this.harvest,
   });
 
   factory ShipOption.fromJson(Object? json) {
@@ -2987,6 +3264,18 @@ class ShipOption {
       unitCost: Resources.fromJson(m['unit_cost']),
       ticksPerShip: _int(m['ticks_per_ship']),
       requires: _list(m['requires'], Requirement.fromJson),
+      hull: _double(m['hull']),
+      shield: _double(m['shield']),
+      weapon: _double(m['weapon']),
+      power: _double(m['power']),
+      cargo: _double(m['cargo']),
+      flies: _bool(m['flies']),
+      drive: _opt(m['drive'], Drive.fromJson),
+      speed: _double(m['speed']),
+      jumpTicks: _int(m['jump_ticks']),
+      jumpFuel: _double(m['jump_fuel']),
+      tank: _double(m['tank']),
+      harvest: _double(m['harvest']),
     );
   }
 
@@ -2995,6 +3284,18 @@ class ShipOption {
     'unit_cost': unitCost.toJson(),
     'ticks_per_ship': ticksPerShip,
     'requires': requires.map((e) => e.toJson()).toList(),
+    'hull': hull,
+    'shield': shield,
+    'weapon': weapon,
+    'power': power,
+    'cargo': cargo,
+    'flies': flies,
+    'drive': ?drive?.toJson(),
+    'speed': speed,
+    'jump_ticks': jumpTicks,
+    'jump_fuel': jumpFuel,
+    'tank': tank,
+    'harvest': harvest,
   };
 }
 
@@ -3003,20 +3304,37 @@ class DefenceOption {
 
   /// Standing now.
   final int count;
+
+  /// The most that may stand, those being rebuilt and ordered included:
+  /// 1 for a dome. Absent when there is no limit.
+  final int? max;
+
+  /// How many more may be ordered now: `max` less those standing, being
+  /// rebuilt and on order. Absent when there is no limit.
+  final int? room;
   final Resources unitCost;
   final int ticksPerUnit;
 
-  /// Power of one structure at the current Defense Grid level.
-  final double power;
+  /// What one fights with: the kind's figures with the owner's Armour,
+  /// Shielding and Weapons Technology as they stand now.
+  final double hull;
+  final double shield;
+  final double weapon;
 
-  /// Includes the Shipyard the server requires before anything is built.
+  /// `weapon + (hull + shield) / 10` of those.
+  final double power;
   final List<Requirement> requires;
 
   const DefenceOption({
     required this.kind,
     required this.count,
+    this.max,
+    this.room,
     required this.unitCost,
     required this.ticksPerUnit,
+    required this.hull,
+    required this.shield,
+    required this.weapon,
     required this.power,
     required this.requires,
   });
@@ -3026,8 +3344,13 @@ class DefenceOption {
     return DefenceOption(
       kind: DefenceKind.fromJson(m['kind']),
       count: _int(m['count']),
+      max: _opt(m['max'], _int),
+      room: _opt(m['room'], _int),
       unitCost: Resources.fromJson(m['unit_cost']),
       ticksPerUnit: _int(m['ticks_per_unit']),
+      hull: _double(m['hull']),
+      shield: _double(m['shield']),
+      weapon: _double(m['weapon']),
       power: _double(m['power']),
       requires: _list(m['requires'], Requirement.fromJson),
     );
@@ -3036,8 +3359,13 @@ class DefenceOption {
   Json toJson() => {
     'kind': kind.toJson(),
     'count': count,
+    'max': ?max,
+    'room': ?room,
     'unit_cost': unitCost.toJson(),
     'ticks_per_unit': ticksPerUnit,
+    'hull': hull,
+    'shield': shield,
+    'weapon': weapon,
     'power': power,
     'requires': requires.map((e) => e.toJson()).toList(),
   };
@@ -3520,7 +3848,7 @@ class QueueEvent extends EventKind {
   /// `cancel_queued` take.
   final int id;
 
-  /// "Metal Mine Lv.5", "Corvette x3".
+  /// "Metal Mine Lv.5", "Light Fighter x3".
   final String item;
   final QueueAction action;
 
@@ -3944,7 +4272,7 @@ class FleetDestroyedEvent extends EventKind {
   final bool mine;
   final Resources salvage;
 
-  /// What an NPC group was ("3x corvette pack"); empty for a player fleet.
+  /// What an NPC group was ("3x cruiser pack"); empty for a player fleet.
   final String label;
 
   const FleetDestroyedEvent({
@@ -4034,7 +4362,7 @@ class CombatStartedEvent extends EventKind {
   final String owner;
   final int enemyFleetId;
 
-  /// What the hostile group is ("3x corvette pack").
+  /// What the hostile group is ("3x cruiser pack").
   final String enemy;
   final Hex sector;
 
@@ -4444,13 +4772,16 @@ class RaidResolvedEvent extends EventKind {
   final double raidPower;
   final double defensePower;
 
+  /// Solar Satellites a lost raid destroyed.
+  final int satellitesLost;
+
   /// Structures the raid destroyed.
   final int structuresLost;
 
   /// Of those, how many are rebuilt for free after a short delay.
   final int structuresRestored;
 
-  /// What the Storage Vault kept out of reach of a successful raid, of
+  /// What the storage buildings kept out of reach of a successful raid, of
   /// the stockpile and the cargo aboard fleets at home together. At an
   /// outpost, what its protected floor kept.
   final Resources protectedKept;
@@ -4469,6 +4800,7 @@ class RaidResolvedEvent extends EventKind {
     this.salvageDespawnTick,
     required this.raidPower,
     required this.defensePower,
+    this.satellitesLost = 0,
     this.structuresLost = 0,
     this.structuresRestored = 0,
     this.protectedKept = const Resources(),
@@ -4487,6 +4819,7 @@ class RaidResolvedEvent extends EventKind {
       salvageDespawnTick: _opt(m['salvage_despawn_tick'], _int),
       raidPower: _double(m['raid_power']),
       defensePower: _double(m['defense_power']),
+      satellitesLost: _opt(m['satellites_lost'], _int) ?? 0,
       structuresLost: _opt(m['structures_lost'], _int) ?? 0,
       structuresRestored: _opt(m['structures_restored'], _int) ?? 0,
       protectedKept: _opt(m['protected_kept'], Resources.fromJson) ?? const Resources(),
@@ -4506,6 +4839,7 @@ class RaidResolvedEvent extends EventKind {
     'salvage_despawn_tick': ?salvageDespawnTick,
     'raid_power': raidPower,
     'defense_power': defensePower,
+    'satellites_lost': satellitesLost,
     'structures_lost': structuresLost,
     'structures_restored': structuresRestored,
     'protected_kept': protectedKept.toJson(),
@@ -4650,13 +4984,208 @@ enum TerrainType {
   String toJson() => wire;
 }
 
-/// Ship class definitions.
+/// The drive a ship flies on: the research that speeds it, and by how much a level.
+enum Drive {
+  combustion('Combustion', label: 'Combustion Drive', speedPerLevel: 0.1),
+  impulse('Impulse', label: 'Impulse Drive', speedPerLevel: 0.2),
+  hyperspace('Hyperspace', label: 'Hyperspace Drive', speedPerLevel: 0.3);
+
+  const Drive(this.wire, {required this.label, required this.speedPerLevel});
+
+  final String wire;
+  final String label;
+  final double speedPerLevel;
+
+  static Drive fromJson(Object? json) => _named(values, (v) => v.wire, json);
+
+  String toJson() => wire;
+}
+
+/// OGame's ships, in OGame's order, without the Colony Ship
+/// (`docs/design/ogame.md`, sections 5.3 and 6.1).
 enum ShipClass {
-  scout('Scout', label: 'Scout', hull: 30, shield: 10, weapon: 5, cargo: 20, power: 9),
-  corvette('Corvette', label: 'Corvette', hull: 50, shield: 20, weapon: 15, cargo: 10, power: 22),
-  frigate('Frigate', label: 'Frigate', hull: 120, shield: 60, weapon: 30, cargo: 30, power: 48),
-  cruiser('Cruiser', label: 'Cruiser', hull: 200, shield: 100, weapon: 80, cargo: 50, power: 110),
-  hauler('Hauler', label: 'Hauler', hull: 80, shield: 20, weapon: 5, cargo: 200, power: 15);
+  smallCargo(
+    'SmallCargo',
+    label: 'Small Cargo',
+    hull: 400,
+    shield: 10,
+    weapon: 5,
+    cargo: 5000,
+    power: 46,
+    speed: 5000,
+    fuel: 10,
+    tankJumps: 12,
+    harvest: 1,
+    drive: 'Combustion Drive',
+  ),
+  largeCargo(
+    'LargeCargo',
+    label: 'Large Cargo',
+    hull: 1200,
+    shield: 25,
+    weapon: 5,
+    cargo: 25000,
+    power: 127.5,
+    speed: 7500,
+    fuel: 50,
+    tankJumps: 12,
+    harvest: 1,
+    drive: 'Combustion Drive',
+  ),
+  lightFighter(
+    'LightFighter',
+    label: 'Light Fighter',
+    hull: 400,
+    shield: 10,
+    weapon: 50,
+    cargo: 50,
+    power: 91,
+    speed: 12500,
+    fuel: 20,
+    tankJumps: 10,
+    harvest: 0.5,
+    drive: 'Combustion Drive',
+  ),
+  heavyFighter(
+    'HeavyFighter',
+    label: 'Heavy Fighter',
+    hull: 1000,
+    shield: 25,
+    weapon: 150,
+    cargo: 100,
+    power: 252.5,
+    speed: 10000,
+    fuel: 75,
+    tankJumps: 10,
+    harvest: 0.5,
+    drive: 'Impulse Drive',
+  ),
+  cruiser(
+    'Cruiser',
+    label: 'Cruiser',
+    hull: 2700,
+    shield: 50,
+    weapon: 400,
+    cargo: 800,
+    power: 675,
+    speed: 15000,
+    fuel: 300,
+    tankJumps: 8,
+    harvest: 0.5,
+    drive: 'Impulse Drive',
+  ),
+  battleship(
+    'Battleship',
+    label: 'Battleship',
+    hull: 6000,
+    shield: 200,
+    weapon: 1000,
+    cargo: 1500,
+    power: 1620,
+    speed: 10000,
+    fuel: 500,
+    tankJumps: 6,
+    harvest: 0.5,
+    drive: 'Hyperspace Drive',
+  ),
+  recycler(
+    'Recycler',
+    label: 'Recycler',
+    hull: 1600,
+    shield: 10,
+    weapon: 1,
+    cargo: 20000,
+    power: 162,
+    speed: 2000,
+    fuel: 300,
+    tankJumps: 12,
+    harvest: 5,
+    drive: 'Combustion Drive',
+  ),
+  espionageProbe(
+    'EspionageProbe',
+    label: 'Espionage Probe',
+    hull: 100,
+    shield: 0,
+    weapon: 0,
+    cargo: 5,
+    power: 10,
+    speed: 100000000,
+    fuel: 1,
+    tankJumps: 20,
+    harvest: 0.5,
+    drive: 'Combustion Drive',
+  ),
+  bomber(
+    'Bomber',
+    label: 'Bomber',
+    hull: 7500,
+    shield: 500,
+    weapon: 1000,
+    cargo: 500,
+    power: 1800,
+    speed: 4000,
+    fuel: 1000,
+    tankJumps: 6,
+    harvest: 0.5,
+    drive: 'Impulse Drive',
+  ),
+  solarSatellite(
+    'SolarSatellite',
+    label: 'Solar Satellite',
+    hull: 200,
+    shield: 1,
+    weapon: 1,
+    cargo: 0,
+    power: 21.100000381469727,
+    speed: 0,
+    fuel: 0,
+    tankJumps: 0,
+    harvest: 0,
+    drive: '',
+  ),
+  destroyer(
+    'Destroyer',
+    label: 'Destroyer',
+    hull: 11000,
+    shield: 500,
+    weapon: 2000,
+    cargo: 2000,
+    power: 3150,
+    speed: 5000,
+    fuel: 1000,
+    tankJumps: 6,
+    harvest: 0.5,
+    drive: 'Hyperspace Drive',
+  ),
+  deathstar(
+    'Deathstar',
+    label: 'Deathstar',
+    hull: 900000,
+    shield: 50000,
+    weapon: 200000,
+    cargo: 1000000,
+    power: 295000,
+    speed: 100,
+    fuel: 1,
+    tankJumps: 6,
+    harvest: 0.5,
+    drive: 'Hyperspace Drive',
+  ),
+  battlecruiser(
+    'Battlecruiser',
+    label: 'Battlecruiser',
+    hull: 7000,
+    shield: 400,
+    weapon: 700,
+    cargo: 750,
+    power: 1440,
+    speed: 10000,
+    fuel: 250,
+    tankJumps: 8,
+    harvest: 0.5,
+    drive: 'Hyperspace Drive',
+  );
 
   const ShipClass(
     this.wire, {
@@ -4666,6 +5195,11 @@ enum ShipClass {
     required this.weapon,
     required this.cargo,
     required this.power,
+    required this.speed,
+    required this.fuel,
+    required this.tankJumps,
+    required this.harvest,
+    required this.drive,
   });
 
   final String wire;
@@ -4675,6 +5209,11 @@ enum ShipClass {
   final double weapon;
   final double cargo;
   final double power;
+  final double speed;
+  final double fuel;
+  final double tankJumps;
+  final double harvest;
+  final String drive;
 
   static ShipClass fromJson(Object? json) => _named(values, (v) => v.wire, json);
 
@@ -4701,15 +5240,16 @@ class Resources {
 
 /// One of the three stockpiled resources.
 enum ResourceKind {
-  metal('metal', label: 'metal', weight: 1),
-  crystal('crystal', label: 'crystal', weight: 1.5),
-  deuterium('deuterium', label: 'deuterium', weight: 2);
+  metal('metal', label: 'metal', weight: 1, storage: 'Metal Storage'),
+  crystal('crystal', label: 'crystal', weight: 1.5, storage: 'Crystal Storage'),
+  deuterium('deuterium', label: 'deuterium', weight: 2, storage: 'Deuterium Tank');
 
-  const ResourceKind(this.wire, {required this.label, required this.weight});
+  const ResourceKind(this.wire, {required this.label, required this.weight, required this.storage});
 
   final String wire;
   final String label;
   final double weight;
+  final String storage;
 
   static ResourceKind fromJson(Object? json) => _named(values, (v) => v.wire, json);
 
@@ -4719,14 +5259,16 @@ enum ResourceKind {
 enum BuildingType {
   metalMine('MetalMine', label: 'Metal Mine'),
   crystalMine('CrystalMine', label: 'Crystal Mine'),
-  deuteriumSynthesizer('DeuteriumSynthesizer', label: 'Deut Synthesizer'),
+  deuteriumSynthesizer('DeuteriumSynthesizer', label: 'Deuterium Synthesizer'),
+  solarPlant('SolarPlant', label: 'Solar Plant'),
+  fusionReactor('FusionReactor', label: 'Fusion Reactor'),
+  roboticsFactory('RoboticsFactory', label: 'Robotics Factory'),
+  naniteFactory('NaniteFactory', label: 'Nanite Factory'),
   shipyard('Shipyard', label: 'Shipyard'),
-  researchLab('ResearchLab', label: 'Research Lab'),
-  fuelDepot('FuelDepot', label: 'Fuel Depot'),
-  sensorArray('SensorArray', label: 'Sensor Array'),
-  defenseGrid('DefenseGrid', label: 'Defense Grid'),
-  storageVault('StorageVault', label: 'Storage Vault'),
-  fabricator('Fabricator', label: 'Fabricator');
+  metalStorage('MetalStorage', label: 'Metal Storage'),
+  crystalStorage('CrystalStorage', label: 'Crystal Storage'),
+  deuteriumTank('DeuteriumTank', label: 'Deuterium Tank'),
+  researchLab('ResearchLab', label: 'Research Lab');
 
   const BuildingType(this.wire, {required this.label});
 
@@ -4739,19 +5281,20 @@ enum BuildingType {
 }
 
 enum ResearchType {
-  fuelEfficiency('FuelEfficiency', label: 'Fuel Efficiency'),
-  extendedFuelTanks('ExtendedFuelTanks', label: 'Extended Tanks'),
-  reinforcedHulls('ReinforcedHulls', label: 'Reinforced Hulls'),
-  advancedShields('AdvancedShields', label: 'Advanced Shields'),
-  weaponsResearch('WeaponsResearch', label: 'Weapons Research'),
-  navigation('Navigation', label: 'Navigation'),
-  harvestingEfficiency('HarvestingEfficiency', label: 'Harvesting Eff.'),
-  corvetteTech('CorvetteTech', label: 'Corvette Tech'),
-  frigateTech('FrigateTech', label: 'Frigate Tech'),
-  cruiserTech('CruiserTech', label: 'Cruiser Tech'),
-  haulerTech('HaulerTech', label: 'Hauler Tech'),
-  emergencyJump('EmergencyJump', label: 'Emergency Jump'),
-  modularFabrication('ModularFabrication', label: 'Modular Fabrication');
+  espionageTechnology('EspionageTechnology', label: 'Espionage Technology'),
+  computerTechnology('ComputerTechnology', label: 'Computer Technology'),
+  weaponsTechnology('WeaponsTechnology', label: 'Weapons Technology'),
+  shieldingTechnology('ShieldingTechnology', label: 'Shielding Technology'),
+  armourTechnology('ArmourTechnology', label: 'Armour Technology'),
+  energyTechnology('EnergyTechnology', label: 'Energy Technology'),
+  hyperspaceTechnology('HyperspaceTechnology', label: 'Hyperspace Technology'),
+  combustionDrive('CombustionDrive', label: 'Combustion Drive'),
+  impulseDrive('ImpulseDrive', label: 'Impulse Drive'),
+  hyperspaceDrive('HyperspaceDrive', label: 'Hyperspace Drive'),
+  laserTechnology('LaserTechnology', label: 'Laser Technology'),
+  ionTechnology('IonTechnology', label: 'Ion Technology'),
+  plasmaTechnology('PlasmaTechnology', label: 'Plasma Technology'),
+  gravitonTechnology('GravitonTechnology', label: 'Graviton Technology');
 
   const ResearchType(this.wire, {required this.label});
 
@@ -4763,25 +5306,41 @@ enum ResearchType {
   String toJson() => wire;
 }
 
-/// Home defences built from the shipyard queue. They never move, burn no
-/// fuel, and a raid can wear them down.
+/// OGame's defences, without the two missiles, built from the shipyard
+/// queue. They never move, burn no fuel, and a raid can wear them down.
 enum DefenceKind {
-  pulseTurret('PulseTurret', label: 'Pulse Turret'),
-  lancerBattery('LancerBattery', label: 'Lancer Battery'),
-  ionBastion('IonBastion', label: 'Ion Bastion');
+  rocketLauncher('RocketLauncher', label: 'Rocket Launcher', hull: 200, shield: 20, weapon: 80, power: 102),
+  lightLaser('LightLaser', label: 'Light Laser', hull: 200, shield: 25, weapon: 100, power: 122.5),
+  heavyLaser('HeavyLaser', label: 'Heavy Laser', hull: 800, shield: 100, weapon: 250, power: 340),
+  gaussCannon('GaussCannon', label: 'Gauss Cannon', hull: 3500, shield: 200, weapon: 1100, power: 1470),
+  ionCannon('IonCannon', label: 'Ion Cannon', hull: 800, shield: 500, weapon: 150, power: 280),
+  plasmaTurret('PlasmaTurret', label: 'Plasma Turret', hull: 10000, shield: 300, weapon: 3000, power: 4030),
+  smallShieldDome('SmallShieldDome', label: 'Small Shield Dome', hull: 2000, shield: 2000, weapon: 1, power: 401),
+  largeShieldDome('LargeShieldDome', label: 'Large Shield Dome', hull: 10000, shield: 10000, weapon: 1, power: 2001);
 
-  const DefenceKind(this.wire, {required this.label});
+  const DefenceKind(
+    this.wire, {
+    required this.label,
+    required this.hull,
+    required this.shield,
+    required this.weapon,
+    required this.power,
+  });
 
   final String wire;
   final String label;
+  final double hull;
+  final double shield;
+  final double weapon;
+  final double power;
 
   static DefenceKind fromJson(Object? json) => _named(values, (v) => v.wire, json);
 
   String toJson() => wire;
 }
 
-/// What the shipyard queue builds: a ship class or a defence structure.
-/// On the wire it is just the name ("Corvette", "PulseTurret").
+/// What the shipyard queue builds: a ship class or a defence.
+/// On the wire it is just the name ("Cruiser", "RocketLauncher").
 class ShipyardItem {
   final ShipClass? ship;
   final DefenceKind? defence;
@@ -4903,12 +5462,12 @@ const laneSearchHops = 64;
 const double storageNearCapRatio = 0.85;
 
 /// Active scan: hops revealed from the scanning fleet's position.
-/// Fleets carrying a Scout get the extended range; signals are faint
-/// contacts detected one hop beyond the reveal radius.
+/// Fleets carrying an Espionage Probe get the extended range; signals are
+/// faint contacts detected one hop beyond the reveal radius.
 const scanBaseRange = 1;
 
-/// The scan range of a fleet with a Scout aboard.
-const scanScoutRange = 2;
+/// The scan range of a fleet with an Espionage Probe aboard.
+const scanProbeRange = 2;
 
 /// Ticks a fleet takes no order after a scan.
 const scanCooldown = 5;
@@ -4944,3 +5503,8 @@ const double fuelDeutPerUnit = 0.08;
 /// Provisional, and the owner's ("like 15%"): it trades the reach of a fleet
 /// with cargo ships against the worth of the docks as places to fill up.
 const double refineLoss = 0.15;
+
+/// A lost raid also destroys this fraction of the ships docked at home
+/// (at least one) and of the Solar Satellites: ships parked at home defend,
+/// and when the defence fails they are what the raiders reach.
+const double raidLostShipFraction = 0.25;

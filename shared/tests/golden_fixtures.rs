@@ -24,9 +24,12 @@ use serde_json::{Value, json};
 use iac_shared::Resources;
 use iac_shared::constants::{Density, ResourceKind, ShipClass, TerrainType};
 use iac_shared::hex::{Hex, HexDirection, hex_ring, hex_spiral};
-use iac_shared::pace::Pace;
+use iac_shared::pace::{Pace, preset_named};
 use iac_shared::protocol::*;
-use iac_shared::scaling::{BuildingLevels, BuildingType, DefenceKind, RatioLabel, ResearchLevels, ResearchType, ShipyardItem};
+use iac_shared::scaling::{
+    BuildingLevels, BuildingType, DefenceKind, MAX_BUILDING_LEVEL, RatioLabel, ResearchLevels, ResearchType, ShipyardItem,
+    research_max_level,
+};
 use iac_shared::world::HubService;
 
 mod wire;
@@ -107,8 +110,8 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<StandingOr
         location: loc,
         state,
         ships: vec![
-            ship(id * 10 + 1, ShipClass::Scout, 80.5, 25.0, 4.0),
-            ship(id * 10 + 2, ShipClass::Hauler, 100.0, 0.0, 0.0),
+            ship(id * 10 + 1, ShipClass::LightFighter, 80.5, 25.0, 4.0),
+            ship(id * 10 + 2, ShipClass::SmallCargo, 100.0, 0.0, 0.0),
         ],
         cargo: res(12.5, 3.0, 0.0),
         cargo_capacity: 220.0,
@@ -118,6 +121,7 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<StandingOr
         home_fuel: 63.0,
         hops_home: 2,
         jump_ticks: 2,
+        scan_range: 1,
         cooldown_remaining: 3,
         power: 61.5,
         range_hops: 4,
@@ -243,14 +247,14 @@ fn rich_sector() -> SectorState {
             NpcFleetInfo {
                 id: 9001,
                 ships: vec![
-                    NpcShipInfo { ship_class: ShipClass::Corvette, count: 3 },
-                    NpcShipInfo { ship_class: ShipClass::Frigate, count: 1 },
+                    NpcShipInfo { ship_class: ShipClass::Cruiser, count: 3 },
+                    NpcShipInfo { ship_class: ShipClass::Battlecruiser, count: 1 },
                 ],
                 behavior: NpcBehavior::Aggressive,
             },
             NpcFleetInfo {
                 id: 9002,
-                ships: vec![NpcShipInfo { ship_class: ShipClass::Scout, count: 2 }],
+                ships: vec![NpcShipInfo { ship_class: ShipClass::LightFighter, count: 2 }],
                 behavior: NpcBehavior::Passive,
             },
         ]),
@@ -258,7 +262,11 @@ fn rich_sector() -> SectorState {
             id: 7,
             owner_name: "Rival".into(),
             ship_count: 4,
-            ship_classes: ShipClassCounts { scout: 1, corvette: 2, frigate: 0, cruiser: 0, hauler: 1 },
+            ship_classes: vec![
+                ShipCount { ship_class: ShipClass::SmallCargo, count: 1 },
+                ShipCount { ship_class: ShipClass::LightFighter, count: 2 },
+                ShipCount { ship_class: ShipClass::EspionageProbe, count: 1 },
+            ],
         }]),
         salvage: Some(res(40.0, 12.0, 2.5)),
         salvage_despawn_tick: Some(4880),
@@ -343,39 +351,39 @@ fn anomaly_sector() -> SectorState {
 }
 
 fn sample_homeworld() -> HomeworldState {
-    use BuildingType::*;
-    let buildings = [
-        MetalMine, CrystalMine, DeuteriumSynthesizer, Shipyard, ResearchLab, FuelDepot,
-        SensorArray, DefenseGrid, StorageVault, Fabricator,
-    ]
-    .iter()
-    .enumerate()
-    .map(|(i, b)| BuildingState { building_type: *b, level: i as u8 })
-    .collect::<Vec<_>>();
+    let buildings = BuildingType::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, b)| BuildingState { building_type: *b, level: i as u8 })
+        .collect::<Vec<_>>();
     let mut levels = BuildingLevels::default();
     for b in &buildings {
         levels.set(b.building_type, b.level);
     }
-    use ResearchType::*;
-    let research = [
-        FuelEfficiency, ExtendedFuelTanks, ReinforcedHulls, AdvancedShields, WeaponsResearch,
-        Navigation, HarvestingEfficiency, CorvetteTech, FrigateTech, CruiserTech, HaulerTech,
-        EmergencyJump, ModularFabrication,
-    ]
-    .iter()
-    .enumerate()
-    .map(|(i, t)| ResearchState { tech: *t, level: (i % 4) as u8 })
-    .collect::<Vec<_>>();
+    let research = ResearchType::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, t)| ResearchState { tech: *t, level: (i % 4) as u8 })
+        .collect::<Vec<_>>();
     let mut researched = ResearchLevels::default();
     for r in &research {
         researched.set(r.tech, r.level);
     }
     HomeworldState {
         location: h(4, -2),
-        production: res(2.75, 1.25, 0.4),
+        production: res(2.75, 1.25, -0.4),
+        energy: EnergyState {
+            made: 412,
+            needed: 520,
+            fraction: 412.0 / 520.0,
+            per_satellite: 30,
+            fusion_burn: 0.65,
+            fusion_starved: false,
+        },
+        satellites: 6,
         storage: StorageState {
-            cap: res(7500.0, 5250.0, 3750.0),
-            protected: res(600.0, 420.0, 300.0),
+            cap: res(150_000.0, 100_000.0, 200_000.0),
+            protected: res(12_000.0, 0.0, 32_000.0),
             full_in_s: ResourceEta { metal: Some(5400), crystal: None, deuterium: Some(0) },
             capped: vec![ResourceKind::Deuterium],
         },
@@ -383,7 +391,7 @@ fn sample_homeworld() -> HomeworldState {
         research,
         build_queue: vec![
             BuildQueueItem { id: 311, building_type: BuildingType::CrystalMine, target_level: 5, start_tick: 100, end_tick: 460 },
-            BuildQueueItem { id: 318, building_type: BuildingType::FuelDepot, target_level: 2, start_tick: 130, end_tick: 400 },
+            BuildQueueItem { id: 318, building_type: BuildingType::SolarPlant, target_level: 6, start_tick: 130, end_tick: 400 },
         ],
         build_pending: vec![
             QueuedBuild {
@@ -391,7 +399,7 @@ fn sample_homeworld() -> HomeworldState {
                 building_type: BuildingType::Shipyard,
                 target_level: 3,
                 reserve: true,
-                cost: res(648.0, 324.0, 162.0),
+                cost: res(1600.0, 800.0, 400.0),
                 ticks: 1500,
                 waiting_for: Some(res(0.0, 120.5, 0.0)),
                 waiting_on: WaitReason::Resources,
@@ -410,43 +418,44 @@ fn sample_homeworld() -> HomeworldState {
             },
         ],
         build_slots: 2,
+        build_slot_unlock: Some(Requirement { name: "Computer Technology".into(), need: 6, have: 3, met: false, energy: false }),
         queue_waiting_max: 3,
         shipyard_pending: vec![
             QueuedShip {
                 id: 335,
-                item: ShipyardItem::Ship(ShipClass::Frigate),
+                item: ShipyardItem::Ship(ShipClass::Cruiser),
                 count: 2,
-                cost: res(2000.0, 800.0, 400.0),
-                unit_cost: res(1000.0, 400.0, 200.0),
-                ticks: 600,
+                cost: res(40_000.0, 14_000.0, 4000.0),
+                unit_cost: res(20_000.0, 7000.0, 2000.0),
+                ticks: 6480,
                 waiting_on: BatchWait::Slot,
                 start_in: Some(240),
             },
             QueuedShip {
                 id: 336,
-                item: ShipyardItem::Defence(DefenceKind::PulseTurret),
+                item: ShipyardItem::Defence(DefenceKind::RocketLauncher),
                 count: 10,
-                cost: res(1200.0, 200.0, 0.0),
-                unit_cost: res(120.0, 20.0, 0.0),
-                ticks: 70,
+                cost: res(20_000.0, 0.0, 0.0),
+                unit_cost: res(2000.0, 0.0, 0.0),
+                ticks: 480,
                 waiting_on: BatchWait::Prerequisite,
                 start_in: None,
             },
         ],
         research_pending: vec![QueuedResearch {
             id: 340,
-            tech: ResearchType::CruiserTech,
+            tech: ResearchType::IonTechnology,
             target_level: 1,
             reserve: false,
-            cost: res(8000.0, 5000.0, 2500.0),
-            ticks: 90000,
+            cost: res(1000.0, 300.0, 100.0),
+            ticks: 4680,
             waiting_for: Some(res(0.0, 0.0, 1200.0)),
             waiting_on: WaitReason::Resources,
             start_in: Some(1800),
         }],
         shipyard_queue: Some(ShipyardQueueItem {
             id: 322,
-            item: ShipyardItem::Ship(ShipClass::Corvette),
+            item: ShipyardItem::Ship(ShipClass::SolarSatellite),
             count: 2,
             built: 1,
             start_tick: 120,
@@ -454,19 +463,29 @@ fn sample_homeworld() -> HomeworldState {
         }),
         research_active: Some(ResearchItem {
             id: 325,
-            tech: ResearchType::FuelEfficiency,
+            tech: ResearchType::EnergyTechnology,
             target_level: 2,
             start_tick: 90,
             end_tick: 600,
         }),
         docked_ships: vec![ship(501, ShipClass::Cruiser, 100.0, 50.0, 18.0)],
         defences: vec![
-            DefenceState { kind: DefenceKind::PulseTurret, count: 12, restoring: 2, power: 17.68 },
-            DefenceState { kind: DefenceKind::LancerBattery, count: 0, restoring: 0, power: 53.04 },
+            DefenceState { kind: DefenceKind::RocketLauncher, count: 12, restoring: 2, power: 112.4 },
+            DefenceState { kind: DefenceKind::SmallShieldDome, count: 1, restoring: 0, power: 421.1 },
         ],
-        home_defence_power: 340.5,
+        home_defence_power: 2340.5,
+        docked_power: 444.0,
+        satellite_power: 126.6,
+        structure_power: 1769.9,
         next_raid_estimate_power: 300.25,
-        catalog: HomeworldCatalog::new(&levels, &researched, &[12, 0, 3], &Pace::PERSISTENT),
+        catalog: HomeworldCatalog::new(
+            &levels,
+            &researched,
+            &[12, 0, 0, 3, 0, 0, 1, 0],
+            &[14, 0, 0, 3, 0, 0, 1, 1],
+            412,
+            &Pace::PERSISTENT,
+        ),
     }
 }
 
@@ -474,8 +493,10 @@ fn idle_homeworld() -> HomeworldState {
     HomeworldState {
         location: h(0, 0),
         production: res(0.0, 0.0, 0.0),
+        energy: EnergyState { made: 0, needed: 0, fraction: 1.0, per_satellite: 30, fusion_burn: 0.0, fusion_starved: false },
+        satellites: 0,
         storage: StorageState {
-            cap: res(5000.0, 3500.0, 2500.0),
+            cap: res(100_000.0, 100_000.0, 100_000.0),
             protected: res(0.0, 0.0, 0.0),
             full_in_s: ResourceEta { metal: None, crystal: None, deuterium: None },
             capped: vec![],
@@ -485,6 +506,7 @@ fn idle_homeworld() -> HomeworldState {
         build_queue: vec![],
         build_pending: vec![],
         build_slots: 1,
+        build_slot_unlock: None,
         queue_waiting_max: 3,
         shipyard_queue: None,
         shipyard_pending: vec![],
@@ -493,8 +515,18 @@ fn idle_homeworld() -> HomeworldState {
         docked_ships: vec![],
         defences: vec![],
         home_defence_power: 0.0,
-        next_raid_estimate_power: 15.5,
-        catalog: HomeworldCatalog::new(&BuildingLevels::default(), &ResearchLevels::default(), &[0; 3], &Pace::PERSISTENT),
+        docked_power: 0.0,
+        satellite_power: 0.0,
+        structure_power: 0.0,
+        next_raid_estimate_power: 55.5,
+        catalog: HomeworldCatalog::new(
+            &BuildingLevels::default(),
+            &ResearchLevels::default(),
+            &[0; DefenceKind::COUNT],
+            &[0; DefenceKind::COUNT],
+            22,
+            &Pace::PERSISTENT,
+        ),
     }
 }
 
@@ -697,11 +729,11 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("", Command::Attack { fleet_id: 1, target_fleet_id: 9001 }),
         ("", Command::Recall { fleet_id: 4 }),
         ("", Command::CollectSalvage { fleet_id: 5 }),
-        ("", Command::Build { building_type: BuildingType::DefenseGrid, reserve: false }),
+        ("", Command::Build { building_type: BuildingType::RoboticsFactory, reserve: false }),
         ("reserve", Command::Build { building_type: BuildingType::ResearchLab, reserve: true }),
-        ("", Command::Research { tech: ResearchType::EmergencyJump, reserve: false }),
-        ("", Command::BuildShip { ship_class: ShipClass::Frigate, count: 3 }),
-        ("", Command::BuildDefence { kind: DefenceKind::LancerBattery, count: 4 }),
+        ("", Command::Research { tech: ResearchType::HyperspaceTechnology, reserve: false }),
+        ("", Command::BuildShip { ship_class: ShipClass::Battlecruiser, count: 3 }),
+        ("", Command::BuildDefence { kind: DefenceKind::HeavyLaser, count: 4 }),
         ("", Command::CancelBuild { queue_type: QueueType::Building, id: 311 }),
         ("ship", Command::CancelBuild { queue_type: QueueType::Ship, id: 322 }),
         ("research", Command::CancelBuild { queue_type: QueueType::Research, id: 325 }),
@@ -930,6 +962,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                         salvage_despawn_tick: None,
                         raid_power: 310.5,
                         defense_power: 294.0,
+                        satellites_lost: 0,
                         structures_lost: 0,
                         structures_restored: 0,
                         protected_kept: res(1200.0, 781.25, 0.0),
@@ -1238,7 +1271,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
         })),
         ("", EventKind::ShipDestroyed(ShipDestroyedEvent {
             ship_id: 22,
-            ship_class: ShipClass::Corvette,
+            ship_class: ShipClass::Cruiser,
             owner_fleet_id: 9001,
             is_npc: true,
             sector: h(5, -5),
@@ -1252,7 +1285,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             owner: None,
             mine: false,
             salvage: res(60.0, 15.0, 9.0),
-            label: "3x corvette pack".into(),
+            label: "3x cruiser pack".into(),
         })),
         ("player_fleet", EventKind::FleetDestroyed(FleetDestroyedEvent {
             fleet_id: 4,
@@ -1273,7 +1306,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             player_fleet_id: 1,
             owner: "Admiral".into(),
             enemy_fleet_id: 4294967400,
-            enemy: "scout patrol".into(),
+            enemy: "light fighter patrol".into(),
             sector: h(5, -5),
             mine: true,
         })),
@@ -1303,7 +1336,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
         })),
         ("", EventKind::FleetArrived(FleetArrivedEvent { fleet_id: 2, sector: h(0, -3) })),
         ("", EventKind::BuildingCompleted(BuildingCompletedEvent {
-            building_type: BuildingType::SensorArray,
+            building_type: BuildingType::FusionReactor,
             new_level: 3,
             player_id: None,
         })),
@@ -1313,24 +1346,24 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             player_id: Some(42),
         })),
         ("", EventKind::ResearchCompleted(ResearchCompletedEvent {
-            tech: ResearchType::Navigation,
+            tech: ResearchType::ImpulseDrive,
             new_level: 2,
             player_id: None,
         })),
         ("with_player", EventKind::ResearchCompleted(ResearchCompletedEvent {
-            tech: ResearchType::HaulerTech,
+            tech: ResearchType::GravitonTechnology,
             new_level: 1,
             player_id: Some(42),
         })),
         ("", EventKind::ShipBuilt(ShipBuiltEvent { ship_class: ShipClass::Cruiser, count: 2, player_id: None })),
         ("with_player", EventKind::ShipBuilt(ShipBuiltEvent {
-            ship_class: ShipClass::Hauler,
+            ship_class: ShipClass::SolarSatellite,
             count: 1,
             player_id: Some(42),
         })),
-        ("", EventKind::DefenceBuilt(DefenceBuiltEvent { defence: DefenceKind::IonBastion, count: 1, player_id: None })),
+        ("", EventKind::DefenceBuilt(DefenceBuiltEvent { defence: DefenceKind::PlasmaTurret, count: 1, player_id: None })),
         ("with_player", EventKind::DefenceBuilt(DefenceBuiltEvent {
-            defence: DefenceKind::PulseTurret,
+            defence: DefenceKind::LargeShieldDome,
             count: 1,
             player_id: Some(42),
         })),
@@ -1380,11 +1413,12 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             resources_lost: res(40.625, 24.0, 32.5),
             salvage_dropped: None,
             salvage_despawn_tick: None,
-            raid_power: 82.5,
-            defense_power: 62.0,
+            raid_power: 825.0,
+            defense_power: 590.0,
+            satellites_lost: 0,
             structures_lost: 0,
             structures_restored: 0,
-            protected_kept: res(537.5, 0.0, 0.0),
+            protected_kept: res(1612.5, 0.0, 0.0),
             ships_lost: 1,
         })),
         ("outpost_defended", EventKind::RaidResolved(RaidResolvedEvent {
@@ -1395,8 +1429,9 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             resources_lost: res(0.0, 0.0, 0.0),
             salvage_dropped: None,
             salvage_despawn_tick: None,
-            raid_power: 41.5,
-            defense_power: 172.0,
+            raid_power: 415.0,
+            defense_power: 1306.0,
+            satellites_lost: 0,
             structures_lost: 0,
             structures_restored: 0,
             protected_kept: res(0.0, 0.0, 0.0),
@@ -1411,8 +1446,9 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             resources_lost: res(2_500_000.216, 50.0, 25.0),
             salvage_dropped: Some(res(10.0, 5.0, 0.0)),
             salvage_despawn_tick: Some(4940),
-            raid_power: 120.0,
-            defense_power: 80.5,
+            raid_power: 1200.0,
+            defense_power: 805.5,
+            satellites_lost: 2,
             structures_lost: 6,
             structures_restored: 0,
             protected_kept: res(2400.0, 1680.0, 0.0),
@@ -1426,8 +1462,9 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             resources_lost: res(0.0, 0.0, 0.0),
             salvage_dropped: None,
             salvage_despawn_tick: None,
-            raid_power: 40.0,
-            defense_power: 80.5,
+            raid_power: 400.0,
+            defense_power: 805.5,
+            satellites_lost: 0,
             structures_lost: 3,
             structures_restored: 2,
             protected_kept: res(0.0, 0.0, 0.0),
@@ -1444,8 +1481,8 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             sector: h(2, -4),
             tier: 3,
             resources: res(200.0, 80.0, 40.0),
-            recovered_ship: Some(ShipClass::Frigate),
-            tech_cache: Some(ResearchType::AdvancedShields),
+            recovered_ship: Some(ShipClass::HeavyFighter),
+            tech_cache: Some(ResearchType::ShieldingTechnology),
             relic: true,
             points: 25.2,
         })),
@@ -1479,9 +1516,9 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             player_id: Some(7),
             queue_type: QueueType::Ship,
             id: 335,
-            item: "Corvette x3".into(),
+            item: "Light Fighter x3".into(),
             action: QueueAction::Waiting,
-            paid: res(1200.0, 300.0, 180.0),
+            paid: res(9000.0, 3000.0, 0.0),
             refunded: res(0.0, 0.0, 0.0),
             waiting_for: None,
             waiting_on: Some(WaitReason::Slot),
@@ -1557,7 +1594,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
         ("stop_without_fleet", "Command", json!({"action": "stop"})),
         ("scan_without_fleet", "Command", json!({"action": "scan"})),
         ("explore_without_fleet", "Command", json!({"action": "explore_site"})),
-        ("build_ship_default_count", "Command", json!({"action": "build_ship", "ship_class": "Scout"})),
+        ("build_ship_default_count", "Command", json!({"action": "build_ship", "ship_class": "LightFighter"})),
         ("bare_tick_update", "ServerMessage", json!({"type": "tick_update", "tick": 9, "fleets": []})),
         (
             "fleet_without_cooldown",
@@ -1565,7 +1602,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
             json!({"type": "tick_update", "tick": 9, "fleets": [{
                 "id": 1, "location": {"q": 0, "r": 0}, "state": "Idle", "ships": [],
                 "cargo": {"metal": 0.0, "crystal": 0.0, "deuterium": 0.0},
-                "cargo_capacity": 20.0, "fuel": 1.0, "fuel_max": 2.0, "jump_ticks": 2, "hops_home": 0
+                "cargo_capacity": 20.0, "fuel": 1.0, "fuel_max": 2.0, "jump_ticks": 2, "scan_range": 1, "hops_home": 0
             }]}),
         ),
         (
@@ -1596,7 +1633,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
             json!({"type": "policy_update", "fleet_id": 3, "preset": "prospect", "params": {}}),
         ),
         ("build_without_reserve", "Command", json!({"action": "build", "building_type": "MetalMine"})),
-        ("build_defence_default_count", "Command", json!({"action": "build_defence", "kind": "PulseTurret"})),
+        ("build_defence_default_count", "Command", json!({"action": "build_defence", "kind": "RocketLauncher"})),
         ("raid_incoming_without_power", "ServerMessage",
             json!({"type": "event", "tick": 3, "kind": "RaidIncoming", "player_id": 1, "arrival_tick": 90, "threat": "light"})),
         ("raid_resolved_without_breached", "ServerMessage",
@@ -1763,10 +1800,10 @@ fn generate() -> Files {
         "WaitReason": [WaitReason::Slot, WaitReason::Resources, WaitReason::Prerequisite, WaitReason::Order],
         "BatchWait": [BatchWait::Slot, BatchWait::Prerequisite],
         "PolicyPreset": PolicyPreset::ALL,
-        "BuildingType": [BuildingType::MetalMine, BuildingType::CrystalMine, BuildingType::DeuteriumSynthesizer, BuildingType::Shipyard, BuildingType::ResearchLab, BuildingType::FuelDepot, BuildingType::SensorArray, BuildingType::DefenseGrid, BuildingType::StorageVault, BuildingType::Fabricator],
+        "BuildingType": BuildingType::ALL,
         "ResourceKind": ResourceKind::ALL,
         "HubService": [HubService::Exchange],
-        "ResearchType": [ResearchType::FuelEfficiency, ResearchType::ExtendedFuelTanks, ResearchType::ReinforcedHulls, ResearchType::AdvancedShields, ResearchType::WeaponsResearch, ResearchType::Navigation, ResearchType::HarvestingEfficiency, ResearchType::CorvetteTech, ResearchType::FrigateTech, ResearchType::CruiserTech, ResearchType::HaulerTech, ResearchType::EmergencyJump, ResearchType::ModularFabrication],
+        "ResearchType": ResearchType::ALL,
         "ErrorCode": ALL_ERROR_CODES,
     });
     put(&mut f, "protocol/enums.json".into(), &enums);
@@ -1791,8 +1828,35 @@ fn generate() -> Files {
     put(&mut f, "protocol/ratio_labels.json".into(), &Value::Array(labels));
 
     synth_fixtures(&mut f);
+    catalog_levels(&mut f);
     hex_fixtures(&mut f);
     f
+}
+
+/// The catalogue of an empire whose every building and research stands at
+/// one level, for each level there is, one catalogue a line, in a world at
+/// the pace of the season preset. The scripted world of the Flutter tests
+/// is such a world and takes each of its rows from here, so what it offers
+/// and charges is what the engine would. No Nanite Factory stands in it:
+/// one a level would halve every time that often.
+fn catalog_levels(files: &mut Files) {
+    let pace = Pace::new(preset_named("season").unwrap().pace).unwrap();
+    let lines: Vec<String> = (0..=MAX_BUILDING_LEVEL)
+        .map(|level| {
+            let mut buildings = BuildingLevels::default();
+            for b in BuildingType::ALL {
+                buildings.set(b, if b == BuildingType::NaniteFactory { 0 } else { level });
+            }
+            let mut research = ResearchLevels::default();
+            for t in ResearchType::ALL {
+                research.set(t, level.min(research_max_level(t)));
+            }
+            let none = [0; DefenceKind::COUNT];
+            let catalog = HomeworldCatalog::new(&buildings, &research, &none, &none, 0, &pace);
+            serde_json::to_string(&catalog).unwrap()
+        })
+        .collect();
+    files.insert("protocol/catalog_by_level.json".into(), format!("[\n{}\n]\n", lines.join(",\n")));
 }
 
 fn wire_model() -> Model {

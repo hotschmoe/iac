@@ -14,13 +14,7 @@
           {
             "id": 3,
             "owner_name": "x",
-            "ship_classes": {
-              "corvette": 0,
-              "cruiser": 0,
-              "frigate": 0,
-              "hauler": 0,
-              "scout": 0
-            },
+            "ship_classes": [],
             "ship_count": 2
           }
         ],

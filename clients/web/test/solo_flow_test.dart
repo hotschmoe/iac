@@ -20,8 +20,8 @@ import 'support/harness.dart';
 
 const _options = {
   'presets': [
-    {'name': 'season', 'pace': 10.0, 'first_cruiser_s': 165600, 'endgame_s': 622000},
-    {'name': 'blitz', 'pace': 600.0, 'first_cruiser_s': 2520, 'endgame_s': 10800},
+    {'name': 'season', 'pace': 10.0, 'first_cruiser_s': 215640, 'endgame_s': 566070},
+    {'name': 'blitz', 'pace': 600.0, 'first_cruiser_s': 3231, 'endgame_s': 8482},
   ],
   'personalities': ['turtle', 'miner', 'raider', 'explorer', 'mixed'],
   'attentions': ['check-in', 'hybrid', 'hands-on'],
@@ -100,7 +100,15 @@ void main() {
     expect(find.text('NEW GAME'), findsOneWidget);
     expect(find.byKey(const Key('solo-one-tab')), findsNothing);
     expect(find.byKey(const Key('solo-save-unkept')), findsNothing, reason: 'said only where the browser cannot be asked to keep the save');
+    String estimate(String preset) {
+      final p = (_options['presets'] as List<Map<String, Object>>).firstWhere((p) => p['name'] == preset);
+      return 'A competent player reaches the first Cruiser in about ${soloSpan(p['first_cruiser_s'] as int)} '
+          'and the endgame in about ${soloSpan(p['endgame_s'] as int)}.';
+    }
+
+    expect(find.text(estimate('season')), findsOneWidget, reason: 'the estimate printed is the one the engine gave for the pace');
     await _tap(tester, 'blitz x600');
+    expect(find.text(estimate('blitz')), findsOneWidget);
     await _tap(tester, '4');
     await _tap(tester, 'start');
     final asked = jsonDecode(worker.posted.single.$2) as Map<String, dynamic>;

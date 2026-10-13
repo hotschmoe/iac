@@ -2,6 +2,6 @@
   "kind": "ResearchCompleted",
   "new_level": 1,
   "player_id": 42,
-  "tech": "HaulerTech",
+  "tech": "GravitonTechnology",
   "tick": 1234
 }

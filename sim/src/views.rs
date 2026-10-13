@@ -6,9 +6,10 @@ use iac_shared::constants::{
 };
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
-    BuildQueueItem, BuildingState, DefenceState, FleetState, GameEvent, GameState, HomeworldState, OutpostLevel,
-    OutpostState, OutpostWork, OutpostWorkState, PlayerState, QueuedBuild, QueuedResearch, QueuedShip,
-    ResearchItem, ResearchState, ShipState, ShipyardQueueItem, StandingOrders, TickUpdate, WorldInfo,
+    BuildQueueItem, BuildingState, DefenceState, EnergyState, FleetState, GameEvent, GameState, HomeworldState,
+    OutpostLevel, OutpostState, OutpostWork, OutpostWorkState, PlayerState, QueuedBuild, QueuedResearch,
+    QueuedShip, Requirement, ResearchItem, ResearchState, ShipState, ShipyardQueueItem, StandingOrders, TickUpdate,
+    WorldInfo,
 };
 use iac_shared::scaling::{self, BuildingType, DefenceKind, ResearchType};
 
@@ -168,6 +169,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             home_fuel,
             hops_home,
             jump_ticks: engine.hop_ticks(fleet),
+            scan_range: GameEngine::scan_range(fleet),
             cooldown_remaining: fleet.action_cooldown,
             power: crate::engine::fleet_power(fleet),
             range_hops: range_hops(fleet.fuel, home_fuel, jump_fuel),
@@ -186,13 +188,13 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
 }
 
 fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState {
-    let buildings: Vec<BuildingState> = (0..BuildingType::COUNT)
-        .filter_map(BuildingType::from_usize)
+    let buildings: Vec<BuildingState> = BuildingType::ALL
+        .into_iter()
         .map(|bt| BuildingState { building_type: bt, level: player.buildings.get(bt) })
         .collect();
 
-    let research: Vec<ResearchState> = (0..ResearchType::COUNT)
-        .filter_map(ResearchType::from_usize)
+    let research: Vec<ResearchState> = ResearchType::ALL
+        .into_iter()
         .map(|rt| ResearchState { tech: rt, level: player.research.get(rt) })
         .collect();
 
@@ -214,7 +216,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
             target_level: q.target_level,
             reserve: q.reserve,
             cost,
-            ticks: iac_shared::scaling::building_time(q.building_type, q.target_level, player.buildings.fabricator, &pace),
+            ticks: iac_shared::scaling::building_time(q.building_type, q.target_level, &player.buildings, &pace),
             waiting_for: w.short,
             waiting_on: w.reason,
             start_in: w.start_in,
@@ -228,7 +230,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
             target_level: q.target_level,
             reserve: q.reserve,
             cost,
-            ticks: iac_shared::scaling::research_time(q.tech, q.target_level, player.buildings.research_lab, &pace),
+            ticks: iac_shared::scaling::research_time(q.tech, q.target_level, &player.buildings, &pace),
             waiting_for: w.short,
             waiting_on: w.reason,
             start_in: w.start_in,
@@ -241,7 +243,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
             count: q.count,
             cost: q.item.batch_cost(q.count),
             unit_cost: q.item.unit_cost(),
-            ticks: q.item.unit_ticks(player.buildings.shipyard, &pace),
+            ticks: q.item.unit_ticks(&player.buildings, &pace),
             waiting_on: w.reason,
             start_in: w.start_in,
         }
@@ -281,15 +283,33 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
         }
     }
 
+    let power = player.power(&pace);
+    let reactor = player.buildings.fusion_reactor;
     HomeworldState {
         location: player.homeworld,
-        production: player.production_per_tick(&engine.pace()),
+        production: player.production_per_tick(&pace),
+        energy: EnergyState {
+            made: power.made,
+            needed: power.needed,
+            fraction: power.fraction(),
+            per_satellite: scaling::satellite_energy(),
+            fusion_burn: power.fusion_burn,
+            fusion_starved: reactor > 0 && power.fusion_burn <= 0.0,
+        },
+        satellites: player.satellites,
         storage: engine.storage_state(player),
         buildings,
         research,
         build_queue,
         build_pending,
         build_slots: player.building_slots() as u8,
+        build_slot_unlock: scaling::next_building_slot_level(&player.research).map(|level| Requirement {
+            name: ResearchType::ComputerTechnology.label().to_string(),
+            need: level.into(),
+            have: player.research.computer_technology.into(),
+            met: false,
+            energy: false,
+        }),
         queue_waiting_max: iac_shared::scaling::QUEUE_WAITING as u8,
         shipyard_queue,
         shipyard_pending,
@@ -300,14 +320,22 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
             kind,
             count: player.defences.count[kind as usize],
             restoring: player.defences.restoring[kind as usize],
-            power: iac_shared::scaling::structure_power(kind, player.buildings.defense_grid),
+            power: iac_shared::scaling::structure_power(kind, &player.research),
         }).collect(),
         home_defence_power: engine.home_defense_power(player.id),
+        docked_power: engine.docked_power(player),
+        satellite_power: GameEngine::satellite_power(player),
+        structure_power: player.defences.power(&player.research),
         next_raid_estimate_power: iac_shared::scaling::raid_power_base(
             iac_shared::scaling::econ_points(&player.buildings, &player.research),
         ) * (RAID_POWER_ROLL_MIN + RAID_POWER_ROLL_MAX) / 2.0,
         catalog: iac_shared::protocol::HomeworldCatalog::new(
-            &player.buildings, &player.research, &player.defences.count, &pace,
+            &player.buildings,
+            &player.research,
+            &player.defences.count,
+            &DefenceKind::ALL.map(|kind| GameEngine::defences_owned_and_ordered(player, kind)),
+            power.made,
+            &pace,
         ),
     }
 }

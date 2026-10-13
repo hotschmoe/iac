@@ -2,6 +2,6 @@
   "count": 1,
   "kind": "ShipBuilt",
   "player_id": 42,
-  "ship_class": "Hauler",
+  "ship_class": "SolarSatellite",
   "tick": 1234
 }

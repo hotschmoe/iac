@@ -634,8 +634,8 @@ impl Headless {
         let hourly = |per_tick: Resources| per_tick.total() * 3600.0;
         let slow = Pace::PERSISTENT;
         let mine = player.buildings.metal_mine;
-        let mine_gain = scaling::production_per_tick(BuildingType::MetalMine, mine + 1, &slow)
-            - scaling::production_per_tick(BuildingType::MetalMine, mine, &slow);
+        let mine_gain = scaling::mine_output_per_hour(BuildingType::MetalMine, mine + 1)
+            - scaling::mine_output_per_hour(BuildingType::MetalMine, mine);
         let unpaid = scaling::outpost_repair_payment(outpost.level, outpost.store).1 > 0.0;
         Some(OutpostSummary {
             sector: outpost.sector,
@@ -651,8 +651,7 @@ impl Headless {
             payback_hours: (scaling::outpost_cost(1).total() / hourly(scaling::outpost_yield_per_tick(ore, ring, 1, &slow)))
                 as f32,
             next_mine_level: mine + 1,
-            mine_payback_hours: (scaling::building_cost(BuildingType::MetalMine, mine + 1).total() / (mine_gain * 3600.0))
-                as f32,
+            mine_payback_hours: (scaling::building_cost(BuildingType::MetalMine, mine + 1).total() / mine_gain) as f32,
         })
     }
 
@@ -662,12 +661,12 @@ impl Headless {
             .zip(&self.seats)
             .filter_map(|(entry, seat)| {
                 let player = self.engine.players.get(&entry.player_id)?;
-                let buildings = (0..BuildingType::COUNT)
-                    .filter_map(BuildingType::from_usize)
+                let buildings = BuildingType::ALL
+                    .into_iter()
                     .map(|b| (b.label().to_string(), player.buildings.get(b)))
                     .collect();
-                let research = (0..ResearchType::COUNT)
-                    .filter_map(ResearchType::from_usize)
+                let research = ResearchType::ALL
+                    .into_iter()
                     .map(|r| (r.label().to_string(), player.research.get(r)))
                     .collect();
                 Some(PlayerSummary {
@@ -778,8 +777,8 @@ impl Counting<'_> {
             slots.research_idle += u64::from(player.research_queue.is_none());
             slots.shipyard_idle += u64::from(player.ship_queue.is_none());
 
-            let made = player.production_per_tick(&pace);
-            let cap = scaling::storage_cap(player.buildings.storage_vault, &pace);
+            let made = player.mined_per_tick(&pace);
+            let cap = scaling::storage_cap(&player.buildings, &pace);
             let mut spilled = Resources::default();
             for kind in ResourceKind::ALL {
                 if player.resources.get(kind) >= cap.get(kind) {

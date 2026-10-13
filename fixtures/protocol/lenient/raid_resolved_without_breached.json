@@ -16,6 +16,7 @@
       "deuterium": 0.0,
       "metal": 0.0
     },
+    "satellites_lost": 0,
     "ships_lost": 0,
     "structures_lost": 0,
     "structures_restored": 0,

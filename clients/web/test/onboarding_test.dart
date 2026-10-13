@@ -23,13 +23,17 @@ const _home = {'q': 4, 'r': -2};
 const _oreField = {'q': 3, 'r': -2};
 
 /// The golden state cut back to a first login: one fleet docked at home, an
-/// empty build queue, and the home sector charted with its lane to the ore
-/// field next door.
+/// empty build queue, mines with all the energy they need, and the home
+/// sector charted with its lane to the ore field next door.
 void _freshEmpire(Map<String, dynamic> s) {
   s['fleets'] = [_fleet()];
   final hw = s['homeworld'] as Map<String, dynamic>;
   hw['build_queue'] = <dynamic>[];
   hw['build_pending'] = <dynamic>[];
+  final energy = hw['energy'] as Map<String, dynamic>;
+  energy
+    ..['made'] = energy['needed']
+    ..['fraction'] = 1.0;
   final sectors = s['known_sectors'] as List<dynamic>;
   final field = sectors.cast<Map<String, dynamic>>().firstWhere((x) => x['location']['q'] == _oreField['q'] && x['location']['r'] == _oreField['r']);
   field.remove('hostiles');
@@ -185,7 +189,11 @@ void main() {
     Console.of(tester.element(find.byType(Rail))).go(Screen.overview);
     await tester.pump(const Duration(milliseconds: 300));
     final card = find.byKey(const Key('first-hour'));
-    expect(find.descendant(of: card, matching: find.text('6/11 done')), findsOneWidget);
+    expect(find.descendant(of: card, matching: find.text('8/13 done')), findsOneWidget,
+        reason: 'the six of the walk, and the Shipyard and the Small Cargo the golden empire has');
+    for (final goal in ['RAISE A MINE', 'RAISE THE SOLAR PLANT', 'BUILD A SHIPYARD', 'BUILD A SMALL CARGO']) {
+      expect(find.descendant(of: card, matching: find.text(goal)), findsOneWidget, reason: 'the first hour names the catalogue\'s first steps');
+    }
     expect(tester.takeException(), isNull);
     await endShell(tester, c);
 
@@ -195,7 +203,7 @@ void main() {
     await pumpShell(tester, controller: again, prefs: ConsolePrefs(browser));
     expect(_guide(tester).active, isTrue);
     expect(_guide(tester).done(Lesson.scan), isTrue, reason: 'a scan leaves no trace in the state; the browser remembered it');
-    expect(find.descendant(of: find.byKey(const Key('first-hour')), matching: find.text('6/11 done')), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const Key('first-hour')), matching: find.text('8/13 done')), findsOneWidget);
     await tester.tap(find.byKey(const Key('first-hour-hide')));
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.byKey(const Key('first-hour')), findsNothing);
