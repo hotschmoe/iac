@@ -1056,7 +1056,7 @@ worldgen rolls inside `shared/src/world.rs`.
   **The forecast.** `homeworld.raid` is in every state: the raid announced
   (`arrival_tick` set) or, with none on its way, one of typical size were it
   announced now; its `power`, its `ships`, and `odds` against everything
-  standing at home this tick. The server plays the fight itself a few times
+  standing at home this tick. The server plays the fight itself 8 to 64 times
   over, as it does for a sector's odds: `destroyed`, `outlasted` and `lost`
   are the shares of those fights that ended each way, `kept` the share of
   their worth your ships, satellites and defences keep (before any defence
@@ -1071,7 +1071,8 @@ worldgen rolls inside `shared/src/world.rs`.
   with their refit, satellites and defences with your research as it
   stands. `battles` holds the fight while it lasts, with `raid` (`mine`,
   `outpost`, `power`, `ships`, `rounds_left`, `odds` from where it
-  stands); each round is a `BattleRound` with `raid: true`, your fleets as
+  stands); `homeworld.raid` is by then the forecast of the one after it.
+  Each round is a `BattleRound` with `raid: true`, your fleets as
   groups and your defences and satellites as one more group marked
   `battery` (label "home defences"). It ends one of three ways:
   no raider is left (`hostiles_destroyed`): repelled, and three tenths of

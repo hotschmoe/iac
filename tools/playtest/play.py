@@ -356,12 +356,13 @@ def event_text(e):
         return f"fleet {e['fleet_id']} traded at the exchange: {trade_text(e)}; {meter_text(e['meter_after'])}"
     if k == "CombatEnded":
         lost = "; ".join(
-            f"{l.get('owner') or l.get('label') or 'a group'} lost "
+            f"{l.get('owner') or l.get('label') or 'a group'}" + ("'s defences" if l.get("battery") else "") + " lost "
             + (", ".join(f"{u['count']}x {u['unit']}" for u in l["lost"]) or "nothing")
             + (" and is destroyed" if l["destroyed"] else "")
             for l in e.get("losses") or [])
         pile = f"; wreckage {res(e['salvage'])}" if e.get("salvage") else ""
-        return (f"combat @{hexs(e['sector'])} ended after {e['rounds']} round(s): {e['outcome']}"
+        what = "raid's fight" if e.get("raid") else "combat"
+        return (f"{what} @{hexs(e['sector'])} ended after {e['rounds']} round(s): {e['outcome']}"
                 + (f"; {lost}" if lost else "") + pile)
     if k == "ShipsLost":
         ships = ", ".join(f"{s['count']}x {s['class']}" for s in e["ships"])

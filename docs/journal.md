@@ -7950,3 +7950,114 @@ Fighters beside it; the forecast of that outpost now says what it takes.
   their ring asks" by `0.9 x (platform + ships) >= 2 x 1.15 x the ring's
   group` (all `outposts`), and the format numbers of `smoke` and
   `single_player` (10 refused, 11 read).
+
+**A real session.** `iac-server --port 0 --pace 3000 --seed 20261014` with
+its world file in scratch, played through `iac-headless` by a script that
+orders the economy, with `XDG_CONFIG_HOME` in scratch. 1,443 ticks, 63
+messages sent, four raids.
+
+- *Lost on purpose.* Shipyard 2, one Solar Satellite, no defence, the two
+  Light Fighters an empire starts with. `RaidIncoming` at tick 272:
+  arrives at 302, power 378, 4 Light Fighters, `threat` heavy, odds `lost`
+  (lost in every fight played; the raiders keep 0.86). The fleet left by
+  an ordinary `move` at 274 and stood next door at 276; the forecast then
+  read the raiders keeping 1.00. At 302 the alert: "the raid of 4 Light
+  Fighter has arrived at your homeworld at [-4,5]: it meets 0 ship(s), 1
+  Solar Satellite(s) and 0 defence(s) and fights for at most 6 rounds, the
+  first next tick", and `battles` held it with `rounds_left` 6. Round 1 at
+  303: the satellite fired once, the raiders 43 times, and it fell.
+  `CombatEnded` with `raid` and `fleets_destroyed`; `RaidResolved`:
+  `defended` false, 1 round, lost 1 Solar Satellite, raiders lost nothing,
+  2,525 metal, 1,865 crystal and 869 deuterium taken, 8, 8 and 5 percent
+  of the stockpile with no storage building to protect any of it.
+- *Defended.* Rocket Launchers ordered four at a time while the forecast
+  of a typical raid read short of `repelled`; it moved from `lost` to
+  `at_risk` at four and to `repelled` at nine, with the economy and the
+  raid growing under it. Tick 758: 9 Light Fighters, power 779, against 2
+  Light Fighters and 9 Rocket Launchers, forecast `repelled`, 0.58 kept.
+  Four rounds, 789 to 792, each a `BattleRound` of 1,242 to 1,379 bytes
+  with the fleet as one group and "home defences" as another marked
+  `battery`; the odds in `battles` rose from 0.58 kept to 0.94 as the
+  raiders fell. 2 Rocket Launchers lost, none rebuilt (two rolls of 70 in
+  a hundred, both missed), 9 raiders destroyed, wreckage 8,100 metal and
+  2,700 crystal, scooped by the fleet in the same tick, which the home
+  dock also mended in that tick. Tick 1028: 8 Light Fighters against 11
+  Rocket Launchers, three rounds, nothing lost. Tick 1406: 8 Light
+  Fighters, four rounds, 4 Rocket Launchers lost and 2 rebuilt at once: 11
+  before, 9 after.
+- *What the session showed that the tests had not.* While a raid is
+  fought, `homeworld.raid` is already the forecast of the next one, with
+  no arrival: the fight is in `battles`. It is as built and the rules now
+  say so; a screen has to read `battles` first. `play.py` named the
+  defences' losses in a fight's summary by the owner alone, twice; it says
+  "Slice4's defences" now.
+- Three earlier sessions were stopped by me within two minutes each, for
+  mistakes of the script (an order that waited for deuterium no mine made,
+  a satellite ordered a tick before it could be paid). Their files are
+  beside the fourth's.
+- `play.py`'s lines were read off the session's frames by a script, and
+  its fixture is the session's first full state.
+
+**Measured, and not.** `iac_solo.wasm`, release: 2,856,262 bytes (slice 3
+2,752,469; 103,793 more, 3.8 percent). `both_targets`: five tests in 102 s
+with the engine built (slice 3: 99 s). `hosts_agree`: 64 s, as before, with
+the raid in it. `sim-run`: 3,310 to 3,451 ticks a second in a season week
+(slice 3: 3,471) and 878 to 889 in a blitz day (918, 925), on a machine
+that was busy; the forecast in every state is the cost, a fight played 8
+to 64 times for each new pair of sides, behind the memo slice 2 gave the
+odds. The single-player host's catch-up after a day and a week away was
+not timed.
+
+**Run**, on the branch, after the last change to Rust:
+
+- `cargo test --workspace --no-fail-fast -j 4`: 196 passed, 0 failed
+  (slice 3: 182).
+- `cargo clippy --workspace --all-targets`: silent.
+- `cargo build -p iac-solo --target wasm32-unknown-unknown --release`:
+  built.
+- `UPDATE_FIXTURES=1 cargo test -p iac-shared` and `UPDATE_FIXTURES=1
+  cargo test -p iac-sim --test economy_numbers`: rendered, and the full
+  run after them found nothing stale.
+- `python3 tools/check_sim_constants.py`: 4,410 values agree.
+- `python3 docs/design/economy/sim.py --tables`: prints its tables.
+- `python3 -m unittest discover -s tools/playtest/tests`: 36 pass, on the
+  new fixture.
+- `sim-run --pace season --days 7` and `--pace blitz --days 1`, each as
+  text and as JSON: the tables above.
+
+**Not verified.**
+
+- No person or agent played. Nothing in `tools/playtest` was run but its
+  offline tests; `play.py` was loaded by a script to read the session's
+  frames.
+- The web client does not compile against the new `protocol.g.dart`:
+  `flutter analyze`, `flutter test`, the bundle and `tool/solo_e2e.dart`
+  are stage 2's. `DefenceState.restoring` and the generated
+  `raidLostShipFraction` are gone and the Dart still reads them.
+- No raid on an outpost was fought over a real socket, and no raid was
+  outlasted or fled from over one: those are `iac-sim`'s tests, and the
+  outpost's fight is also `both_targets`'.
+- No raid that flies Cruisers or Bombers was fought over a socket, nor by
+  a person: the session's empire never had twenty of a defence.
+- The raid's size at one and a half times, and any world longer than a
+  season week or a blitz day.
+- The planner's stall (the explorer at twice the raid's size, the hybrid
+  turtle at seed 7) was seen and not explained.
+- This branch stands on `cea4528`; the web client's halves of slices 2
+  and 3 are on other branches and have not been brought together with it.
+
+**Unsure of.**
+
+- A fleet under standing orders that leaves a raid it would die in flies
+  toward home, which is where the raid is: it may land in the same fight
+  and leave again. The scenario asserts that it left and kept its ships,
+  not where it went next.
+- A ship the yard finishes during a raid is a fleet of its own, because
+  the docked fleets are fighting; after the raid the player has one fleet
+  more than before.
+- Flight from a dock is refused at the deployed-fleet limit. A player with
+  three fleets out cannot pull a fourth out of a raid. It follows from a
+  fleet at home not being deployed, and it may read as a trap.
+- `homeworld.raid` during the fight, above.
+- Whether satellites falling by the dozen to every raid is the game the
+  owner wants. It is OGame's, and the bots pay for it.
