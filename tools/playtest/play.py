@@ -31,7 +31,7 @@ ALERT_LEVELS = ("Warning", "Critical")
 CHART_MARKS = {"aboard": "aboard one of your fleets; it scores when that fleet docks at home alive",
                "delivered": "delivered (already scored; no need to visit again)"}
 NOTABLE = {"BuildingCompleted", "ResearchCompleted", "ShipBuilt", "DefenceBuilt", "FleetArrived", "CombatStarted",
-           "ShipDestroyed", "FleetDestroyed", "RaidIncoming", "RaidResolved", "SiteExplored", "SiteAmbush",
+           "CombatEnded", "ShipsLost", "FleetDestroyed", "RaidIncoming", "RaidResolved", "SiteExplored", "SiteAmbush",
            "SalvageCollected", "ChartDelivered", "ScanCompleted", "Exchanged"}
 
 
@@ -281,12 +281,15 @@ def collapse_events(msgs, mine_only=False, errors=True):
                 g["revealed"] += e.get("sectors_revealed", 0); g["hostiles"] += e.get("hostiles_detected", 0)
                 g["signals"] += e.get("signals") or []; g["threats"] += e.get("threats") or []
                 slot(("scan", e["fleet_id"]))
-            elif k == "CombatRound":
+            elif k == "BattleRound":
                 key = (e["sector"]["q"], e["sector"]["r"])
-                g = fights.setdefault(key, {"t0": tick, "t1": tick, "shots": 0, "mine": False, "took": 0.0, "dealt": 0.0, "others": 0.0})
-                g["t1"] = tick; g["shots"] += 1; g["mine"] = g["mine"] or bool(e.get("mine"))
-                f = ("took" if e.get("target_owner") is not None else "dealt") if e.get("mine") else "others"
-                g[f] += e.get("hull_damage", 0.0)
+                g = fights.setdefault(key, {"t0": tick, "t1": tick, "rounds": 0, "shots": 0, "mine": False, "took": 0, "dealt": 0,
+                                            "lost": 0, "killed": 0})
+                ours, theirs = e["fleets"], e["hostiles"]
+                g["t1"] = tick; g["rounds"] += 1; g["mine"] = g["mine"] or bool(e.get("mine"))
+                g["shots"] += ours["shots"] + theirs["shots"]
+                g["took"] += theirs["hull_damage"]; g["dealt"] += ours["hull_damage"]
+                g["lost"] += theirs["destroyed"]; g["killed"] += ours["destroyed"]
                 slot(("fight", key))
             elif k == "PolicyAction":
                 cause = re.sub(r"\([^()]*\)", "", e.get("reason") or "")
@@ -305,8 +308,9 @@ def collapse_events(msgs, mine_only=False, errors=True):
         elif key[0] == "fight":
             g = fights[key[1]]
             span = f"ticks {g['t0']}-{g['t1']}" if g["t1"] != g["t0"] else f"tick {g['t0']}"
-            who = (f"you took {g['took']:.0f} hull, dealt {g['dealt']:.0f}" if g["mine"] else f"witnessed, {g['others']:.0f} hull damage")
-            items[i] = f"  combat @{key[1][0]},{key[1][1]} {span}: {g['shots']} shots, {who}"
+            sides = (f"took {g['took']} hull and lost {g['lost']} ship(s), dealt {g['dealt']} and destroyed {g['killed']}")
+            who = f"your side {sides}" if g["mine"] else f"witnessed: the fleets {sides}"
+            items[i] = f"  combat @{key[1][0]},{key[1][1]} {span}: {g['rounds']} round(s), {g['shots']} shots, {who}"
         elif key[0] == "policy":
             g, f = policy[key[1]], key[1]
             span = f"x{g['n']}, ticks {g['t0']}-{g['t1']}" if g["n"] > 1 else f"tick {g['t0']}"
@@ -345,6 +349,18 @@ def event_text(e):
         return f"fleet {e['fleet_id']} harvested {res(e.get('resources'))} in {e.get('ticks')}t"
     if k == "Exchanged":
         return f"fleet {e['fleet_id']} traded at the exchange: {trade_text(e)}; {meter_text(e['meter_after'])}"
+    if k == "CombatEnded":
+        lost = "; ".join(
+            f"{l.get('owner') or l.get('label') or 'a group'} lost "
+            + (", ".join(f"{u['count']}x {u['unit']}" for u in l["lost"]) or "nothing")
+            + (" and is destroyed" if l["destroyed"] else "")
+            for l in e.get("losses") or [])
+        pile = f"; wreckage {res(e['salvage'])}" if e.get("salvage") else ""
+        return (f"combat @{hexs(e['sector'])} ended after {e['rounds']} round(s): {e['outcome']}"
+                + (f"; {lost}" if lost else "") + pile)
+    if k == "ShipsLost":
+        ships = ", ".join(f"{s['count']}x {s['class']}" for s in e["ships"])
+        return f"fleet {e['fleet_id']} lost {ships} at {hexs(e['sector'])}"
     rest = {a: b for a, b in e.items() if a not in ("kind", "tick", "player_id")}
     return k + " " + json.dumps(rest, separators=(",", ":"))[:220]
 
@@ -446,6 +462,21 @@ def freshness(sec, now):
 
 def res(r):
     return "/".join(f"{(r or {}).get(k, 0):.0f}" for k in ("metal", "crystal", "deuterium"))
+
+
+def repair_words(repair):
+    """What mending a fleet's damage takes at each dock, from `fleets[].repair`."""
+    if not repair:
+        return ""
+
+    def dock(name, d):
+        if d.get("refusal"):
+            return f"{name}: {d['refusal']}"
+        cost = res(d["payment"]) if d["price"] > 0 else "nothing"
+        return f"{name} mends {d['ships']} ship(s) for {cost}"
+
+    docks = [dock("home", repair["home"])] + ([dock("your outpost", repair["outpost"])] if repair.get("outpost") else [])
+    return f"; {repair['hull']} hull missing; " + "; ".join(docks)
 
 
 MAX_ODDS = 256
@@ -678,11 +709,8 @@ def fleet_rows(fs):
     out = []
     sectors = {(s["location"]["q"], s["location"]["r"]): s for s in fs.get("known_sectors") or []}
     for f in fs.get("fleets") or []:
-        ships = {}
-        hull = hull_max = 0
-        for s in f["ships"]:
-            ships[s["class"]] = ships.get(s["class"], 0) + 1
-            hull += s["hull"]; hull_max += s["hull_max"]
+        ships = {s["class"]: s["count"] for s in f["ships"]}
+        hull, hull_max = f["hull"], f["hull_max"]
         loc = [f["location"]["q"], f["location"]["r"]]
         row = {"id": f["id"], "at": loc, "state": f["state"], "policy": orders_words(f),
                "fuel": round(f["fuel"]), "fuel_max": round(f["fuel_max"]), "range_hops": f.get("range_hops"),
@@ -690,6 +718,11 @@ def fleet_rows(fs):
                "cargo": [round((f.get("cargo") or {}).get(k, 0)) for k in RES], "cargo_cap": round(f.get("cargo_capacity", 0)),
                "hull_pct": round(100 * hull / hull_max) if hull_max else 0, "ships": ships,
                "jump_fuel": round(f.get("jump_fuel", 0)), "home_fuel": round(f.get("home_fuel", 0))}
+        damaged = sum(s["damaged"] for s in f["ships"])
+        if damaged:
+            row["damaged"] = damaged
+        if f.get("refit_due"):
+            row["refit_due"] = True
         if f.get("cargo_blocked"):
             row["cargo_blocked"] = True
         if f.get("laden"):
@@ -784,9 +817,7 @@ def build_state(fs, board=None, left=None, alerts=None):
             d["ok"] = all(pl["resources"].get(k, 0) >= step["cost"].get(k, 0) for k in RES)
         nxt.setdefault(section, {})[label] = d
     idle = [n for n, q in qs.items() if q["open"] > 0]
-    docked = {}
-    for s in hw.get("docked_ships") or []:
-        docked[s["class"]] = docked.get(s["class"], 0) + 1
+    docked = {s["class"]: s["count"] for s in hw.get("docked_ships") or []}
     world = fs.get("world") or {}
     doc = {
         "player": pl["name"], "tick": fs["tick"],
@@ -989,9 +1020,7 @@ def summarize(fs, doc, odds):
              for d in hw.get("defences") or [] if d["count"] or d.get("restoring")]
     print(f"Defence power {hw.get('home_defence_power', 0):.0f} against an expected raid of about "
           f"{hw.get('next_raid_estimate_power', 0):.0f}; structures: " + (", ".join(stand) or "none"))
-    docked = {}
-    for s in hw.get("docked_ships") or []:
-        docked[s["class"]] = docked.get(s["class"], 0) + 1
+    docked = {s["class"]: s["count"] for s in hw.get("docked_ships") or []}
     print("Docked ships: " + (", ".join(f"{n}x {c}" for c, n in docked.items()) or "none"))
     if fs.get("outpost"):
         print(outpost_line(fs["outpost"], fs["tick"]))
@@ -1000,11 +1029,8 @@ def summarize(fs, doc, odds):
     print(f"Known sectors: {len(sectors)} ({live} live, {len(sectors) - live} remembered/stale)")
     for f in fs.get("fleets") or []:
         loc = (f["location"]["q"], f["location"]["r"])
-        classes = {}
-        hull = hull_max = 0
-        for s in f["ships"]:
-            classes[s["class"]] = classes.get(s["class"], 0) + 1
-            hull += s["hull"]; hull_max += s["hull_max"]
+        classes = {s["class"]: s["count"] for s in f["ships"]}
+        hull, hull_max = f["hull"], f["hull_max"]
         cargo = sum((f.get("cargo") or {}).values())
         print(f"\nFleet {f['id']} at {loc[0]},{loc[1]}  {f['state']}  policy={orders_words(f)}  cooldown={f.get('cooldown_remaining', 0)}"
               f"  power {f.get('power', 0):.0f}  range {f.get('range_hops', 0)} hops out and back"
@@ -1014,7 +1040,14 @@ def summarize(fs, doc, odds):
         print(f"  ships: " + ", ".join(f"{n}x {c}" for c, n in classes.items())
               + f"  hull {hull:.0f}/{hull_max:.0f}  fuel {f['fuel']:.0f}/{f['fuel_max']:.0f}"
               + f"  cargo {cargo:.0f}/{f['cargo_capacity']:.0f} ({res(f.get('cargo'))})")
-        print("  ship ids: " + ", ".join(f"{s['id']}={s['class']}" for s in f["ships"]))
+        worn = [f"{s['damaged']} of {s['count']} {s['class']} damaged" + (f" ({s['at_risk']} at 70% hull or under)" if s["at_risk"] else "")
+                for s in f["ships"] if s["damaged"]]
+        if worn:
+            print("  damage: " + ", ".join(worn) + repair_words(f.get("repair")))
+        r = f["refit"]
+        print(f"  fights at Weapons {r['weapons']}, Shielding {r['shielding']}, Armour {r['armour']}"
+              + ("  REFIT DUE: your research is ahead of it; dock at home" if f.get("refit_due") else "")
+              + "  (split names classes and counts: \"ships\":[{\"class\":\"LightFighter\",\"count\":2}])")
         jump, home = f.get("jump_fuel", 0), f.get("home_fuel", 0)
         if jump:
             note = ""
@@ -1661,9 +1694,11 @@ USAGE = """usage: play <command>
   sector Q R             details of one known sector
   preview FLEET [Q R..]  jump cost and threat for adjacent sectors; with no Q R, every exit of the fleet's sector
   odds FLEET Q R [Q R..] how that fleet would fare in any sectors, near or far, seen or not
-                         (odds are the server's: it plays the fight with the ships on each side, so classes count.
-                         SAFE >= 2.5x keeps 98% of the hull, FAVOURABLE >= 1.5x keeps 85-99%, EVEN >= 1.1x wins but
-                         loses 15-50%, RISKY >= 0.9x anything from a lost fleet to a costly win, else DEADLY)
+                         (odds are the server's: it plays the real round with the ships on each side, so classes,
+                         damage and rapid fire count. SAFE >= 2.5x wins and keeps nine tenths of the fleet,
+                         FAVOURABLE >= 1.5x wins and keeps two thirds to nine tenths, EVEN >= 1.1x wins three times
+                         in four or better at the cost of a third or more, RISKY >= 0.9x is as likely lost as won,
+                         else DEADLY)
   do '<json>' ['<json>' ...]   send commands in order (or one JSON array: do '[{...},{...}]'); one result line each,
                          returns at the server's next tick (about 0.5 s) or at once on an error; --fast skips that wait
                          e.g. play do '{"action":"build","building_type":"MetalMine"}' '{"action":"research","tech":"EnergyTechnology"}'

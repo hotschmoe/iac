@@ -21,9 +21,11 @@ def scan(tick, fleet=2, sector=(0, 0), revealed=7, hostiles=1, signals=(), threa
             "threats": [{"sector": {"q": 0, "r": 0}, "threat": {"rating": t, "est_power": 10, "basis": "estimate"}} for t in threats]}
 
 
-def round_(tick, mine=True, owner=None, dmg=5.0, sector=(1, 1)):
-    return {"tick": tick, "kind": "CombatRound", "sector": {"q": sector[0], "r": sector[1]}, "target_owner": owner,
-            "hull_damage": dmg, "mine": mine}
+def round_(tick, mine=True, took=5, dealt=7, sector=(1, 1)):
+    side = lambda hull, destroyed: {"groups": [], "volleys": [], "shots": 3, "power": 30, "absorbed": 1,
+                                    "hull_damage": hull, "destroyed": destroyed}
+    return {"tick": tick, "kind": "BattleRound", "sector": {"q": sector[0], "r": sector[1]}, "round": 1,
+            "fleets": side(dealt, 1), "hostiles": side(took, 0), "mine": mine}
 
 
 def tick_msg(*events):
@@ -47,10 +49,11 @@ class Events(unittest.TestCase):
         self.assertEqual(len(lines), 2)
 
     def test_combat_rounds_collapse_per_sector(self):
-        msgs = [tick_msg(*[round_(t, owner="x") for t in range(100, 106)]), tick_msg(round_(106, mine=False, sector=(5, 5)))]
+        msgs = [tick_msg(*[round_(t) for t in range(100, 106)]), tick_msg(round_(106, mine=False, sector=(5, 5)))]
         lines = play.collapse_events(msgs)
         self.assertEqual(len(lines), 2)
-        self.assertIn("ticks 100-105: 6 shots, you took 30 hull", lines[0])
+        self.assertIn("ticks 100-105: 6 round(s), 36 shots, your side took 30 hull and lost 0 ship(s), dealt 42 and destroyed 6",
+                      lines[0])
         self.assertIn("witnessed", lines[1])
 
     def test_mine_filter_drops_witnessed_fights(self):

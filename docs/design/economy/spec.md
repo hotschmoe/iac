@@ -364,6 +364,8 @@ Displayed in three places:
 
 ### 7.2a The ratio (odds)
 
+Since 2026-10-13 (slice 2 of `docs/design/ogame.md`) none of what follows is the game: the fight is OGame's round, the fight on averages is gone, and the ratio is read off the real round played eight times or more with fixed dice on the two sides as they stand (`iac_sim::odds`, `combat::fight`). The sixteen points of the table were measured again on that fight (`scaling::RATIO_MARGINS`), a fight that was lost among those played caps the ratio (`scaling::outcome_ratio`, `EVEN_WINS`), and a pair of sides not seen before costs 0.14 to 0.46 ms, not 2 microseconds. What the labels mean now is in the README under Odds; the measurements are in `docs/journal.md` and the choices in `docs/design/decisions.md` under that date. The rest of this section is the record of the model it replaced.
+
 Until 2026-10-10 the ratio was fleet power over `est_power`. Power is `weapon + (hull + shield) / 10` per ship and knows nothing of rapid fire, of a 15-damage shot against a 10-point shield, or of who fires first, so a label promised an outcome the fight did not deliver: four Scouts against the ring-9 Corvette read 1.83 FAVOURABLE and won three fights in four with 41 percent of their hull; one Corvette against the two ring-8 Scouts read 1.37 EVEN and kept 98 percent.
 
 The ratio is now read from the expected fight (`iac_sim::odds`, `scaling::outcome_ratio`):

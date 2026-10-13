@@ -93,7 +93,7 @@ can pick up where you left off if your session is restarted.
 | `harvest` | `fleet_id`, `resource` (`Metal`, `Crystal`, `Deuterium`, `Auto`) | mine the current sector until cargo is full; `Auto` takes everything present, a named resource only that one (`ResourceNotPresent` if the sector lacks it). When the harvest ends by itself an `Alert` (warning) says why, once: the hold is full, or nothing (or none of the named resource) is left to mine there. A fleet under standing orders reports through its doctrine instead |
 | `attack` | `fleet_id`, `target_fleet_id` | engage the NPC fleet listed as HOSTILE in your sector (use its id) |
 | `collect_salvage` | `fleet_id` | scoop wreckage (partial if the hold fills; `CargoFull` if it is already full) |
-| `recall` | `fleet_id` | emergency-jump home from another sector (2× fuel, hull risk); a jump the fleet was charging is abandoned with its fuel. The answer is an `Alert` with what the jump cost: the fuel, a jump abandoned, how many ships took hull damage and how much (hull is never repaired), how many broke up; a warning when a ship was harmed, info when none was. Refused with `InvalidCommand` and nothing changed for a fleet at your homeworld: there is nothing to come back from, a jump it is charging there goes on, and `stop` is the order that halts it |
+| `recall` | `fleet_id` | emergency-jump home from another sector (2× fuel, hull risk); a jump the fleet was charging is abandoned with its fuel. The answer is an `Alert` with what the jump cost: the fuel, a jump abandoned, how many ships took hull damage and how much (it lasts until a dock mends it, which the home dock does on arrival), how many broke up; a warning when a ship was harmed, info when none was. The ships that broke up are also a `ShipsLost` event, by class and count. Refused with `InvalidCommand` and nothing changed for a fleet at your homeworld: there is nothing to come back from, a jump it is charging there goes on, and `stop` is the order that halts it |
 | `stop` | `fleet_id` | abort a move, harvest, or boarding. A jump called off does not return the fuel it burned, and backing out of a boarding leaves the site on alert, so its next boarding is likelier to be ambushed: either is told in an `Alert` (warning), the first with the fuel forfeit. Halting a harvest costs nothing and says nothing |
 | `explore_site` | `fleet_id` | board the derelict in the current sector (20t, ambush risk) |
 | `build` | `building_type`, `reserve` (default false) | upgrade a homeworld building one level: starts at once when a building slot is free and you can pay, otherwise waits in the queue (nothing is charged until it starts). Every order gets a stable `id`, reported in its `Queue` event and in the queue lists. `reserve: true` makes the order hold the line while it is short (see Queues and slots) |
@@ -105,8 +105,8 @@ can pick up where you left off if your session is restarted.
 | `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home` (shortest real route home, charted or not), `charted_hops_home` (shortest route over sectors you have entered, null when there is none), `route_unexplored` (the `hops_home` route crosses sectors you have never entered), `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, and the odds `ratio` and `label` (`safe`, `favourable`, `even`, `risky`, `deadly`), all for the fleet you name, not your strongest. `ratio` is not `fleet_power / est_power`: see Threat |
 | `odds` | `fleet_id`, `sectors:[{q,r},...]` (at most 256) | do not move: reply `odds` with `fleet_id` and, for each sector in the order asked, `{sector, threat, ratio, label}`: how that fleet would fare there. Any sector may be named: adjacent or far, the one the fleet is in, seen or never seen |
 | `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit, plus `bots` (same rows, ranked among themselves) when the world has built-in bots |
-| `split` | `fleet_id`, `ship_ids:[id,...]` | detach those ships into a new fleet in the same sector (ids from the fleet's `ships`); at home this launches docked ships. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet id arrives in an `Alert` event |
-| `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle); ships, cargo and fuel pool, the other fleet's standing orders end |
+| `split` | `fleet_id`, `ships:[{class,count},...]`, `damaged_first` (default false) | detach so many ships of each class named into a new fleet in the same sector; at home this launches docked ships. A ship has no id: a class is named once with a count, the whole ships of the class go first, or the damaged ones from the least hull up with `damaged_first: true`. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet keeps the weapons, shields and armour the old one fights with, and its id arrives in an `Alert` event. Refused with `InvalidTarget` and a sentence naming the class at fault (a count of 0, a class named twice, more than the fleet has, every ship taken: "fleet 2 has 6 Light Fighter, not the 9 the split names"), `FleetLimitReached` at the caps |
+| `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle, at most 5000 ships together); ships, cargo and fuel pool, the other fleet's standing orders end. Where the two were refitted at different levels of Weapons, Shielding or Armour Technology the merged fleet fights at the lower of each until it docks at home, and an `Alert` says so |
 | `exchange` | `fleet_id`, `give`, `want` (`metal`, `crystal`, `deuterium`, lower case), `amount` (optional) | sell `amount` of `give` from the fleet's hold to the hub's exchange and take `want` into the hold; without `amount`, all of `give` aboard. The fleet must stand idle on the hub sector (0,0). The answer is an `Exchanged` event (what was given and received, the fee, the meter before and after; see The hub and its exchange). Refused with nothing changed and a sentence saying why: `NotInSector` away from the hub, `OnCooldown` in transit, `NoResources` for more than the hold carries or none, `CargoFull` when what comes back would not fit, `InvalidCommand` for one resource named twice, an amount that is not positive, or a trade that returns less than one unit |
 | `exchange_quote` | same as `exchange` | do not trade: reply `exchange_quote` with `amount`, `receive`, `par`, `fee`, `meter` and `meter_after`, exactly what `exchange` with the same fields would do (`./play do` prints it as one `quote ...` line). It answers from anywhere and for an amount the fleet does not carry; `refusal` is then the sentence the trade would be refused with right now |
 | `load` | `fleet_id`, `resource` (`metal`, `crystal`, `deuterium`, lower case), `amount` (optional) | move `amount` of `resource` from your stockpile into the fleet's hold; without `amount`, all the stockpile holds and the hold has room for. One resource an order. The fleet must stand idle at your homeworld with no standing orders. It is then `laden`: the dock leaves its hold alone until the fleet has been away (see Loading a hold). The answer is an `Alert` (info) saying what went aboard. Refused with nothing moved and a sentence saying what is short: `NoResources` when the stockpile holds less than `amount` or none, `CargoFull` when the hold lacks the room, `NotInSector` away from home, `OnCooldown` in transit or busy, `InvalidCommand` for an amount that is not positive or a fleet under standing orders. At your outpost `load` takes from the outpost's store instead and does not make the fleet `laden`; see Outposts |
@@ -190,13 +190,15 @@ What every doctrine does:
   or contact behind a refused sector is passed over for the next one; only
   when none is left does the fleet go home and hold, and the reason names the
   nearest one it could not have and what stops it (sector, threat, ratio).
-- Hull is never repaired and shields are. So a fleet under orders stands
-  still after a fight until its shields are back above 95% ("shields
-  recharging"); it takes a lane without a fight before a shorter one with a
-  fight it would win; and `mine_and_return` and `salvage_and_sites` pick no
-  seam, wreck or derelict in a sector whose hostiles attack on sight (a
-  patrol can clear it first). A fight on the only lane is taken at
-  `engage_ratio_x10` or better.
+- Shields are full again every round and damage to a hull lasts until a
+  dock mends it. So a fleet under orders waits for nothing after a fight,
+  and one whose hull is under 85% of full goes home before it does anything
+  else ("returning to be mended: hull at 71% of full, and a fleet under
+  orders works at 85% or more"), where the dock mends it at once. It takes a
+  lane without a fight before a shorter one with a fight it would win; and
+  `mine_and_return` and `salvage_and_sites` pick no seam, wreck or derelict
+  in a sector whose hostiles attack on sight (a patrol can clear it first).
+  A fight on the only lane is taken at `engage_ratio_x10` or better.
 - A seam or a wreck is flown to only if what the hold can take of it is worth
   1.5 times the deuterium the jumps there and back burn, both at score weight
   (metal 1, crystal 1.5, deuterium 2); a sector with under 3 units of ore
@@ -236,8 +238,9 @@ What every doctrine does:
   numbers (`docs/design/ogame.md`): 12 buildings, 14 researches, 13 ships
   and 8 defences. The game around them is this game's: the hex map, fuel
   tanks, mining, derelicts, pirates and raids, outposts, standing orders,
-  the hub and pace. The fight is still this game's too (below); OGame's
-  round, fleets of hundreds and raids fought as battles are later work.
+  the hub and pace. The fight in open space is OGame's round, one a tick,
+  between fleets of up to 5000 ships (Combat, below); leaving a fight under
+  fire, pirates that heal and raids fought as battles are later work.
   A new empire has a Metal Mine, a Crystal Mine and the Solar Plant that
   powers them, all at level 1, and two Light Fighters.
 - **Economy** — metal / crystal / deuterium from homeworld mines and fleet
@@ -280,8 +283,9 @@ What every doctrine does:
   Cruiser to ring 12, a Battlecruiser to ring 20 and a Destroyer beyond, each
   weakened or strengthened to its ring's power. The step in danger is at
   ring 9, where rapid fire starts: the two starting Light Fighters win every
-  lair through ring 8 (keeping about 60% of their hull at ring 7 and a third
-  at ring 8) and lose every one from ring 9. Every
+  lair of ring 5 (keeping about nine tenths of their hull), nearly every one
+  of ring 7 (58 of 60, keeping two thirds), two in three at ring 8 and none
+  from ring 9; a third Light Fighter makes ring 8 a sure win. Every
   sector carries `threat`:
   `rating` T1 to T9 (one step per doubling of power over 40), `est_power` and
   `basis` (`observed`: a group is there, its own power, Aggressive and Swarm
@@ -294,27 +298,34 @@ What every doctrine does:
   `2 + 0.25 x ring` game hours (divided by P) after a kill.
 - **Odds** — `threat` says how big a group is; your odds against it are a
   separate number that only the server gives (`preview_move` for a jump,
-  `odds` for any sectors). The server plays the fight out on averages with
-  the ships on each side (rapid fire between classes, each shot against hull
-  and shield, your fleet firing first) and puts the result on the scale of a
-  power ratio between equal ships: `ratio` 1.0 is an even match, the scale
-  runs 0.1 to 10. Each `label` is the same outcome whatever the classes:
-  SAFE from 2.5 (you keep 98% of your hull or more), FAVOURABLE from 1.5 (a
-  sure win, 1-15% of the hull lost), EVEN from 1.1 (a win in practice,
-  15-50% lost), RISKY from 0.9 (anything from a lost fleet to a win that
-  keeps half), DEADLY below (lost, or one win in six at best). Power against
-  power is not it: four Light Fighters are 1.9x the power of the ring-9
-  Cruiser and rate 0.88x DEADLY against it (one fight in four won, 5% of the
-  hull kept on average), because a Cruiser fires again five times in six
-  at a Light Fighter; two Heavy Fighters, which it has no rapid fire
-  against, rate 1.62x FAVOURABLE (90% kept). OGame's ships carry a shield a
-  fifth of their weapon, so every volley that lands costs hull, and SAFE
-  takes a fleet that ends the fight almost before the other side fires: ten
-  Light Fighters at ring 7, two Cruisers at ring 9. A sector with nothing
-  in sight is rated against the
-  group its ring spawns, a remembered one against what was last seen there.
-  The ratio is the expected result; rapid fire comes in streaks, so a
-  FAVOURABLE fight can still go badly once in a long while.
+  `odds` for any sectors). There is no second model of the fight: the
+  server plays the real round, eight times or more with dice of its own,
+  from the two sides as they stand (damage and the levels each fights at
+  included; two sides of more than 200 units are scaled down together), and
+  reads off what share of its worth each side keeps and how often yours
+  won. That is put on the scale of a ratio between equal ships: `ratio` 1.0
+  is an even match, the scale runs 0.1 to 10. Each `label` is the same
+  outcome whatever the classes: SAFE from 2.5 (a win that keeps nine tenths
+  of the fleet), FAVOURABLE from 1.5 (a win every time it was played,
+  keeping two thirds to nine tenths), EVEN from 1.1 (won three times in
+  four or better, at the cost of a third of the fleet or more), RISKY from
+  0.9 (as likely lost as won), DEADLY below (the fleet is lost). A fight
+  that was not won every time it was played is never rated above EVEN, one
+  won less than four times in five never above RISKY, and one in which the
+  fleet was destroyed every time is DEADLY, whatever was kept or taken
+  along. Power against power is not it: four Light Fighters are 1.9x the
+  power of the ring-9 Cruiser and rate 1.01x RISKY against it (33 fights of
+  60 won, a quarter of the hull kept on average), because a Cruiser fires
+  again five times in six at a Light Fighter; two Heavy Fighters, which it
+  has no rapid fire against, rate 2.95x SAFE (92% kept). In OGame's round
+  a ship at 70% of its hull or under may explode at every shot that lands,
+  so a win costs ships and not only hull, and SAFE takes a fleet that ends
+  the fight in a round or two: four Light Fighters at ring 7, two Heavy
+  Fighters or one Cruiser at ring 9. A sector with nothing in sight is
+  rated against the group its ring spawns, a remembered one against what
+  was last seen there. The dice of the odds are not the dice of the fight,
+  and rapid fire comes in streaks, so a FAVOURABLE fight can still go badly
+  once in a long while.
 - **Buildings** — OGame's twelve: the three mines, Solar Plant, Fusion
   Reactor (Deuterium Synthesizer 5, Energy Technology 3), Robotics Factory
   (building time / (1 + level)), Nanite Factory (Robotics Factory 10,
@@ -407,8 +418,15 @@ What every doctrine does:
 - **Research** — OGame's fourteen, each level twice the price of the last.
   What OGame's requirement tree asks is in each catalogue entry's `requires`.
   Weapons, Shielding and Armour Technology add 10% a level to attack, shield
-  and hull, for ships built from then on (a ship keeps what it was built
-  with) and for defences at once. The three drives add 10, 20 and 30% a
+  and hull, for defences at once and for a fleet when it next docks at your
+  homeworld: a fleet fights at the levels it was last refitted with
+  (`fleets[].refit`: `weapons`, `shielding`, `armour`; `refit_due` while
+  your research is ahead of it). A fleet docked at home is refitted the
+  tick the research completes, a ship built joins a docked fleet at the
+  current levels, a fleet split off keeps the levels of the one it left, a
+  merged fleet takes the lower of each, and a wreck recovered in the field
+  fights at the levels of the fleet that took it. Your outpost's dock mends
+  and does not refit. The three drives add 10, 20 and 30% a
   level to the speed of the ships that fly on them. Five do this game's own
   jobs: Energy Technology takes 5% a level off what a jump burns (to a half)
   and raises the Fusion Reactor's output; Espionage Technology is how many
@@ -433,12 +451,35 @@ What every doctrine does:
   `homeworld.catalog.ships` carry every figure; `world.rapid_fire` is the
   whole rapid-fire table.
 - **Fleets** — up to 3 away from your homeworld and your finished outpost (8
-  in all), 64 ships each, hex movement paid in
-  fuel. Docking at home unloads cargo and refuels but never merges
+  in all), up to 5000 ships each, hex movement paid in
+  fuel. A fleet is a count for each class and the hull of each ship that is
+  not whole; a ship has no id. `fleets[].ships` is one row a class in
+  catalogue order: `class`, `count`, `damaged` (how many are not whole),
+  `at_risk` (how many of those stand at 70% of their hull or under, where a
+  shot that lands may destroy them), `hull` and `hull_max` for the class
+  together, and `unit_attack`, `unit_shield` and `unit_hull`, what one ship
+  of the class fights with at the fleet's refit. The fleet's own
+  `ship_count`, `hull`, `hull_max`, `attack` and `shield` are those summed.
+  Docking at home unloads cargo, refuels, mends and refits but never merges
   fleets: use `split` and `merge`. New ships join an idle fleet at home that
   has no standing orders, or form their own. Each fleet reports its `power`
   (the scale raids use) and `range_hops`: how many more hops out it can fly
   and still get home.
+- **Damage and repair** — a shield is full again every round and costs
+  nothing; damage to a hull stays until a dock mends it. Your home dock
+  mends a fleet when it docks and every tick it stands there, at once and
+  for nothing. Your outpost's dock mends for a tenth of a ship's cost times
+  the share of its hull restored, paid from the outpost's store in whatever
+  it holds (metal first, then crystal at 1.5 and deuterium at 2, as its own
+  repair is): whole ships only, the most damaged first, as far as the store
+  pays, and not while it is breached or unfinished, nor for a fleet under
+  standing orders. Either dock says what it did in an `Alert` ("fleet 7 was
+  mended at your outpost: 3 ships made whole, 1200 hull restored, for 84
+  metal; 2 more wait for the dock's stock to cover them"). `fleets[].repair`
+  is there while a fleet carries damage: `ships`, `hull` (what is missing),
+  and for `home` and for `outpost` (absent with no outpost) the `price`,
+  the `payment` it would be taken as, the `ships` and `hull` it would mend
+  now, and `refusal`, the sentence that says why it would mend nothing now.
 - **Fuel and stranding** — each fleet reports `jump_fuel` (one jump),
   `hops_home` (the fewest hops home over the real lanes, charted or not)
   and `home_fuel` (the fuel for those hops) next to `fuel`, and `jump_ticks`: the
@@ -467,9 +508,39 @@ What every doctrine does:
   and so does `refine` when there is deuterium in its hold (see Refining).
   `recall` costs 2x the jump fuel per hex, all or nothing; ships that break
   up in it leave their share of the cargo where the fleet jumped from.
-- **Combat** — round-based vs pirates, shields absorb first, rapid-fire
-  chains by OGame's table (a Cruiser fires again five times in six at a
-  Light Fighter; `world.rapid_fire`), victors drop salvage (`FleetDestroyed.salvage`
+- **Combat** — a fight in open space is OGame's round, one a tick, between
+  every fleet and every hostile group in the sector, to the death (`move`
+  is refused in one; `recall` leaves it, at its price). In a round every
+  shield is full, every ship of both sides fires at once, and each shot
+  picks one ship of the other side, any as likely as another. A shot weaker
+  than a hundredth of its target's shield bounces; otherwise it takes its
+  attack off the shield in hundredths of the full shield, and what the
+  shield does not hold comes off the hull. A ship hit with no shield left
+  and its hull at 70% or under explodes with a chance of one minus the
+  share of hull it holds. Rapid fire chains by OGame's table: a Cruiser
+  fires again five times in six at a Light Fighter (`world.rapid_fire`).
+  What exploded is gone when the round ends. The numbers are whole and the
+  dice are the fight's own, so the same fight is the same rounds wherever
+  it is played. Pirates fight by the same round with their ring's
+  multiplier on attack, shield and hull. A round nobody lost hull in ends
+  the fight as a stand-off: the fleets stay, and the group is whole again
+  when next met.
+  One `BattleRound` event a round takes the place of a message a shot:
+  `round`, and for `fleets` and `hostiles` the `groups` as they stand after
+  it (`fleet_id`, `owner`, `label`, `mine`, and by class `count`, `damaged`,
+  `at_risk`, `hull`, `hull_max` and `lost` this round), the `volleys` they
+  fired by class of firing ship and of target (`shots`, `bounced`, `wasted`
+  on a ship already destroyed, `absorbed` by shields, `hull_damage`,
+  `destroyed`), and their sums with `power`, the attack of every shot. It
+  is the same size for five ships as for five thousand. `CombatEnded` says
+  how it ended (`outcome`: `hostiles_destroyed`, `fleets_destroyed`,
+  `both_destroyed`, `withdrawn`, `standoff`), after how many `rounds`, and
+  in `losses` what every fleet and group lost over the whole fight by
+  class. While a fight goes on, `battles` in the full state and in every
+  tick update holds it for the empires in it: `sector`, `rounds`, the
+  `last_round` and the `losses` so far. Ships that break up in a `recall`
+  are a `ShipsLost` event.
+  Victors drop salvage (`FleetDestroyed.salvage`
   is exactly the pile `collect_salvage` can take; it lasts 180 ticks, its
   sector view carries `salvage_despawn_tick`, and a `SalvageDespawned` event
   says when one expires). You only receive combat
@@ -526,8 +597,9 @@ What every doctrine does:
   points, no other use yet). A stripped derelict is replaced after 120 game hours / P^0.5.
 - **Standing orders** — assign a fleet a doctrine and the server flies it
   (see `policy_update` above). Doctrines respect fuel/cargo thresholds,
-  return home to deposit and refuel within their fuel budget, wait for
-  shields, go round fights they need not take, and log every decision.
+  return home to deposit and refuel within their fuel budget, go home to be
+  mended when their hull is low, go round fights they need not take, and
+  log every decision.
 - **Defences** — OGame's eight: Rocket Launcher (Shipyard 1), Light Laser,
   Heavy Laser, Gauss Cannon, Ion Cannon, Plasma Turret and the two Shield
   Domes, of which a homeworld holds one each. They are built
@@ -676,8 +748,10 @@ What every doctrine does:
     fleets arriving at the finished outpost banks its charts. A fleet
     standing at the finished outpost does not count against your three
     deployed fleets, and needs a free slot to leave. New ships still appear
-    at home. Hull is not repaired there. A fleet at an outpost is not safe:
-    see Raids below.
+    at home. Its dock mends the ships of a fleet without standing orders
+    from the store, at a tenth of their cost for the hull restored (see
+    Damage and repair), every tick while it is in service; it does not
+    refit them. A fleet at an outpost is not safe: see Raids below.
   - **Quiet**: while an outpost stands, no group lives in its sector or
     wanders in, and the sector reads as empty to `preview_move`, `odds` and
     its own `threat` (rating 0, power 0, ratio 10). The lair it displaced returns after its usual
@@ -692,8 +766,8 @@ What every doctrine does:
     a Cruiser 675). The platform (408, 1306, 3972 by
     level: the power of 4 Rocket Launchers, then of 8 with 4 Light Lasers,
     then of 16 with 8 and 4 Heavy Lasers) and your ships standing there defend, and the defence counts a
-    tenth more or less by chance. Repelled: your ships' shields are halved, nothing
-    else, and no salvage. Lost: a quarter of the ships there are destroyed
+    tenth more or less by chance. Repelled: nothing happens to your ships,
+    and there is no salvage. Lost: a quarter of the ships there are destroyed
     (at least one), and what they carried goes into the store; a quarter of
     the store, and of the cargo aboard fleets there, above the protected
     floor is taken; and the outpost is breached: no extractor, no
@@ -723,7 +797,8 @@ What every doctrine does:
     `breached`, `work` (`kind`, `level`, `start_tick`, `end_tick`), `store`,
     `store_cap`, `protected`, `production`, `yield_lost` (the resources the
     extractor makes and the store is full of, so that yield is lost),
-    `grade`, `platform_power`, `defence_power`, `raid_power` (`least`,
+    `grade`, `platform_power`, `ships_power` (your ships standing there),
+    `defence_power` (the two together), `raid_power` (`least`,
     `most`), `raid_arrival_tick`, `next_level` (what `upgrade_outpost` would
     cost and give), `upgrade_refusal` (why it would be refused now),
     `repair_cost` (what the repair takes from the store, what the store
