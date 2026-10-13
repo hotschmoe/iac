@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../console/battle.dart' show damageLine, dockRepairLine, shipsOf, shortCount;
 import '../console/intel.dart';
 import '../console/outpost.dart';
 import '../console/services.dart';
@@ -11,6 +12,7 @@ import '../design/tokens.dart';
 import '../protocol/protocol.dart' as proto;
 import '../state/game_controller.dart';
 import '../state/state_mapper.dart' show amountsOf, shortBy;
+import 'battle_view.dart' show ShipRows, damagedColor;
 import 'homeworld/economy_tabs.dart' show HoldDock, HoldPanel;
 
 const _abbr = {proto.ResourceKind.metal: 'Fe', proto.ResourceKind.crystal: 'Cr', proto.ResourceKind.deuterium: 'De'};
@@ -156,7 +158,6 @@ class _OutpostPanelState extends State<OutpostPanel> {
     final work = o.work;
     final raid = o.raidArrivalTick;
     final cover = RaidCover.of(o.defencePower, o.raidPower);
-    final ships = math.max(0.0, o.defencePower - o.platformPower);
     final repair = o.repairCost;
     final repairShort = o.repairWaitingFor;
     return ConsolePanel(
@@ -202,7 +203,18 @@ class _OutpostPanelState extends State<OutpostPanel> {
         const Lbl('Defence'),
         Kv('Platform and ships here',
             key: const Key('outpost-defence'),
-            v: '${groupDigits(o.platformPower.round())} + ${groupDigits(ships.round())} = ${groupDigits(o.defencePower.round())}'),
+            v: '${shortCount(o.platformPower.round())} + ${shortCount(o.shipsPower.round())} = ${shortCount(o.defencePower.round())}'),
+        for (final f in st.fleets)
+          if (f.atOutpost) ...[
+            Padding(
+                padding: const EdgeInsets.only(top: 5),
+                child: Text('${f.name} HERE - ${shipsOf(f.shipCount).toUpperCase()}', key: Key('outpost-fleet-${f.id}'), style: T.mono(size: 10.5, color: C.text2))),
+            ShipRows(f.ships, tag: 'outpost-fleet-${f.id}'),
+            if (f.repair case final q?)
+              if (q.outpost case final dock?)
+                Text('${damageLine(q)}; the outpost ${dockRepairLine(q, dock)}'.toUpperCase(),
+                    key: Key('outpost-mend-${f.id}'), style: T.mono(size: 10, color: damagedColor, height: 1.35)),
+          ],
         Kv('Raids of this ring', key: const Key('outpost-raid-range'), v: raidRange(o.raidPower).toUpperCase()),
         Padding(
           padding: const EdgeInsets.only(top: 4),

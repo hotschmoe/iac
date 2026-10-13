@@ -265,7 +265,7 @@ class Onboarding extends ChangeNotifier {
       }
       if (f.policy != null && f.policy != proto.PolicyPreset.manual.label) learn(Lesson.orders);
       if (proto.Hex.distance(f.sector, home) >= 6) learn(Lesson.range);
-      if (f.ships.any((g) => g.shipClass == proto.ShipClass.smallCargo.label)) learn(Lesson.cargo);
+      if (f.ships.any((g) => g.shipClass == proto.ShipClass.smallCargo)) learn(Lesson.cargo);
     }
     if (done(Lesson.harvest) && !done(Lesson.unload)) {
       final miner = s.fleets.where((f) => f.id == _miner).firstOrNull;

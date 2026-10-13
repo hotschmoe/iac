@@ -13,6 +13,7 @@ import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../state/game_controller.dart';
 import '../../state/state_mapper.dart' show amountsOf;
+import '../battle_view.dart' show ShipRows;
 import 'spec.dart';
 
 Widget _notReported(String what) => Padding(
@@ -120,6 +121,23 @@ class DefenceTab extends StatelessWidget {
             ]),
           ]),
         ),
+        if (ctrl.state.hw case final hw?) ...[
+          const SizedBox(height: 10),
+          ConsolePanel(
+            key: const Key('defence-docked'),
+            title: 'Docked ships',
+            subText: 'x${groupDigits(hw.dockedShipCount)}',
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              if (hw.dockedShips.isEmpty)
+                Padding(padding: const EdgeInsets.only(top: 3), child: Text('NO FLEET STANDS AT THE DOCK.', style: T.mono(size: 11, color: C.text3)))
+              else
+                ShipRows(hw.dockedShips, tag: 'docked'),
+              WhyText('Every fleet standing at the homeworld, by class. The home dock mends a fleet and refits it to your Weapons, Shielding and '
+                  'Armour levels when it arrives. A raid that breaks through destroys ${proto.raidLostShipPct}% of the ships here.'),
+            ]),
+          ),
+        ],
         const SizedBox(height: 10),
         ConsolePanel(
           key: const Key('defence-satellites'),

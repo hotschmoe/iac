@@ -2097,7 +2097,8 @@
       "crystal": 600.0,
       "deuterium": 150.25,
       "metal": 1200.5
-    }
+    },
+    "ship_count": 828
   },
   "tick": 4820,
   "type": "full_state",

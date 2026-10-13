@@ -1922,8 +1922,8 @@ impl GameEngine {
     }
 
     /// The fights `player_id` has a fleet in or is present at, each with
-    /// its last round.
-    pub fn battles_of(&self, player_id: u64) -> Vec<BattleState> {
+    /// its last round when `with_round`.
+    pub fn battles_of(&self, player_id: u64, with_round: bool) -> Vec<BattleState> {
         self.active_combats
             .values()
             .filter(|combat| {
@@ -1935,7 +1935,7 @@ impl GameEngine {
             .map(|combat| BattleState {
                 sector: combat.sector,
                 rounds: combat.round,
-                last_round: combat.last_round.clone(),
+                last_round: combat.last_round.as_ref().filter(|_| with_round).cloned(),
                 losses: combat.losses.clone(),
             })
             .collect()
@@ -7709,6 +7709,7 @@ pub fn fleet_broadside(fleet: &Fleet) -> (u64, u64) {
 fn battle_side(side: &combat::SideReport) -> BattleSide {
     BattleSide {
         groups: Vec::new(),
+        standing: side.units(),
         volleys: side.volleys.clone(),
         shots: side.shots,
         power: side.power,

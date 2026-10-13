@@ -1,3 +1,4 @@
+import '../console/battle.dart' show damageLine, dockRepairLine, groupsList, hullOf, refitLevels, shipsOf;
 import '../protocol/protocol.dart';
 
 /// Stable queue ids of one queue: the running items, then the waiting ones.
@@ -159,7 +160,9 @@ final helpLines = [
   '        a name is typed without its spaces; the short ones work too (metal, solar, yard, tank, lab; weapons, energy, laser; lf, sc, probe, sat; rl, ll, gauss)',
   '        cancel <building|ship|research> [id]  [waiting]     a defence stands in the ship queue',
   '        buildings and research queue ahead of resources and pay when they start; a ship or a defence batch is paid in full when ordered',
-  'fleets: f[leet] [n]  select/list   split <class> [count]  detach ships into a new fleet',
+  'fleets: f[leet] [n]  select/list',
+  '        split <class> [count] [<class> [count] ...] [damaged]  detach so many ships of each class into a new fleet: whole ships first,',
+  '                  or with "damaged" the most damaged first, which is how the wounded are sent home   e.g. split lf 100 cr 20',
   '        merge <fleet id>  fold a fleet in this sector into the active one',
   'orders: p[olicy] <manual|prospect|mine|salvage|patrol>  standing orders: the active fleet flies itself and reports each act and each hold with its reason',
   '        prospect  scans, then charts the sectors in range',
@@ -212,7 +215,10 @@ const _tradeUsage = '<metal|crystal|deut> <metal|crystal|deut> [amount|all]  (gi
 
 const _loadUsage = 'load: <metal|crystal|deut> [amount|all]  (the dock\'s stock into the hold of a fleet at home or at your outpost; no amount = all that fits)';
 
-const _refineUsage = 'refine: takes no argument (the active fleet turns the deuterium in its hold into fuel, as far as its tank has room)';
+const _splitUsage = 'split: <class> [count] [<class> [count] ...] [damaged]  (so many of each class into a new fleet, 1 where no count is given; '
+    'whole ships go first, the most damaged with "damaged")   e.g. split lf 100 cr 20';
+
+const _refineUsage ='refine: takes no argument (the active fleet turns the deuterium in its hold into fuel, as far as its tank has room)';
 const _foundUsage ='found: takes no argument (the active fleet founds your outpost in the sector it stands in)';
 
 const _surveyUsage = 'survey: [q r]  (what an outpost would be worth in a sector, its ore only if it is on your chart; none = where the active fleet stands)';
@@ -249,6 +255,13 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
       return ParsedLocal([
         'Tick ${ctx.tick} | fleets ${ctx.fleets.length}'
             '${f == null ? '' : ' | active F${f.id} ${f.state.wire} at ${f.location}, fuel ${f.fuel.round()}/${f.fuelMax.round()}, cooldown ${f.cooldownRemaining}'}',
+        if (f != null)
+          'F${f.id}: ${shipsOf(f.shipCount)} (${groupsList(f.ships)}), hull ${hullOf(f.hull, f.hullMax)}, fights with ${refitLevels(f.refit)}'
+              '${f.refitDue ? '; a refit waits at the home dock' : ''}',
+        if (f?.repair case final q?) ...[
+          '${damageLine(q)}; the home dock ${dockRepairLine(q, q.home)}',
+          if (q.outpost case final post?) 'your outpost ${dockRepairLine(q, post)}',
+        ],
       ]);
 
     case 'leaderboard' || 'lb' || 'rank' || 'score':
@@ -265,7 +278,7 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
         return ParsedLocal([
           for (var i = 0; i < ctx.fleets.length; i++)
             '${ctx.fleets[i].id == fid ? '>' : ' '}${i + 1}: F${ctx.fleets[i].id} ${ctx.fleets[i].state.wire} '
-                '${ctx.fleets[i].location} ships ${ctx.fleets[i].ships.length}'
+                '${ctx.fleets[i].location} ${groupsList(ctx.fleets[i].ships)}'
                 '${ctx.fleets[i].policy == null ? '' : ' [${ctx.fleets[i].policy!.preset.label}]'}',
         ]);
       }
@@ -386,15 +399,19 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
     case 'split':
       final fleet = ctx.fleet;
       if (fid == null || fleet == null) return const ParsedError('No fleet selected (you have none)');
-      final c = args.isEmpty ? null : _ships[args.first];
-      if (c == null) return ParsedError('split: <$_shipWords> [count]');
-      final n = args.length > 1 ? int.tryParse(args[1]) : 1;
-      final aboard = [for (final s in fleet.ships) if (s.shipClass == c) s.id];
-      if (n == null || n < 1 || n > aboard.length) {
-        return ParsedError('split: F$fid has ${aboard.length} ${c.label}');
+      final damagedFirst = args.isNotEmpty && args.last == 'damaged';
+      final named = damagedFirst ? args.sublist(0, args.length - 1) : args;
+      final ships = <ShipCount>[];
+      for (var i = 0; i < named.length; i++) {
+        final c = _ships[named[i]];
+        if (c == null) return const ParsedError(_splitUsage);
+        final n = i + 1 < named.length ? int.tryParse(named[i + 1]) : null;
+        if (n != null) i++;
+        if (n != null && n < 1) return const ParsedError(_splitUsage);
+        ships.add(ShipCount(shipClass: c, count: n ?? 1));
       }
-      if (n >= fleet.ships.length) return const ParsedError('split: at least one ship must stay in the fleet');
-      return ParsedSend([CommandMessage(SplitCommand(fleetId: fid, shipIds: aboard.take(n).toList()))]);
+      if (ships.isEmpty) return const ParsedError(_splitUsage);
+      return ParsedSend([CommandMessage(SplitCommand(fleetId: fid, ships: ships, damagedFirst: damagedFirst))]);
 
     case 'merge':
       final fleet = ctx.fleet;

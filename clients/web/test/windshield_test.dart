@@ -13,6 +13,7 @@ import 'package:iac_client/models/game_state.dart';
 import 'package:iac_client/models/homeworld.dart';
 import 'package:iac_client/models/resources.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
+import 'package:iac_client/scenes/windshield/painter.dart' show ArenaPainter;
 import 'package:iac_client/state/command_parser.dart';
 import 'package:iac_client/state/game_controller.dart';
 import 'package:iac_client/views/overlays.dart' show ToastLayer;
@@ -90,24 +91,43 @@ proto.ThreatInfo _threatOf(List<proto.NpcFleetInfo>? groups) {
   return proto.ThreatInfo(rating: rating, estPower: power, basis: proto.ThreatBasis.observed);
 }
 
+/// A fleet of whole ships, so many of each class named by its label; [rows]
+/// gives the rows themselves, for a fleet with damage in it.
 ui.FleetState fleet(int id, List<(String, int)> groups,
-        {proto.Hex at = here, ui.FleetStatus status = ui.FleetStatus.idle, int fuel = 80, proto.StandingOrders? orders, proto.Refining? refine}) =>
-    ui.FleetState(
-      orders: orders,
-      refine: refine,
-      id: id,
-      name: 'F$id',
-      sector: at,
-      status: status,
-      shipCount: groups.fold(0, (a, g) => a + g.$2),
-      ships: [for (var i = 0; i < groups.length; i++) ui.ShipState(shipClass: groups[i].$1, count: groups[i].$2, hull: 50.0 * groups[i].$2 ~/ 1, hullMax: 50 * groups[i].$2, ids: [for (var k = 0; k < groups[i].$2; k++) id * 100 + i * 10 + k])],
-      cargo: const ui.FleetCargo(capacity: 100),
-      fuel: fuel,
-      fuelMax: 120,
-      jumpFuel: 5,
-      homeFuel: 10,
-      power: groups.fold(0.0, (a, g) => a + proto.ShipClass.values.firstWhere((c) => c.label == g.$1).power * g.$2),
-    );
+    {proto.Hex at = here,
+    ui.FleetStatus status = ui.FleetStatus.idle,
+    int fuel = 80,
+    proto.StandingOrders? orders,
+    proto.Refining? refine,
+    List<proto.ShipGroupState>? rows,
+    proto.Refit refit = const proto.Refit(weapons: 0, shielding: 0, armour: 0),
+    bool refitDue = false,
+    proto.RepairQuote? repair}) {
+  final ships = rows ?? [for (final (label, count) in groups) shipRow(proto.ShipClass.values.firstWhere((c) => c.label == label), count)];
+  return ui.FleetState(
+    orders: orders,
+    refine: refine,
+    id: id,
+    name: 'F$id',
+    sector: at,
+    status: status,
+    shipCount: ships.fold(0, (a, g) => a + g.count),
+    ships: ships,
+    hull: ships.fold(0, (a, g) => a + g.hull),
+    hullMax: ships.fold(0, (a, g) => a + g.hullMax),
+    attack: ships.fold(0, (a, g) => a + g.count * g.unitAttack),
+    shield: ships.fold(0, (a, g) => a + g.count * g.unitShield),
+    refit: refit,
+    refitDue: refitDue,
+    repair: repair,
+    cargo: const ui.FleetCargo(capacity: 100),
+    fuel: fuel,
+    fuelMax: 120,
+    jumpFuel: 5,
+    homeFuel: 10,
+    power: ships.fold(0.0, (a, g) => a + g.shipClass.power * g.count),
+  );
+}
 
 GameState world(List<ui.FleetState> fleets, Map<proto.Hex, proto.SectorState> sectors, {int tick = 500}) => GameState(
       tick: tick,
@@ -116,11 +136,9 @@ GameState world(List<ui.FleetState> fleets, Map<proto.Hex, proto.SectorState> se
       fleets: fleets,
       buildQueue: const [],
       shipyard: const [],
-      docked: 'none',
       research: const ResearchState(name: 'Idle', time: '-', pct: 0, completed: []),
       events: const [],
       alerts: const [],
-      sector: SectorInfo.unknown,
       homeworld: home,
       waypoints: const [],
       sectors: sectors,
@@ -132,8 +150,8 @@ GameState calm() => world([
     ], {
       here: sector(here, lanes: [const proto.Hex(2, -1), const proto.Hex(3, -1), const proto.Hex(3, 0)], salvage: const proto.Resources(metal: 40, crystal: 10, deuterium: 3)),
       const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
-      const proto.Hex(3, -1): sector(const proto.Hex(3, -1), lanes: [here], hostiles: const [
-        proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.heavyFighter, count: 2)], behavior: proto.NpcBehavior.patrol)
+      const proto.Hex(3, -1): sector(const proto.Hex(3, -1), lanes: [here], hostiles: [
+        hostileGroup(77, [shipRow(proto.ShipClass.heavyFighter, 2)], proto.NpcBehavior.patrol)
       ]),
       home: sector(home, lanes: [const proto.Hex(1, 0)]),
     });
@@ -141,11 +159,120 @@ GameState calm() => world([
 GameState hostileHere({ui.FleetStatus status = ui.FleetStatus.idle, int fighters = 1}) => world([
       fleet(1, [('Light Fighter', fighters)], status: status),
     ], {
-      here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: const [
-        proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.cruiser, count: 1), proto.NpcShipInfo(shipClass: proto.ShipClass.heavyFighter, count: 2)], behavior: proto.NpcBehavior.aggressive)
+      here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: [
+        hostileGroup(77, [shipRow(proto.ShipClass.heavyFighter, 2), shipRow(proto.ShipClass.cruiser, 1)], proto.NpcBehavior.aggressive)
       ]),
       const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
     });
+
+/// The classes that fly, in catalogue order.
+final flying = [for (final c in proto.ShipClass.values) if (c != proto.ShipClass.solarSatellite) c];
+
+proto.BattleUnits unitsOf(proto.ShipClass cls, int count, {int lost = 0, int damaged = 0, int atRisk = 0, int hullLost = 0}) => proto.BattleUnits(
+    unit: proto.ShipyardItem.ship(cls),
+    count: count,
+    damaged: damaged,
+    atRisk: atRisk,
+    hull: count * cls.hull.round() - hullLost,
+    hullMax: count * cls.hull.round(),
+    lost: lost);
+
+proto.Volley volley(proto.ShipClass from, proto.ShipClass at, int shots, {int bounced = 0, int wasted = 0, int absorbed = 0, int hull = 0, int destroyed = 0}) =>
+    proto.Volley(
+        from: proto.ShipyardItem.ship(from),
+        at: proto.ShipyardItem.ship(at),
+        shots: shots,
+        bounced: bounced,
+        wasted: wasted,
+        absorbed: absorbed,
+        hullDamage: hull,
+        destroyed: destroyed);
+
+/// The second round of three Light Fighters against the pack of [hostileHere]:
+/// a fighter and a Heavy Fighter fall in it.
+proto.BattleRoundEvent skirmish() => proto.BattleRoundEvent(
+      sector: here,
+      round: 2,
+      fleets: proto.BattleSide(
+        groups: [
+          proto.BattleGroup(fleetId: 1, owner: 'Pilot', mine: true, units: [unitsOf(proto.ShipClass.lightFighter, 2, lost: 1, damaged: 1, atRisk: 1, hullLost: 150)]),
+        ],
+        standing: 2,
+        volleys: [
+          volley(proto.ShipClass.lightFighter, proto.ShipClass.heavyFighter, 2, absorbed: 50, hull: 50, destroyed: 1),
+          volley(proto.ShipClass.lightFighter, proto.ShipClass.cruiser, 1, absorbed: 10),
+        ],
+        shots: 3,
+        power: 150,
+        absorbed: 60,
+        hullDamage: 50,
+        destroyed: 1,
+      ),
+      hostiles: proto.BattleSide(
+        groups: [
+          proto.BattleGroup(
+              fleetId: 77,
+              label: '3x heavy fighter pack',
+              units: [unitsOf(proto.ShipClass.heavyFighter, 1, lost: 1), unitsOf(proto.ShipClass.cruiser, 1)]),
+        ],
+        standing: 2,
+        volleys: [
+          volley(proto.ShipClass.heavyFighter, proto.ShipClass.lightFighter, 2, absorbed: 20, hull: 280, destroyed: 1),
+          volley(proto.ShipClass.cruiser, proto.ShipClass.lightFighter, 1, bounced: 1),
+        ],
+        shots: 3,
+        power: 700,
+        absorbed: 20,
+        hullDamage: 280,
+        destroyed: 1,
+      ),
+      mine: true,
+    );
+
+/// The state a tick after [round] was fought: the fleet in the fight, and
+/// the fight with its losses so far.
+GameState fighting(proto.BattleRoundEvent round) => hostileHere(status: ui.FleetStatus.combat, fighters: 2).copyWith(battles: {
+      here: Battle(sector: here, rounds: round.round, round: round, losses: const [
+        proto.BattleLosses(fleetId: 1, owner: 'Pilot', mine: true, lost: [proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.lightFighter), count: 1)], destroyed: false),
+        proto.BattleLosses(
+            fleetId: 77,
+            label: '3x heavy fighter pack',
+            lost: [proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.heavyFighter), count: 2)],
+            destroyed: false),
+      ]),
+    });
+
+/// A round in which every class that flies fires at every class: a hundred
+/// and forty-four volleys a side.
+proto.BattleRoundEvent melee() {
+  proto.BattleSide side({required bool ours}) => proto.BattleSide(
+        groups: [
+          proto.BattleGroup(
+              fleetId: ours ? 1 : 77,
+              owner: ours ? 'Pilot' : null,
+              label: ours ? '' : '4800x small cargo swarm',
+              mine: ours,
+              units: [for (final c in flying) unitsOf(c, 388, lost: 12, damaged: 31, atRisk: 9, hullLost: 10 * c.hull.round())]),
+        ],
+        standing: 388 * flying.length,
+        volleys: [
+          for (final a in flying)
+            for (final t in flying)
+              volley(a, t, 34 + a.index,
+                  bounced: a.index < 2 ? 34 + a.index : 0,
+                  wasted: t.index,
+                  absorbed: 1200 * (a.index + 1),
+                  hull: 90000 * a.index + 1000 * t.index,
+                  destroyed: a == proto.ShipClass.deathstar && t == proto.ShipClass.lightFighter ? 180 : a.index ~/ 4),
+        ],
+        shots: 5712,
+        power: 123456789,
+        absorbed: 2345678,
+        hullDamage: 98765432,
+        destroyed: 144,
+      );
+  return proto.BattleRoundEvent(sector: here, round: 7, fleets: side(ours: true), hostiles: side(ours: false), mine: true);
+}
 
 GameState rated(GameState s, proto.Hex at, double ratio, proto.RatioLabel label) => s.copyWith(odds: {
       (1, at): OddsEntry(proto.SectorOdds(sector: at, threat: s.sectors[at]!.threat, ratio: ratio, label: label), s.tick),
@@ -432,8 +559,8 @@ void main() {
 
   testWidgets('favourable odds fire at once', (tester) async {
     final s = world([fleet(1, [('Cruiser', 3)])], {
-      here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: const [
-        proto.NpcFleetInfo(id: 5, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.lightFighter, count: 1)], behavior: proto.NpcBehavior.patrol)
+      here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: [
+        hostileGroup(5, [shipRow(proto.ShipClass.lightFighter, 1)], proto.NpcBehavior.patrol)
       ]),
     });
     final c = await pumpFake(tester, rated(s, here, 2.1, proto.RatioLabel.favourable));
@@ -467,8 +594,8 @@ void main() {
     GameState beside({proto.SiteBrief? site, ui.FleetStatus status = ui.FleetStatus.idle}) => world([
           fleet(1, [('Light Fighter', 1)], status: status),
         ], {
-          here: sector(here, lanes: [const proto.Hex(2, -1)], site: site, hostiles: const [
-            proto.NpcFleetInfo(id: 77, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.lightFighter, count: 2)], behavior: proto.NpcBehavior.passive)
+          here: sector(here, lanes: [const proto.Hex(2, -1)], site: site, hostiles: [
+            hostileGroup(77, [shipRow(proto.ShipClass.lightFighter, 2)], proto.NpcBehavior.passive)
           ]),
           const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
         });
@@ -486,25 +613,131 @@ void main() {
     await finish(tester, c);
   });
 
-  testWidgets('combat events draw and the scene survives a kill', (tester) async {
-    final c = await pumpFake(tester, hostileHere(fighters: 3));
-    c.push(hostileHere(status: ui.FleetStatus.combat, fighters: 3));
-    c.ev.add(const proto.GameEvent(tick: 501, kind: proto.CombatStartedEvent(playerFleetId: 1, owner: 'Pilot', enemyFleetId: 77, sector: here, mine: true)));
-    for (var i = 0; i < 6; i++) {
-      c.ev.add(proto.GameEvent(
-          tick: 501,
-          kind: proto.CombatRoundEvent(
-              sector: here, attackerFleetId: i.isEven ? 1 : 77, attackerOwner: null, attackerShipId: 100 + i, targetFleetId: i.isEven ? 77 : 1, targetOwner: null, targetShipId: 100 + i, damage: 18, shieldAbsorbed: 8, hullDamage: 10, rapidFire: false, mine: true)));
+  testWidgets('a round is drawn on the scope and told in the panel: what stands, what fell, who fired, the losses so far, and the end', (tester) async {
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      final wide = size.width > 1000;
+      final c = await pumpFake(tester, hostileHere(fighters: 3), size: size);
+      expect(find.byKey(const Key('battle-panel')), findsNothing);
+      final round = skirmish();
+      c.ev.add(const proto.GameEvent(tick: 501, kind: proto.CombatStartedEvent(playerFleetId: 1, owner: 'Pilot', enemyFleetId: 77, sector: here, mine: true)));
+      c.ev.add(proto.GameEvent(tick: 501, kind: proto.BattleRoundKind(round)));
+      c.push(fighting(round));
+      await tester.pump(const Duration(milliseconds: 150));
+      if (!wide) {
+        expect(textUnder(tester, find.byKey(const ValueKey('battle-strip'))), 'ROUND 2  FLEETS 2 -1  V  HOSTILES 2 -1');
+        await shot(tester, 'ws-combat-strip-390');
+        await tester.tap(find.byKey(const ValueKey('battle-strip')));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      final panel = find.byKey(const Key('battle-panel'));
+      final told = textUnder(tester, panel);
+      expect(told, contains('ROUND 2 - 2, 0'));
+      expect(textUnder(tester, find.byKey(const Key('battle-fleets'))),
+          allOf(contains('2 STANDING  -1 THIS ROUND'), contains('\nLEFT\nLOST\nDMG\nRISK\n'), contains('LIGHT FIGHTER\n2\n-1\n1\n1')),
+          reason: 'two fighters left, one lost this round, one of the two damaged and at risk');
+      expect(textUnder(tester, find.byKey(const Key('battle-hostiles'))),
+          allOf(contains('3X HEAVY FIGHTER PACK'), contains('HEAVY FIGHTER\n1\n-1\n\n'), contains('CRUISER\n1\n\n\n')));
+      expect(textUnder(tester, find.byKey(const Key('battle-fire-fleets'))),
+          allOf(contains('3 SHOTS\nPOWER 150\nSHIELDS TOOK 60\nHULL DAMAGE 50\nDESTROYED 1'), contains('LIGHT FIGHTER > HEAVY FIGHTER\n1 DESTROYED\n2 SHOTS\nSHIELDS 50\nHULL 50')));
+      expect(textUnder(tester, find.byKey(const Key('battle-fire-hostiles'))), contains('CRUISER > LIGHT FIGHTER\n1 SHOT\n1 BOUNCED'),
+          reason: 'a shot too weak for the shield is said to have bounced');
+      expect(textUnder(tester, find.byKey(const Key('battle-losses'))), 'F1 LOST 1X LIGHT FIGHTER\n3X HEAVY FIGHTER PACK LOST 2X HEAVY FIGHTER');
+      expectTextFits(tester, panel, reason: 'the round panel at ${size.width.round()}');
+      await shot(tester, 'ws-combat-${size.width.round()}');
+      await tester.pump(const Duration(seconds: 2));
+      expect(tester.takeException(), isNull, reason: 'the scope draws the round and the marks it took');
+
+      final end = proto.CombatEndedEvent(
+          sector: here,
+          playerVictory: true,
+          outcome: proto.BattleOutcome.hostilesDestroyed,
+          rounds: 3,
+          losses: const [
+            proto.BattleLosses(fleetId: 1, owner: 'Pilot', mine: true, lost: [proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.lightFighter), count: 1)], destroyed: false),
+            proto.BattleLosses(
+                fleetId: 77,
+                label: '3x heavy fighter pack',
+                lost: [
+                  proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.heavyFighter), count: 2),
+                  proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.cruiser), count: 1),
+                ],
+                destroyed: true),
+          ],
+          owners: const ['Pilot'],
+          mine: true,
+          salvage: const proto.Resources(metal: 900, crystal: 300));
+      c.ev.add(proto.GameEvent(tick: 503, kind: end));
+      c.push(hostileHere(fighters: 2).copyWith(
+          battles: {here: Battle(sector: here, rounds: 3, round: round, losses: end.losses, ended: end, endedTick: 503)}, tick: 503));
+      await tester.pump(const Duration(milliseconds: 150));
+      expect(tester.widget<Text>(find.byKey(const Key('battle-outcome'))).data, 'HOSTILES DESTROYED');
+      expect(textUnder(tester, panel), allOf(contains('ENDED - 3 ROUNDS'), contains('AFTER 3 ROUNDS AT 2, 0')));
+      expect(textUnder(tester, find.byKey(const Key('battle-end-losses'))),
+          'F1 LOST 1X LIGHT FIGHTER\n3X HEAVY FIGHTER PACK LOST 2X HEAVY FIGHTER, 1X CRUISER AND IS DESTROYED');
+      expect(tester.widget<Text>(find.byKey(const Key('battle-wreckage'))).data, 'WRECKAGE LEFT: 900 FE, 300 CR');
+      expect(find.byKey(const Key('battle-fire-fleets')), findsNothing, reason: 'the last round is behind its button once the fight is over');
+      expectTextFits(tester, panel, reason: 'the end of the fight at ${size.width.round()}');
+      await shot(tester, 'ws-combat-end-${size.width.round()}');
+      await tester.ensureVisible(find.byKey(const ValueKey('battle-dismiss')));
+      await tester.tap(find.byKey(const ValueKey('battle-dismiss')));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(panel, findsNothing, reason: 'Dismiss puts the report away');
+      await tester.pump(const Duration(seconds: 4));
+      await finish(tester, c);
     }
-    await tester.pump(const Duration(milliseconds: 150));
-    await shot(tester, 'ws-combat-1440');
-    await tester.pump(const Duration(milliseconds: 250));
-    c.ev.add(const proto.GameEvent(tick: 502, kind: proto.ShipDestroyedEvent(shipId: 0, shipClass: proto.ShipClass.heavyFighter,ownerFleetId: 77, isNpc: true, sector: here, owner: null, mine: false)));
-    await tester.pump(const Duration(milliseconds: 100));
-    await shot(tester, 'ws-kill-1440');
-    expect(tester.takeException(), isNull);
-    await tester.pump(const Duration(seconds: 3));
-    await finish(tester, c);
+  });
+
+  testWidgets('twelve classes firing at twelve stay readable: the volleys that decided the round first, the rest behind a button', (tester) async {
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      final round = melee();
+      final s = hostileHere(status: ui.FleetStatus.combat).copyWith(
+          fleets: [fleet(1, const [], status: ui.FleetStatus.combat, rows: [for (final c in flying) shipRow(c, 400)])],
+          battles: {here: Battle(sector: here, rounds: 7, round: round)});
+      final c = await pumpFake(tester, s, size: size);
+      if (size.width < 1000) {
+        await tester.tap(find.byKey(const ValueKey('battle-strip')));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      final fire = find.byKey(const Key('battle-fire-fleets'));
+      expect(' > '.allMatches(textUnder(tester, fire)), hasLength(3), reason: 'three volleys of a hundred and forty-four');
+      expect(textUnder(tester, fire), contains('DEATHSTAR > LIGHT FIGHTER'), reason: 'the volley that destroyed the most comes first');
+      expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('battle-fire-fleets-more'))).label, '141 more volleys');
+      expectTextFits(tester, find.byKey(const Key('battle-panel')), reason: 'a round of twelve classes a side at ${size.width.round()}');
+      await shot(tester, 'ws-melee-${size.width.round()}');
+      await tester.ensureVisible(find.byKey(const ValueKey('battle-fire-fleets-more')));
+      await tester.tap(find.byKey(const ValueKey('battle-fire-fleets-more')));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(' > '.allMatches(textUnder(tester, fire)), hasLength(144));
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
+  });
+
+  testWidgets('a fleet of hundreds is a handful of marks on the scope and exact counts in the list beside it', (tester) async {
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      final rows = [shipRow(proto.ShipClass.smallCargo, 40), shipRow(proto.ShipClass.lightFighter, 412, damaged: 4, atRisk: 2, hullLost: 640), shipRow(proto.ShipClass.cruiser, 60)];
+      final s = world([fleet(1, const [], rows: rows)], {
+        here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: [
+          hostileGroup(77, [shipRow(proto.ShipClass.lightFighter, 3200), shipRow(proto.ShipClass.battlecruiser, 30)], proto.NpcBehavior.swarm)
+        ]),
+        const proto.Hex(2, -1): sector(const proto.Hex(2, -1), lanes: [here]),
+      });
+      final c = await pumpFake(tester, s, size: size);
+      final scope = tester.widgetList<CustomPaint>(find.byType(CustomPaint)).map((p) => p.painter).whereType<ArenaPainter>().single.sim;
+      expect((scope.own.length, scope.hostiles.length), (3, 8), reason: 'a mark a class of the fleet, and seven for the 3,200 fighters of the swarm');
+      expect(scope.scale, 500, reason: 'one scale for both sides: the swarm of 3,230 fits in sixteen marks at 500 a mark');
+      if (size.width < 1000) {
+        await tester.tap(find.byKey(const ValueKey('status-sheet')));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(textUnder(tester, find.byKey(const Key('status-ships'))),
+          allOf(contains('SMALL CARGO\n40\n16,000 / 16,000'), contains('LIGHT FIGHTER\n412\n164K / 165K'), contains('4 DAMAGED  2 AT RISK')));
+      expect(tester.widget<Text>(find.byKey(const Key('contact-hostile-77'))).data, 'SWARM - 3,230 SHIPS');
+      expect(textUnder(tester, find.byKey(const Key('contact-hostile-77-LightFighter'))), contains('3,200\n1.28M / 1.28M'));
+      await shot(tester, 'ws-hundreds-${size.width.round()}');
+      expect(tester.takeException(), isNull);
+      await finish(tester, c);
+    }
   });
 
   testWidgets('scan sweep and cooldown', (tester) async {
@@ -527,24 +760,111 @@ void main() {
     await endShell(tester, c);
   });
 
-  testWidgets('split a ship off and merge it back through the panel (demo)', (tester) async {
+  testWidgets('ships are split off by class and count and merged back through the panel (demo)', (tester) async {
     final c = DemoController()..startDemo();
     await pumpShell(tester, screen: Screen.windshield, controller: c);
     await tester.tap(find.byKey(const ValueKey('manage-toggle')));
     await tester.pump(const Duration(milliseconds: 100));
+    Future<void> press(String key) async {
+      await tester.ensureVisible(find.byKey(ValueKey(key)));
+      await tester.tap(find.byKey(ValueKey(key)));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    String picked(proto.ShipClass cls) => tester.widget<Text>(find.byKey(Key('fm-count-${cls.wire}'))).data!;
+    List<(proto.ShipClass, int)> rows(ui.FleetState f) => [for (final g in f.ships) (g.shipClass, g.count)];
+    const cargo = proto.ShipClass.smallCargo, fighter = proto.ShipClass.lightFighter, probe = proto.ShipClass.espionageProbe;
     final before = c.state.fleets.length;
     final active = c.activeFleetId!;
-    final cls = c.currentFleet.ships.last.shipClass;
-    await tester.tap(find.byKey(ValueKey('fm-plus-$cls')));
-    await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('fm-split')));
+    expect(rows(c.currentFleet), [(cargo, 1), (fighter, 3), (probe, 1)]);
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('fm-split'))).onPressed, isNull, reason: 'nothing is picked yet');
+
+    await press('fm-step-10');
+    await press('fm-plus-LightFighter');
+    expect(picked(fighter), '3', reason: 'a step of ten stops at the three aboard');
+    await press('fm-all-SmallCargo');
+    await press('fm-all-EspionageProbe');
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('fm-split'))).onPressed, isNull, reason: 'one ship must stay');
+    expect(find.text('One ship must stay in the fleet.'), findsOneWidget);
+    await press('fm-all-SmallCargo');
+    await press('fm-step-1');
+    await press('fm-minus-LightFighter');
+    expect((picked(cargo), picked(fighter), picked(probe)), ('0', '2', '1'));
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('fm-split'))).label, 'Split off 3');
+    await shot(tester, 'ws-split-1440');
+
+    await press('fm-split');
     await tester.pump(const Duration(milliseconds: 200));
     expect(c.state.fleets.length, before + 1);
     expect(c.currentFleet.id, active);
-    final newId = c.mergeCandidates.single.id;
-    await tester.tap(find.byKey(ValueKey('fm-merge-$newId')));
+    expect(rows(c.currentFleet), [(cargo, 1), (fighter, 1)]);
+    final split = c.mergeCandidates.single;
+    expect(rows(split), [(fighter, 2), (probe, 1)]);
+    expect(c.state.events.map((e) => e.message), contains('fleet $active split: 3 ship(s) now fly as fleet ${split.id}'));
+    await press('fm-merge-${split.id}');
     await tester.pump(const Duration(milliseconds: 200));
     expect(c.state.fleets.length, before);
+    expect(rows(c.currentFleet), [(cargo, 1), (fighter, 3), (probe, 1)]);
+    expect(tester.takeException(), isNull);
+    await endShell(tester, c);
+  });
+
+  testWidgets('a fight is followed round by round to its end, the fleet shows its damage and what each dock would do, and the home dock mends it (demo)',
+      (tester) async {
+    const patrol = proto.Hex(6, -5), homeworld = proto.Hex(4, -2);
+    final c = DemoController()..startDemo();
+    await pumpShell(tester, screen: Screen.windshield, controller: c);
+    expect(find.byKey(const Key('fleet-damage')), findsNothing, reason: 'a whole fleet has no damage to quote');
+    expect(tester.widget<Kv>(find.byKey(const Key('fleet-refit'))).v, 'W3 S0 A2');
+    expect(find.byKey(const Key('fleet-refit-due')), findsNothing);
+
+    c.learn(proto.ResearchType.shieldingTechnology, 2);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.widget<Kv>(find.byKey(const Key('fleet-refit'))).v, 'W3 S0 A2', reason: 'research that finishes while a fleet is away waits for it at home');
+    expect(tester.widget<Text>(find.byKey(const Key('fleet-refit-due'))).data, contains('A REFIT WAITS AT THE HOME DOCK'));
+
+    c.place(101, patrol, const proto.Resources());
+    await tester.pump(const Duration(milliseconds: 100));
+    final group = c.state.sectors[patrol]!.hostiles!.single;
+    expect(tester.widget<Text>(find.byKey(Key('contact-hostile-${group.id}'))).data, 'PATROL - 2 SHIPS');
+    c.sendCommand(proto.AttackCommand(fleetId: 101, targetFleetId: group.id));
+    await tester.pump(const Duration(seconds: 1));
+    final panel = find.byKey(const Key('battle-panel'));
+    expect(textUnder(tester, panel), allOf(contains('ROUND 1 - 6, -5'), contains('2X LIGHT FIGHTER PATROL'), contains('LIGHT FIGHTER > LIGHT FIGHTER')));
+    expect(c.state.events.map((e) => e.message),
+        contains('Round 1 in $patrol: fleets fired 5 shots and destroyed 0, hostiles fired 2 and destroyed 0; 5 against 2 still stand'));
+
+    for (var tick = 0; tick < 10 && !c.state.battleAt(patrol)!.over; tick++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    final ended = c.state.battleAt(patrol)!.ended!;
+    expect((ended.outcome, ended.playerVictory), (proto.BattleOutcome.hostilesDestroyed, true));
+    expect(tester.widget<Text>(find.byKey(const Key('battle-outcome'))).data, 'HOSTILES DESTROYED');
+    expect(textUnder(tester, find.byKey(const Key('battle-end-losses'))), '2X LIGHT FIGHTER PATROL LOST 2X LIGHT FIGHTER AND IS DESTROYED');
+    expect(c.state.events.where((e) => e.message.startsWith('Round ')), hasLength(1), reason: 'a fight keeps one line of the log for its rounds');
+    expect(c.state.events.map((e) => e.message),
+        contains(startsWith('! Combat ended in $patrol after ${ended.rounds} rounds: the hostiles are destroyed. Wreckage ')));
+
+    final quote = c.currentFleet.repair!;
+    expect(c.currentFleet.hull, lessThan(c.currentFleet.hullMax));
+    expect(tester.widget<Kv>(find.byKey(const Key('fleet-damage'))).v, '${quote.ships} DAMAGED SHIPS LACK ${quote.hull} HULL');
+    expect(textUnder(tester, find.byKey(const Key('fleet-repair-home'))), 'HOME DOCK MENDS ALL ${quote.ships} (${quote.hull} HULL) FOR NOTHING');
+    expect(find.byKey(const Key('fleet-repair-outpost')), findsNothing, reason: 'the empire has no outpost');
+    expect(textUnder(tester, find.byKey(const Key('status-ships'))), contains('1 DAMAGED'));
+    await shot(tester, 'ws-damaged-1440');
+
+    c.place(101, homeworld, const proto.Resources());
+    await tester.pump(const Duration(seconds: 1));
+    expect(c.currentFleet.repair, isNull);
+    expect(find.byKey(const Key('fleet-damage')), findsNothing);
+    expect(tester.widget<Kv>(find.byKey(const Key('fleet-refit'))).v, 'W3 S2 A2');
+    expect(find.byKey(const Key('fleet-refit-due')), findsNothing);
+    expect(
+        c.state.events.map((e) => e.message),
+        containsAll([
+          'fleet 101 was mended at the home dock: ${quote.ships} ship(s) made whole, ${quote.hull} hull restored, for nothing',
+          'fleet 101 was refitted at the home dock: Weapons 3, Shielding 2, Armour 2 (it flew with 3, 0, 2)',
+        ]));
     expect(tester.takeException(), isNull);
     await endShell(tester, c);
   });

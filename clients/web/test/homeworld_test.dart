@@ -417,11 +417,9 @@ GameState _emptyState() => const GameState(
       fleets: [],
       buildQueue: [],
       shipyard: [],
-      docked: '',
       research: ResearchState(name: 'Idle', time: '', pct: 0, completed: []),
       events: [],
       alerts: [],
-      sector: SectorInfo.unknown,
       homeworld: proto.Hex.origin,
       waypoints: [],
     );

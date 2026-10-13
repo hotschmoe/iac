@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../console/battle.dart' show shipsList;
 import '../console/economy_view.dart' show batchCost, defenceBatch, limitReason, shortfall;
 import '../console/outpost.dart' show surveyReport;
 import '../models/fleet.dart';
@@ -77,8 +78,8 @@ class GameController extends ChangeNotifier {
   final StateMapper _mapper = StateMapper();
   final StreamController<proto.GameEvent> _events = StreamController.broadcast(sync: true);
 
-  /// Every server game event as it arrives (combat rounds included, which
-  /// the log drops), for scenes that animate them.
+  /// Every server game event as it arrives, a fight's rounds among them,
+  /// for scenes that animate them.
   Stream<proto.GameEvent> get gameEvents => _events.stream;
 
   final StreamController<proto.ErrorMessage> _refusals = StreamController.broadcast(sync: true);
@@ -161,11 +162,9 @@ class GameController extends ChangeNotifier {
     fleets: const [],
     buildQueue: const [],
     shipyard: const [],
-    docked: 'none',
     research: const ResearchState(name: 'Idle', time: '—', pct: 0, completed: []),
     events: const [],
     alerts: const [],
-    sector: SectorInfo.unknown,
     homeworld: proto.Hex.origin,
     waypoints: const [],
   );
@@ -369,14 +368,11 @@ class GameController extends ChangeNotifier {
     final prevId = activeFleetId;
     final n = _mapper.fleets.length;
     activeFleet = n == 0 ? 0 : activeFleet.clamp(0, n - 1);
-    _state = _mapper.toUiState(activeFleet: activeFleet);
+    _state = _mapper.toUiState();
     // Keep the selected fleet selected when the list order changes.
     if (prevId != null && activeFleetId != prevId) {
       final i = _state.fleets.indexWhere((f) => f.id == prevId);
-      if (i >= 0) {
-        activeFleet = i;
-        _state = _mapper.toUiState(activeFleet: activeFleet);
-      }
+      if (i >= 0) activeFleet = i;
     }
     if (!_cursorInit && _mapper.hasState) {
       cursorHex = currentFleet.sector;
@@ -602,39 +598,14 @@ class GameController extends ChangeNotifier {
     ];
   }
 
-  /// Split [count] ships of [shipClass] off the selected fleet.
-  void splitShips(String shipClass, int count) {
+  /// Split [ships], so many of each class, off the selected fleet into a
+  /// new one. Whole ships go first; with [damagedFirst] the most damaged do.
+  /// The world is the judge of the order and answers it.
+  void splitFleet(List<proto.ShipCount> ships, {bool damagedFirst = false}) {
     final id = activeFleetId;
-    if (id == null) {
-      note('No fleet to split', level: EventLevel.bright);
-      return;
-    }
-    final ids = [
-      for (final g in currentFleet.ships)
-        if (g.shipClass.toLowerCase() == shipClass.toLowerCase()) ...g.ids,
-    ];
-    if (count < 1 || ids.length < count) {
-      note('split: ${currentFleet.name} has ${ids.length} $shipClass', level: EventLevel.bright);
-      return;
-    }
-    if (count >= currentFleet.shipCount) {
-      note('split: at least one ship must stay in the fleet', level: EventLevel.bright);
-      return;
-    }
-    note('> split $count $shipClass off ${currentFleet.name}', level: EventLevel.full);
-    sendCommand(proto.SplitCommand(fleetId: id, shipIds: ids.take(count).toList()));
-  }
-
-  /// Split exact ships (chosen by the fleet panel) off the selected fleet.
-  void splitShipIds(List<int> shipIds) {
-    final id = activeFleetId;
-    if (id == null || shipIds.isEmpty) return;
-    if (shipIds.length >= currentFleet.shipCount) {
-      note('split: at least one ship must stay in the fleet', level: EventLevel.bright);
-      return;
-    }
-    note('> split ${shipIds.length} ship(s) off ${currentFleet.name}', level: EventLevel.full);
-    sendCommand(proto.SplitCommand(fleetId: id, shipIds: shipIds));
+    if (id == null || ships.isEmpty) return;
+    note('> split ${shipsList(ships)} off ${currentFleet.name}${damagedFirst ? ', damaged first' : ''}', level: EventLevel.full);
+    sendCommand(proto.SplitCommand(fleetId: id, ships: ships, damagedFirst: damagedFirst));
   }
 
   /// Fold fleet [otherFleetId] into the selected fleet.

@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../console/battle.dart' show hullOf, shipsOf, shortCount;
 import '../../console/intel.dart';
 import '../../console/outpost.dart' show surveyClear, surveyLines;
 import '../../console/route_planner.dart';
@@ -16,6 +17,7 @@ import '../../models/fleet.dart' as ui;
 import '../../models/game_state.dart' show SurveyEntry, previewFreshTicks;
 import '../../protocol/protocol.dart' as proto;
 import '../../scenes/map/map_state.dart';
+import '../battle_view.dart' show BattleStrip, ClassMarks, ShipRows, damagedColor;
 
 class FleetChips extends StatelessWidget {
   final Console con;
@@ -356,12 +358,28 @@ class Inspector extends StatelessWidget {
                 const SizedBox(width: 8),
                 Text(th.basisLabel, key: const Key('inspector-basis'), style: T.mono(size: 9.5, color: C.text3, spacing: .6)),
               ])),
-          if (th.hostile) Kv(th.compLabel, vc: C.threat(th.rating), v: th.behavior?.wire.toUpperCase() ?? ''),
+          for (final g in th.groups) ...[
+            Kv('Hostile group', key: Key('inspector-hostile-${g.id}'), vc: C.threat(th.rating), v: '${g.behavior.wire.toUpperCase()} - ${shipsOf(g.shipCount).toUpperCase()}'),
+            ShipRows(g.ships, color: C.ember, tag: 'inspector-hostile-${g.id}'),
+            const SizedBox(height: 3),
+          ],
+          if (st.battleAt(h) case final battle?)
+            Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: BattleStrip(battle: battle, onTap: () => con.go(Screen.windshield))),
+          for (final f in st.fleets)
+            if (f.sector == h) ...[
+              Kv('${f.name} here',
+                  key: Key('inspector-fleet-${f.id}'),
+                  v: '${shipsOf(f.shipCount).toUpperCase()} - HULL ${hullOf(f.hull, f.hullMax)}',
+                  vc: f.repair == null ? C.own : damagedColor),
+              Padding(padding: const EdgeInsets.symmetric(vertical: 3), child: ClassMarks(f.ships)),
+            ],
           if (odds != null) ...[
             Kv('Ratio',
                 vw: Text.rich(key: const Key('inspector-ratio'), TextSpan(children: [
                   TextSpan(text: '${odds.r.toStringAsFixed(2)} ${odds.label}', style: T.mono(size: 11, color: odds.color, weight: FontWeight.w500)),
-                  TextSpan(text: '  ${fleet.name} v power ${rated!.threat.estPower.round()}', style: T.mono(size: 11, color: C.text3)),
+                  TextSpan(text: '  ${fleet.name} v power ${shortCount(rated!.threat.estPower.round())}', style: T.mono(size: 11, color: C.text3)),
                 ]))),
             RatioGauge(odds.r),
             Text(odds.outcome.toUpperCase(), style: T.mono(size: 10, color: C.text3)),
@@ -708,8 +726,11 @@ class HoldPanel extends StatelessWidget {
           Flexible(child: Text(' CONTACTS AHEAD AT ${ahead.q},${ahead.r}', style: T.mono(size: 11.5, color: C.text))),
         ]),
         const SizedBox(height: 8),
-        Kv('Hostiles', v: th.compLabel, vc: C.threat(th.rating)),
-        Kv('Their power', v: '${th.power.round()}'),
+        for (final g in th.groups) ...[
+          Kv('Hostiles', v: '${g.behavior.wire.toUpperCase()} - ${shipsOf(g.shipCount).toUpperCase()}', vc: C.threat(th.rating)),
+          ShipRows(g.ships, color: C.ember, tag: 'hold-hostile-${g.id}'),
+        ],
+        Kv('Their power', v: shortCount(th.power.round())),
         if (o == null)
           Kv('Ratio', v: 'requested')
         else ...[
