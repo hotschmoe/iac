@@ -4,7 +4,7 @@
 // What: one document. A header line of JSON, a newline, then the world's
 // `Snapshot` as JSON:
 //
-//   {"format":5,"economy_version":6,"worldgen_version":3,"digest":<xxh3 of the body>,"host":{...}}
+//   {"format":5,"economy_version":7,"worldgen_version":3,"digest":<xxh3 of the body>,"host":{...}}
 //   {"world_seed":...,"meta":{...},"tick":...,"players":{...},...}
 //
 // The header names what wrote the document, so one from another format,

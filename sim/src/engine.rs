@@ -6267,12 +6267,15 @@ impl GameEngine {
     /// Put a fleet into a fight. A jump it was still charging is abandoned,
     /// as `stop` would: only a moving fleet carries a jump target or
     /// cooldown. Its fuel is gone as it is for a stop, and the owner is told
-    /// in the same terms.
+    /// in the same terms. A boarding is abandoned too, and told of: the
+    /// timer was the boarding's, and a fight is not a backing-out, so the
+    /// site is not put on alert.
     fn engage_fleet(&mut self, fleet_id: u64) {
         let charging = self.fleets.get(&fleet_id).and_then(|fleet| match (fleet.state, fleet.move_target) {
             (FleetStatus::Moving, Some(target)) => Some((fleet.location, target, self.hop_fuel_cost(fleet))),
             _ => None,
         });
+        let boarding = self.fleets.get(&fleet_id).filter(|fleet| fleet.state == FleetStatus::Exploring).map(|fleet| fleet.location);
         if let Some((at, target, fuel)) = charging {
             self.push_alert(AlertLevel::Warning, fleet_id, at, format!(
                 "fleet {fleet_id} was caught in a fight at {at} while charging its jump to {target}: \
@@ -6280,7 +6283,16 @@ impl GameEngine {
                 fuel_words(fuel),
             ));
         }
+        if let Some(at) = boarding {
+            self.push_alert(AlertLevel::Warning, fleet_id, at, format!(
+                "fleet {fleet_id} was caught in a fight at {at} while boarding the derelict: \
+                 the boarding is abandoned and nothing was recovered",
+            ));
+        }
         if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
+            if boarding.is_some() {
+                fleet.action_cooldown = 0;
+            }
             fleet.state = FleetStatus::InCombat;
             fleet.move_target = None;
             fleet.move_cooldown = 0;
