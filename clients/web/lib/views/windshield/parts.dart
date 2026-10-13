@@ -36,8 +36,10 @@ const outpostVoice = 'A station holds this sector. Raiders come for it.';
 /// What the dock does for a fleet and what it does not: nothing in the field
 /// reaches a docked fleet, a raid that beats the home defence does.
 const dockVoice = 'A DOCKED FLEET REFUELS AND UNLOADS, AND NOTHING IN THE FIELD REACHES IT.\n'
+    'ITS DAMAGED SHIPS ARE MENDED HERE AND IT IS REFITTED TO YOUR LEVELS.\n'
     'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS.';
 const dockVoiceLaden = 'A DOCKED FLEET REFUELS, AND NOTHING IN THE FIELD REACHES IT.\n'
+    'ITS DAMAGED SHIPS ARE MENDED HERE AND IT IS REFITTED TO YOUR LEVELS.\n'
     'HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.\n'
     'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS AND TAKES ITS SHARE OF THE HOLD.';
 

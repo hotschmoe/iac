@@ -59,6 +59,8 @@
       "WRECK_VALUE_K": 0.57,
       "WRECK_VALUE_EXPONENT": 0.8,
       "LOOT_SPLIT": [0.55, 0.3, 0.15],
+      "REPAIR_COST_SHARE_HOME": 0.0,
+      "REPAIR_COST_SHARE_OUTPOST": 0.1,
       "ORE_RING_GROWTH": 1.1,
       "ORE_RING_FIRST": 3,
       "ORE_RING_LAST": 20,
