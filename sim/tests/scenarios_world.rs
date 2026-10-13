@@ -1048,7 +1048,7 @@ fn cruisers_fire_six_times_a_round_among_light_fighters_and_heavy_fighters_once(
 
 #[test]
 fn a_shot_too_weak_for_a_shield_bounces_and_a_fight_nobody_can_hurt_anybody_in_is_a_standoff() {
-    use ShipClass::{Battleship, EspionageProbe, Recycler};
+    use ShipClass::{Battleship, EspionageProbe, LightFighter, Recycler};
     let (_, _, rounds, ended) = pitched("Scrap", &[(Recycler, 5)], &[(Battleship, 2)]);
     for round in &rounds {
         let volley = fire(&round.fleets, Recycler, Battleship).expect("the Recyclers fired");
@@ -1070,6 +1070,17 @@ fn a_shot_too_weak_for_a_shield_bounces_and_a_fight_nobody_can_hurt_anybody_in_i
     assert!(ended.losses.iter().all(|l| l.lost.is_empty() && !l.destroyed), "{:?}", ended.losses);
     let fleet = &engine.fleets[&fid];
     assert_eq!((fleet.state, fleet.ships.total()), (FleetStatus::Idle, 5), "the fleet stays where it is, with what it had");
+
+    let (mut e, lane) = skirmish("persistent", &[(LightFighter, 4)], &[(EspionageProbe, 30)], Passive);
+    let hurt = e.engine.npc_fleets[&PACK].ships.clone();
+    assert!(hurt.total() < 30 || hurt.has_damage(), "four Light Fighters fired a round among the Probes");
+    let mark = jump(&mut e, lane[1]);
+    assert_eq!(
+        fights_ended(&e, mark).iter().map(|c| c.outcome).collect::<Vec<_>>(),
+        vec![BattleOutcome::Standoff],
+        "a fleet that is leaving fires nothing and Probes have nothing to fire: a round nobody is hurt in",
+    );
+    assert_eq!(e.engine.npc_fleets[&PACK].ships, hurt, "a stand-off leaves a group as the fight had left it, not whole again");
 }
 
 const PACK: u64 = 900_002;

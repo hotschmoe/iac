@@ -160,6 +160,11 @@ having, it agrees with the design, and the code was not wrong.
   (the jump abandoned, the fuel forfeit, the fleet in the fight). It asserts
   the new one: the jump goes on, the fleet stands one round without firing,
   is shown as leaving, takes no second jump, and its owner is told once.
+- `scenarios_world.rs`, the stand-off: its two fights still end as they
+  did (nothing in them was hurt, so nothing told the reset from its
+  absence). It gained a third: Probes hurt in a first round and then left
+  by a fleet that fires nothing, a round nobody is hurt in, after which the
+  group is as the fight had left it and not whole.
 - `exchange.rs`, the hub: it proved "no group enters the hub" with forty
   ticks of wandering patrols beside it. With wandering gone it proves it
   with a pack that would follow a fleet two hexes anywhere else and does
