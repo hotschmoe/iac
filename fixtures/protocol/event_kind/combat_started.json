@@ -1,5 +1,5 @@
 {
-  "enemy": "scout patrol",
+  "enemy": "light fighter patrol",
   "enemy_fleet_id": 4294967400,
   "kind": "CombatStarted",
   "mine": true,

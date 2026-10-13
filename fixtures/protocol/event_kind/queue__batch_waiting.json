@@ -1,12 +1,12 @@
 {
   "action": "Waiting",
   "id": 335,
-  "item": "Corvette x3",
+  "item": "Light Fighter x3",
   "kind": "Queue",
   "paid": {
-    "crystal": 300.0,
-    "deuterium": 180.0,
-    "metal": 1200.0
+    "crystal": 3000.0,
+    "deuterium": 0.0,
+    "metal": 9000.0
   },
   "player_id": 7,
   "queue_type": "Ship",

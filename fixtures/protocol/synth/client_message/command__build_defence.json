@@ -1,6 +1,11 @@
 [
-{"canonical":{"action":"build_defence","count":12,"kind":"PulseTurret","type":"command"},"input":{"action":"build_defence","count":12,"kind":"PulseTurret","type":"command"}},
-{"canonical":{"action":"build_defence","count":12,"kind":"LancerBattery","type":"command"},"input":{"action":"build_defence","count":12,"kind":"LancerBattery","type":"command"}},
-{"canonical":{"action":"build_defence","count":12,"kind":"IonBastion","type":"command"},"input":{"action":"build_defence","count":12,"kind":"IonBastion","type":"command"}},
-{"canonical":{"action":"build_defence","count":1,"kind":"IonBastion","type":"command"},"input":{"action":"build_defence","kind":"IonBastion","type":"command"}}
+{"canonical":{"action":"build_defence","count":12,"kind":"RocketLauncher","type":"command"},"input":{"action":"build_defence","count":12,"kind":"RocketLauncher","type":"command"}},
+{"canonical":{"action":"build_defence","count":12,"kind":"LightLaser","type":"command"},"input":{"action":"build_defence","count":12,"kind":"LightLaser","type":"command"}},
+{"canonical":{"action":"build_defence","count":12,"kind":"HeavyLaser","type":"command"},"input":{"action":"build_defence","count":12,"kind":"HeavyLaser","type":"command"}},
+{"canonical":{"action":"build_defence","count":12,"kind":"GaussCannon","type":"command"},"input":{"action":"build_defence","count":12,"kind":"GaussCannon","type":"command"}},
+{"canonical":{"action":"build_defence","count":12,"kind":"IonCannon","type":"command"},"input":{"action":"build_defence","count":12,"kind":"IonCannon","type":"command"}},
+{"canonical":{"action":"build_defence","count":12,"kind":"PlasmaTurret","type":"command"},"input":{"action":"build_defence","count":12,"kind":"PlasmaTurret","type":"command"}},
+{"canonical":{"action":"build_defence","count":12,"kind":"SmallShieldDome","type":"command"},"input":{"action":"build_defence","count":12,"kind":"SmallShieldDome","type":"command"}},
+{"canonical":{"action":"build_defence","count":12,"kind":"LargeShieldDome","type":"command"},"input":{"action":"build_defence","count":12,"kind":"LargeShieldDome","type":"command"}},
+{"canonical":{"action":"build_defence","count":1,"kind":"LargeShieldDome","type":"command"},"input":{"action":"build_defence","kind":"LargeShieldDome","type":"command"}}
 ]

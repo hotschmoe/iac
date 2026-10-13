@@ -1,5 +1,5 @@
 {
   "action": "build",
-  "building_type": "DefenseGrid",
+  "building_type": "RoboticsFactory",
   "reserve": false
 }

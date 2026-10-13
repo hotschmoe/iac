@@ -60,9 +60,10 @@
       },
       "power": 61.5,
       "range_hops": 4,
+      "scan_range": 1,
       "ships": [
         {
-          "class": "Scout",
+          "class": "LightFighter",
           "hull": 80.5,
           "hull_max": 100.0,
           "id": 11,
@@ -71,7 +72,7 @@
           "weapon_power": 4.0
         },
         {
-          "class": "Hauler",
+          "class": "SmallCargo",
           "hull": 100.0,
           "hull_max": 100.0,
           "id": 12,
@@ -110,9 +111,10 @@
         "deuterium": 20.0,
         "fuel": 212.5
       },
+      "scan_range": 1,
       "ships": [
         {
-          "class": "Scout",
+          "class": "LightFighter",
           "hull": 80.5,
           "hull_max": 100.0,
           "id": 21,
@@ -121,7 +123,7 @@
           "weapon_power": 4.0
         },
         {
-          "class": "Hauler",
+          "class": "SmallCargo",
           "hull": 100.0,
           "hull_max": 100.0,
           "id": 22,
@@ -138,9 +140,9 @@
       {
         "building_type": "Shipyard",
         "cost": {
-          "crystal": 324.0,
-          "deuterium": 162.0,
-          "metal": 648.0
+          "crystal": 800.0,
+          "deuterium": 400.0,
+          "metal": 1600.0
         },
         "id": 330,
         "reserve": true,
@@ -178,13 +180,20 @@
         "target_level": 5
       },
       {
-        "building_type": "FuelDepot",
+        "building_type": "SolarPlant",
         "end_tick": 400,
         "id": 318,
         "start_tick": 130,
-        "target_level": 2
+        "target_level": 6
       }
     ],
+    "build_slot_unlock": {
+      "energy": false,
+      "have": 3,
+      "met": false,
+      "name": "Computer Technology",
+      "need": 6
+    },
     "build_slots": 2,
     "buildings": [
       {
@@ -200,38 +209,58 @@
         "level": 2
       },
       {
-        "building_type": "Shipyard",
+        "building_type": "SolarPlant",
         "level": 3
       },
       {
-        "building_type": "ResearchLab",
+        "building_type": "FusionReactor",
         "level": 4
       },
       {
-        "building_type": "FuelDepot",
+        "building_type": "RoboticsFactory",
         "level": 5
       },
       {
-        "building_type": "SensorArray",
+        "building_type": "NaniteFactory",
         "level": 6
       },
       {
-        "building_type": "DefenseGrid",
+        "building_type": "Shipyard",
         "level": 7
       },
       {
-        "building_type": "StorageVault",
+        "building_type": "MetalStorage",
         "level": 8
       },
       {
-        "building_type": "Fabricator",
+        "building_type": "CrystalStorage",
         "level": 9
+      },
+      {
+        "building_type": "DeuteriumTank",
+        "level": 10
+      },
+      {
+        "building_type": "ResearchLab",
+        "level": 11
       }
     ],
     "catalog": {
       "buildings": [
         {
           "building_type": "MetalMine",
+          "effects": [
+            {
+              "kind": "metal_per_tick",
+              "next": 0.009166666666666667,
+              "now": 0.0
+            },
+            {
+              "kind": "energy_used",
+              "next": 11.0,
+              "now": 0.0
+            }
+          ],
           "level": 0,
           "max_level": 20,
           "next": {
@@ -241,12 +270,24 @@
               "metal": 60.0
             },
             "level": 1,
-            "ticks": 165
+            "ticks": 1
           },
           "requires": []
         },
         {
           "building_type": "CrystalMine",
+          "effects": [
+            {
+              "kind": "crystal_per_tick",
+              "next": 0.013333333333333334,
+              "now": 0.006111111111111111
+            },
+            {
+              "kind": "energy_used",
+              "next": 25.0,
+              "now": 11.0
+            }
+          ],
           "level": 1,
           "max_level": 20,
           "next": {
@@ -256,710 +297,1617 @@
               "metal": 77.0
             },
             "level": 2,
-            "ticks": 252
+            "ticks": 1
           },
           "requires": []
         },
         {
           "building_type": "DeuteriumSynthesizer",
+          "effects": [
+            {
+              "kind": "deuterium_per_tick",
+              "next": 0.013,
+              "now": 0.007999999999999998
+            },
+            {
+              "kind": "energy_used",
+              "next": 80.0,
+              "now": 49.0
+            }
+          ],
           "level": 2,
           "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 112.0,
+              "crystal": 169.0,
               "deuterium": 0.0,
-              "metal": 338.0
+              "metal": 506.0
             },
             "level": 3,
-            "ticks": 985
+            "ticks": 3
           },
           "requires": []
         },
         {
-          "building_type": "Shipyard",
+          "building_type": "SolarPlant",
+          "effects": [
+            {
+              "kind": "energy_made",
+              "next": 117.0,
+              "now": 79.0
+            }
+          ],
           "level": 3,
           "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 583.0,
-              "deuterium": 292.0,
-              "metal": 1166.0
+              "crystal": 101.0,
+              "deuterium": 0.0,
+              "metal": 253.0
             },
             "level": 4,
-            "ticks": 3828
+            "ticks": 2
           },
-          "requires": [
-            {
-              "have": 0,
-              "met": false,
-              "name": "Metal Mine",
-              "need": 2
-            }
-          ]
+          "requires": []
         },
         {
-          "building_type": "ResearchLab",
+          "building_type": "FusionReactor",
+          "effects": [
+            {
+              "kind": "energy_made",
+              "next": 200.0,
+              "now": 151.0
+            },
+            {
+              "kind": "fusion_burn_per_tick",
+              "next": 0.0225,
+              "now": 0.01638888888888889
+            }
+          ],
           "level": 4,
           "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 2100.0,
-              "deuterium": 525.0,
-              "metal": 1050.0
+              "crystal": 3779.0,
+              "deuterium": 1890.0,
+              "metal": 9448.0
             },
             "level": 5,
-            "ticks": 6894
+            "ticks": 50
           },
           "requires": [
             {
+              "energy": false,
+              "have": 2,
+              "met": false,
+              "name": "Deuterium Synthesizer",
+              "need": 5
+            },
+            {
+              "energy": false,
               "have": 1,
               "met": false,
-              "name": "Crystal Mine",
-              "need": 2
-            }
-          ]
-        },
-        {
-          "building_type": "FuelDepot",
-          "level": 5,
-          "max_level": 20,
-          "next": {
-            "cost": {
-              "crystal": 710.0,
-              "deuterium": 1420.0,
-              "metal": 2130.0
-            },
-            "level": 6,
-            "ticks": 6216
-          },
-          "requires": [
-            {
-              "have": 2,
-              "met": true,
-              "name": "Deut Synthesizer",
-              "need": 2
-            }
-          ]
-        },
-        {
-          "building_type": "SensorArray",
-          "level": 6,
-          "max_level": 20,
-          "next": {
-            "cost": {
-              "crystal": 3621.0,
-              "deuterium": 1810.0,
-              "metal": 2414.0
-            },
-            "level": 7,
-            "ticks": 13208
-          },
-          "requires": [
-            {
-              "have": 4,
-              "met": true,
-              "name": "Research Lab",
-              "need": 1
-            }
-          ]
-        },
-        {
-          "building_type": "DefenseGrid",
-          "level": 7,
-          "max_level": 20,
-          "next": {
-            "cost": {
-              "crystal": 12244.0,
-              "deuterium": 6122.0,
-              "metal": 18367.0
-            },
-            "level": 8,
-            "ticks": 66991
-          },
-          "requires": [
-            {
-              "have": 3,
-              "met": true,
-              "name": "Shipyard",
+              "name": "Energy Technology",
               "need": 3
             }
           ]
         },
         {
-          "building_type": "StorageVault",
-          "level": 8,
+          "building_type": "RoboticsFactory",
+          "effects": [
+            {
+              "kind": "building_speed",
+              "next": 448.0,
+              "now": 384.0
+            }
+          ],
+          "level": 5,
           "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 6976.0,
-              "deuterium": 0.0,
-              "metal": 13952.0
+              "crystal": 3840.0,
+              "deuterium": 6400.0,
+              "metal": 12800.0
             },
-            "level": 9,
-            "ticks": 45800
+            "level": 6,
+            "ticks": 63
+          },
+          "requires": []
+        },
+        {
+          "building_type": "NaniteFactory",
+          "effects": [
+            {
+              "kind": "building_speed",
+              "next": 768.0,
+              "now": 384.0
+            },
+            {
+              "kind": "shipyard_speed",
+              "next": 1024.0,
+              "now": 512.0
+            }
+          ],
+          "level": 6,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 32000000.0,
+              "deuterium": 6400000.0,
+              "metal": 64000000.0
+            },
+            "level": 7,
+            "ticks": 360000
           },
           "requires": [
             {
-              "have": 0,
+              "energy": false,
+              "have": 5,
               "met": false,
-              "name": "Metal Mine",
+              "name": "Robotics Factory",
+              "need": 10
+            },
+            {
+              "energy": false,
+              "have": 1,
+              "met": false,
+              "name": "Computer Technology",
+              "need": 10
+            }
+          ]
+        },
+        {
+          "building_type": "Shipyard",
+          "effects": [
+            {
+              "kind": "shipyard_speed",
+              "next": 576.0,
+              "now": 512.0
+            }
+          ],
+          "level": 7,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 25600.0,
+              "deuterium": 12800.0,
+              "metal": 51200.0
+            },
+            "level": 8,
+            "ticks": 288
+          },
+          "requires": [
+            {
+              "energy": false,
+              "have": 5,
+              "met": true,
+              "name": "Robotics Factory",
               "need": 2
             }
           ]
         },
         {
-          "building_type": "Fabricator",
+          "building_type": "MetalStorage",
+          "effects": [
+            {
+              "kind": "storage_cap",
+              "next": 3500000.0,
+              "now": 2200000.0
+            },
+            {
+              "kind": "storage_protected",
+              "next": 2100000.0,
+              "now": 1320000.0
+            }
+          ],
+          "level": 8,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 0.0,
+              "deuterium": 0.0,
+              "metal": 512000.0
+            },
+            "level": 9,
+            "ticks": 1920
+          },
+          "requires": []
+        },
+        {
+          "building_type": "CrystalStorage",
+          "effects": [
+            {
+              "kind": "storage_cap",
+              "next": 5550000.0,
+              "now": 3500000.0
+            },
+            {
+              "kind": "storage_protected",
+              "next": 3330000.0,
+              "now": 2100000.0
+            }
+          ],
           "level": 9,
           "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 25815.0,
-              "deuterium": 12908.0,
-              "metal": 38723.0
+              "crystal": 512000.0,
+              "deuterium": 0.0,
+              "metal": 1024000.0
             },
             "level": 10,
-            "ticks": 141239
+            "ticks": 5760
           },
-          "requires": [
+          "requires": []
+        },
+        {
+          "building_type": "DeuteriumTank",
+          "effects": [
             {
-              "have": 3,
-              "met": true,
-              "name": "Shipyard",
-              "need": 2
+              "kind": "storage_cap",
+              "next": 8850000.0,
+              "now": 5550000.0
+            },
+            {
+              "kind": "storage_protected",
+              "next": 5310000.0,
+              "now": 3330000.0
+            },
+            {
+              "kind": "tank_factor",
+              "next": 3.75,
+              "now": 3.5
             }
-          ]
+          ],
+          "level": 10,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 2048000.0,
+              "deuterium": 0.0,
+              "metal": 2048000.0
+            },
+            "level": 11,
+            "ticks": 15360
+          },
+          "requires": []
+        },
+        {
+          "building_type": "ResearchLab",
+          "effects": [
+            {
+              "kind": "research_speed",
+              "next": 13.0,
+              "now": 12.0
+            }
+          ],
+          "level": 11,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 819200.0,
+              "deuterium": 409600.0,
+              "metal": 409600.0
+            },
+            "level": 12,
+            "ticks": 4608
+          },
+          "requires": []
         }
       ],
       "defences": [
         {
           "count": 12,
-          "kind": "PulseTurret",
-          "power": 21.760000228881836,
+          "hull": 200.0,
+          "kind": "RocketLauncher",
+          "power": 118.5999984741211,
           "requires": [
             {
-              "have": 3,
+              "energy": false,
+              "have": 7,
               "met": true,
               "name": "Shipyard",
               "need": 1
-            },
-            {
-              "have": 7,
-              "met": true,
-              "name": "Defense Grid",
-              "need": 1
             }
           ],
-          "ticks_per_unit": 324,
+          "shield": 26.0,
+          "ticks_per_unit": 6,
           "unit_cost": {
-            "crystal": 20.0,
+            "crystal": 0.0,
             "deuterium": 0.0,
-            "metal": 120.0
-          }
+            "metal": 2000.0
+          },
+          "weapon": 96.0
         },
         {
           "count": 0,
-          "kind": "LancerBattery",
-          "power": 65.27999877929688,
+          "hull": 200.0,
+          "kind": "LightLaser",
+          "power": 143.25,
           "requires": [
             {
-              "have": 3,
-              "met": true,
-              "name": "Shipyard",
-              "need": 1
-            },
-            {
+              "energy": false,
               "have": 7,
               "met": true,
-              "name": "Defense Grid",
+              "name": "Shipyard",
               "need": 2
             },
             {
-              "have": 0,
-              "met": false,
-              "name": "Weapons Research",
-              "need": 2
-            }
-          ],
-          "ticks_per_unit": 1200,
-          "unit_cost": {
-            "crystal": 120.0,
-            "deuterium": 20.0,
-            "metal": 400.0
-          }
-        },
-        {
-          "count": 3,
-          "kind": "IonBastion",
-          "power": 172.8000030517578,
-          "requires": [
-            {
-              "have": 3,
+              "energy": false,
+              "have": 1,
               "met": true,
-              "name": "Shipyard",
+              "name": "Energy Technology",
               "need": 1
             },
             {
-              "have": 7,
-              "met": true,
-              "name": "Defense Grid",
-              "need": 4
-            },
-            {
-              "have": 0,
+              "energy": false,
+              "have": 2,
               "met": false,
-              "name": "Weapons Research",
-              "need": 4
-            },
-            {
-              "have": 3,
-              "met": true,
-              "name": "Advanced Shields",
+              "name": "Laser Technology",
               "need": 3
             }
           ],
-          "ticks_per_unit": 3924,
+          "shield": 32.5,
+          "ticks_per_unit": 6,
           "unit_cost": {
             "crystal": 500.0,
-            "deuterium": 100.0,
-            "metal": 1200.0
-          }
+            "deuterium": 0.0,
+            "metal": 1500.0
+          },
+          "weapon": 120.00000762939453
+        },
+        {
+          "count": 0,
+          "hull": 800.0,
+          "kind": "HeavyLaser",
+          "power": 393.0,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
+              "met": true,
+              "name": "Shipyard",
+              "need": 4
+            },
+            {
+              "energy": false,
+              "have": 1,
+              "met": false,
+              "name": "Energy Technology",
+              "need": 3
+            },
+            {
+              "energy": false,
+              "have": 2,
+              "met": false,
+              "name": "Laser Technology",
+              "need": 6
+            }
+          ],
+          "shield": 130.0,
+          "ticks_per_unit": 23,
+          "unit_cost": {
+            "crystal": 2000.0,
+            "deuterium": 0.0,
+            "metal": 6000.0
+          },
+          "weapon": 300.0
+        },
+        {
+          "count": 3,
+          "hull": 3500.0,
+          "kind": "GaussCannon",
+          "power": 1696.0,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
+              "met": true,
+              "name": "Shipyard",
+              "need": 6
+            },
+            {
+              "energy": false,
+              "have": 1,
+              "met": false,
+              "name": "Energy Technology",
+              "need": 6
+            },
+            {
+              "energy": false,
+              "have": 2,
+              "met": false,
+              "name": "Weapons Technology",
+              "need": 3
+            },
+            {
+              "energy": false,
+              "have": 3,
+              "met": true,
+              "name": "Shielding Technology",
+              "need": 1
+            }
+          ],
+          "shield": 260.0,
+          "ticks_per_unit": 99,
+          "unit_cost": {
+            "crystal": 15000.0,
+            "deuterium": 2000.0,
+            "metal": 20000.0
+          },
+          "weapon": 1320.0
+        },
+        {
+          "count": 0,
+          "hull": 800.0,
+          "kind": "IonCannon",
+          "power": 325.0,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
+              "met": true,
+              "name": "Shipyard",
+              "need": 4
+            },
+            {
+              "energy": false,
+              "have": 3,
+              "met": false,
+              "name": "Ion Technology",
+              "need": 4
+            }
+          ],
+          "shield": 650.0,
+          "ticks_per_unit": 23,
+          "unit_cost": {
+            "crystal": 6000.0,
+            "deuterium": 0.0,
+            "metal": 2000.0
+          },
+          "weapon": 180.0
+        },
+        {
+          "count": 0,
+          "hull": 10000.0,
+          "kind": "PlasmaTurret",
+          "power": 4639.0,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
+              "met": false,
+              "name": "Shipyard",
+              "need": 8
+            },
+            {
+              "energy": false,
+              "have": 0,
+              "met": false,
+              "name": "Plasma Technology",
+              "need": 7
+            }
+          ],
+          "shield": 390.0,
+          "ticks_per_unit": 282,
+          "unit_cost": {
+            "crystal": 50000.0,
+            "deuterium": 30000.0,
+            "metal": 50000.0
+          },
+          "weapon": 3600.000244140625
+        },
+        {
+          "count": 1,
+          "hull": 2000.0,
+          "kind": "SmallShieldDome",
+          "max": 1,
+          "power": 461.20001220703125,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
+              "met": true,
+              "name": "Shipyard",
+              "need": 1
+            },
+            {
+              "energy": false,
+              "have": 3,
+              "met": true,
+              "name": "Shielding Technology",
+              "need": 2
+            }
+          ],
+          "shield": 2600.0,
+          "ticks_per_unit": 57,
+          "unit_cost": {
+            "crystal": 10000.0,
+            "deuterium": 0.0,
+            "metal": 10000.0
+          },
+          "weapon": 1.2000000476837158
+        },
+        {
+          "count": 0,
+          "hull": 10000.0,
+          "kind": "LargeShieldDome",
+          "max": 1,
+          "power": 2301.199951171875,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
+              "met": true,
+              "name": "Shipyard",
+              "need": 6
+            },
+            {
+              "energy": false,
+              "have": 3,
+              "met": false,
+              "name": "Shielding Technology",
+              "need": 6
+            }
+          ],
+          "shield": 13000.0,
+          "ticks_per_unit": 282,
+          "unit_cost": {
+            "crystal": 50000.0,
+            "deuterium": 0.0,
+            "metal": 50000.0
+          },
+          "weapon": 1.2000000476837158
         }
       ],
       "research": [
         {
+          "effects": [
+            {
+              "kind": "sensor_hops",
+              "next": 1.0,
+              "now": 0.0
+            }
+          ],
           "level": 0,
-          "max_level": 5,
+          "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 100.0,
-              "deuterium": 100.0,
+              "crystal": 1000.0,
+              "deuterium": 200.0,
               "metal": 200.0
             },
             "level": 1,
-            "ticks": 1543
+            "ticks": 360
           },
           "requires": [
             {
-              "have": 4,
+              "energy": false,
+              "have": 11,
               "met": true,
               "name": "Research Lab",
-              "need": 1
-            },
-            {
-              "have": 2,
-              "met": false,
-              "name": "Deut Synthesizer",
               "need": 3
             }
           ],
-          "tech": "FuelEfficiency"
+          "tech": "EspionageTechnology"
         },
         {
+          "effects": [
+            {
+              "kind": "build_slots",
+              "next": 1.0,
+              "now": 1.0
+            }
+          ],
           "level": 1,
-          "max_level": 5,
+          "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 120.0,
-              "deuterium": 240.0,
-              "metal": 240.0
+              "crystal": 800.0,
+              "deuterium": 1200.0,
+              "metal": 0.0
             },
             "level": 2,
-            "ticks": 1852
+            "ticks": 240
           },
           "requires": [
             {
-              "have": 4,
+              "energy": false,
+              "have": 11,
               "met": true,
               "name": "Research Lab",
               "need": 1
-            },
-            {
-              "have": 5,
-              "met": true,
-              "name": "Fuel Depot",
-              "need": 2
             }
           ],
-          "tech": "ExtendedFuelTanks"
+          "tech": "ComputerTechnology"
         },
         {
+          "effects": [
+            {
+              "kind": "attack",
+              "next": 1.3,
+              "now": 1.2
+            }
+          ],
           "level": 2,
-          "max_level": 5,
+          "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 256.0,
+              "crystal": 800.0,
               "deuterium": 0.0,
-              "metal": 768.0
+              "metal": 3200.0
             },
             "level": 3,
-            "ticks": 5267
+            "ticks": 1200
           },
           "requires": [
             {
-              "have": 4,
+              "energy": false,
+              "have": 11,
               "met": true,
               "name": "Research Lab",
-              "need": 1
-            },
-            {
-              "have": 3,
-              "met": true,
-              "name": "Shipyard",
-              "need": 2
+              "need": 4
             }
           ],
-          "tech": "ReinforcedHulls"
+          "tech": "WeaponsTechnology"
         },
         {
+          "effects": [
+            {
+              "kind": "shield",
+              "next": 1.4,
+              "now": 1.3
+            }
+          ],
           "level": 3,
-          "max_level": 5,
+          "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 1229.0,
-              "deuterium": 205.0,
-              "metal": 410.0
+              "crystal": 4800.0,
+              "deuterium": 0.0,
+              "metal": 1600.0
             },
             "level": 4,
-            "ticks": 8430
+            "ticks": 1920
           },
           "requires": [
             {
-              "have": 4,
+              "energy": false,
+              "have": 11,
               "met": true,
               "name": "Research Lab",
+              "need": 6
+            },
+            {
+              "energy": false,
+              "have": 1,
+              "met": false,
+              "name": "Energy Technology",
               "need": 3
             }
           ],
-          "tech": "AdvancedShields"
+          "tech": "ShieldingTechnology"
         },
         {
+          "effects": [
+            {
+              "kind": "hull",
+              "next": 1.1,
+              "now": 1.0
+            }
+          ],
           "level": 0,
-          "max_level": 5,
+          "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 200.0,
-              "deuterium": 100.0,
-              "metal": 200.0
+              "crystal": 0.0,
+              "deuterium": 0.0,
+              "metal": 1000.0
             },
             "level": 1,
-            "ticks": 2058
+            "ticks": 300
           },
           "requires": [
             {
-              "have": 4,
+              "energy": false,
+              "have": 11,
               "met": true,
               "name": "Research Lab",
-              "need": 3
+              "need": 2
             }
           ],
-          "tech": "WeaponsResearch"
+          "tech": "ArmourTechnology"
         },
         {
+          "effects": [
+            {
+              "kind": "jump_fuel",
+              "next": 0.9,
+              "now": 0.95
+            },
+            {
+              "kind": "energy_made",
+              "next": 157.0,
+              "now": 151.0
+            }
+          ],
           "level": 1,
-          "max_level": 5,
+          "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 240.0,
-              "deuterium": 80.0,
-              "metal": 160.0
+              "crystal": 1600.0,
+              "deuterium": 800.0,
+              "metal": 0.0
             },
             "level": 2,
-            "ticks": 2058
+            "ticks": 480
           },
           "requires": [
             {
-              "have": 4,
+              "energy": false,
+              "have": 11,
               "met": true,
               "name": "Research Lab",
-              "need": 2
+              "need": 1
             }
           ],
-          "tech": "Navigation"
+          "tech": "EnergyTechnology"
         },
         {
+          "effects": [
+            {
+              "kind": "recall_risk",
+              "next": 0.15000000596046448,
+              "now": 0.10000000149011612
+            }
+          ],
           "level": 2,
-          "max_level": 5,
+          "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 256.0,
-              "deuterium": 192.0,
-              "metal": 384.0
+              "crystal": 16000.0,
+              "deuterium": 8000.0,
+              "metal": 0.0
             },
             "level": 3,
-            "ticks": 3292
+            "ticks": 4800
           },
           "requires": [
             {
-              "have": 4,
+              "energy": false,
+              "have": 11,
               "met": true,
               "name": "Research Lab",
-              "need": 2
+              "need": 7
+            },
+            {
+              "energy": false,
+              "have": 1,
+              "met": false,
+              "name": "Energy Technology",
+              "need": 5
+            },
+            {
+              "energy": false,
+              "have": 3,
+              "met": false,
+              "name": "Shielding Technology",
+              "need": 5
             }
           ],
-          "tech": "HarvestingEfficiency"
+          "tech": "HyperspaceTechnology"
         },
         {
+          "effects": [
+            {
+              "kind": "speed",
+              "next": 1.4,
+              "now": 1.3
+            }
+          ],
           "level": 3,
-          "max_level": 1,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 0.0,
+              "deuterium": 4800.0,
+              "metal": 3200.0
+            },
+            "level": 4,
+            "ticks": 960
+          },
           "requires": [
             {
-              "have": 4,
+              "energy": false,
+              "have": 11,
               "met": true,
               "name": "Research Lab",
               "need": 1
             },
             {
-              "have": 3,
+              "energy": false,
+              "have": 1,
               "met": true,
-              "name": "Shipyard",
+              "name": "Energy Technology",
               "need": 1
             }
           ],
-          "tech": "CorvetteTech"
+          "tech": "CombustionDrive"
         },
         {
+          "effects": [
+            {
+              "kind": "speed",
+              "next": 1.2,
+              "now": 1.0
+            }
+          ],
           "level": 0,
-          "max_level": 1,
+          "max_level": 20,
           "next": {
             "cost": {
-              "crystal": 1200.0,
+              "crystal": 4000.0,
               "deuterium": 600.0,
               "metal": 2000.0
             },
             "level": 1,
-            "ticks": 16458
+            "ticks": 1800
           },
           "requires": [
             {
-              "have": 4,
+              "energy": false,
+              "have": 11,
+              "met": true,
+              "name": "Research Lab",
+              "need": 2
+            },
+            {
+              "energy": false,
+              "have": 1,
+              "met": true,
+              "name": "Energy Technology",
+              "need": 1
+            }
+          ],
+          "tech": "ImpulseDrive"
+        },
+        {
+          "effects": [
+            {
+              "kind": "speed",
+              "next": 1.6,
+              "now": 1.3
+            }
+          ],
+          "level": 1,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 40000.0,
+              "deuterium": 12000.0,
+              "metal": 20000.0
+            },
+            "level": 2,
+            "ticks": 18000
+          },
+          "requires": [
+            {
+              "energy": false,
+              "have": 11,
               "met": true,
               "name": "Research Lab",
               "need": 1
             },
             {
-              "have": 3,
+              "energy": false,
+              "have": 2,
+              "met": false,
+              "name": "Hyperspace Technology",
+              "need": 3
+            }
+          ],
+          "tech": "HyperspaceDrive"
+        },
+        {
+          "effects": [
+            {
+              "kind": "ore_yield",
+              "next": 1.6,
+              "now": 1.4
+            }
+          ],
+          "level": 2,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 400.0,
+              "deuterium": 0.0,
+              "metal": 800.0
+            },
+            "level": 3,
+            "ticks": 360
+          },
+          "requires": [
+            {
+              "energy": false,
+              "have": 11,
               "met": true,
-              "name": "Corvette Tech",
+              "name": "Research Lab",
               "need": 1
             },
             {
-              "have": 3,
+              "energy": false,
+              "have": 1,
               "met": false,
-              "name": "Shipyard",
+              "name": "Energy Technology",
+              "need": 2
+            }
+          ],
+          "tech": "LaserTechnology"
+        },
+        {
+          "effects": [],
+          "level": 3,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 2400.0,
+              "deuterium": 800.0,
+              "metal": 8000.0
+            },
+            "level": 4,
+            "ticks": 3120
+          },
+          "requires": [
+            {
+              "energy": false,
+              "have": 11,
+              "met": true,
+              "name": "Research Lab",
+              "need": 4
+            },
+            {
+              "energy": false,
+              "have": 2,
+              "met": false,
+              "name": "Laser Technology",
+              "need": 5
+            },
+            {
+              "energy": false,
+              "have": 1,
+              "met": false,
+              "name": "Energy Technology",
               "need": 4
             }
           ],
-          "tech": "FrigateTech"
+          "tech": "IonTechnology"
         },
         {
+          "effects": [],
+          "level": 0,
+          "max_level": 20,
+          "next": {
+            "cost": {
+              "crystal": 4000.0,
+              "deuterium": 1000.0,
+              "metal": 2000.0
+            },
+            "level": 1,
+            "ticks": 1800
+          },
+          "requires": [
+            {
+              "energy": false,
+              "have": 11,
+              "met": true,
+              "name": "Research Lab",
+              "need": 1
+            },
+            {
+              "energy": false,
+              "have": 1,
+              "met": false,
+              "name": "Energy Technology",
+              "need": 8
+            },
+            {
+              "energy": false,
+              "have": 2,
+              "met": false,
+              "name": "Laser Technology",
+              "need": 10
+            },
+            {
+              "energy": false,
+              "have": 3,
+              "met": false,
+              "name": "Ion Technology",
+              "need": 5
+            }
+          ],
+          "tech": "PlasmaTechnology"
+        },
+        {
+          "effects": [],
           "level": 1,
           "max_level": 1,
           "requires": [
             {
-              "have": 4,
-              "met": true,
-              "name": "Research Lab",
-              "need": 1
-            },
-            {
-              "have": 0,
+              "energy": false,
+              "have": 11,
               "met": false,
-              "name": "Frigate Tech",
-              "need": 1
+              "name": "Research Lab",
+              "need": 12
             },
             {
-              "have": 3,
+              "energy": true,
+              "have": 412,
               "met": false,
-              "name": "Shipyard",
-              "need": 6
+              "name": "Energy",
+              "need": 900000
             }
           ],
-          "tech": "CruiserTech"
-        },
-        {
-          "level": 2,
-          "max_level": 1,
-          "requires": [
-            {
-              "have": 4,
-              "met": true,
-              "name": "Research Lab",
-              "need": 1
-            },
-            {
-              "have": 3,
-              "met": true,
-              "name": "Shipyard",
-              "need": 3
-            }
-          ],
-          "tech": "HaulerTech"
-        },
-        {
-          "level": 3,
-          "max_level": 3,
-          "requires": [
-            {
-              "have": 1,
-              "met": true,
-              "name": "Navigation",
-              "need": 1
-            },
-            {
-              "have": 4,
-              "met": true,
-              "name": "Research Lab",
-              "need": 4
-            }
-          ],
-          "tech": "EmergencyJump"
-        },
-        {
-          "level": 0,
-          "max_level": 2,
-          "next": {
-            "cost": {
-              "crystal": 1200.0,
-              "deuterium": 500.0,
-              "metal": 1500.0
-            },
-            "level": 1,
-            "ticks": 13886
-          },
-          "requires": [
-            {
-              "have": 4,
-              "met": true,
-              "name": "Research Lab",
-              "need": 4
-            }
-          ],
-          "tech": "ModularFabrication"
+          "tech": "GravitonTechnology"
         }
       ],
       "ships": [
         {
+          "cargo": 5000.0,
+          "drive": "Combustion",
+          "flies": true,
+          "harvest": 1.0,
+          "hull": 400.0,
+          "jump_fuel": 9.5,
+          "jump_ticks": 3,
+          "power": 47.29999923706055,
           "requires": [
             {
-              "have": 3,
+              "energy": false,
+              "have": 7,
               "met": true,
               "name": "Shipyard",
-              "need": 1
+              "need": 2
+            },
+            {
+              "energy": false,
+              "have": 3,
+              "met": true,
+              "name": "Combustion Drive",
+              "need": 2
             }
           ],
-          "ship_class": "Scout",
-          "ticks_per_ship": 577,
+          "shield": 13.0,
+          "ship_class": "SmallCargo",
+          "speed": 6500.0,
+          "tank": 420.0,
+          "ticks_per_ship": 12,
           "unit_cost": {
-            "crystal": 50.0,
-            "deuterium": 30.0,
-            "metal": 200.0
-          }
+            "crystal": 2000.0,
+            "deuterium": 0.0,
+            "metal": 2000.0
+          },
+          "weapon": 6.0
         },
         {
+          "cargo": 25000.0,
+          "drive": "Combustion",
+          "flies": true,
+          "harvest": 1.0,
+          "hull": 1200.0,
+          "jump_fuel": 47.5,
+          "jump_ticks": 3,
+          "power": 129.25,
           "requires": [
             {
+              "energy": false,
+              "have": 7,
+              "met": true,
+              "name": "Shipyard",
+              "need": 4
+            },
+            {
+              "energy": false,
               "have": 3,
+              "met": false,
+              "name": "Combustion Drive",
+              "need": 6
+            }
+          ],
+          "shield": 32.5,
+          "ship_class": "LargeCargo",
+          "speed": 9750.0,
+          "tank": 2100.0,
+          "ticks_per_ship": 34,
+          "unit_cost": {
+            "crystal": 6000.0,
+            "deuterium": 0.0,
+            "metal": 6000.0
+          },
+          "weapon": 6.0
+        },
+        {
+          "cargo": 50.0,
+          "drive": "Combustion",
+          "flies": true,
+          "harvest": 0.5,
+          "hull": 400.0,
+          "jump_fuel": 19.0,
+          "jump_ticks": 2,
+          "power": 101.30000305175781,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
               "met": true,
               "name": "Shipyard",
               "need": 1
             },
             {
+              "energy": false,
               "have": 3,
               "met": true,
-              "name": "Corvette Tech",
+              "name": "Combustion Drive",
               "need": 1
             }
           ],
-          "ship_class": "Corvette",
-          "ticks_per_ship": 1154,
+          "shield": 13.0,
+          "ship_class": "LightFighter",
+          "speed": 16250.0,
+          "tank": 700.0,
+          "ticks_per_ship": 12,
           "unit_cost": {
-            "crystal": 100.0,
-            "deuterium": 60.0,
-            "metal": 400.0
-          }
+            "crystal": 1000.0,
+            "deuterium": 0.0,
+            "metal": 3000.0
+          },
+          "weapon": 60.000003814697266
         },
         {
+          "cargo": 100.0,
+          "drive": "Impulse",
+          "flies": true,
+          "harvest": 0.5,
+          "hull": 1000.0,
+          "jump_fuel": 71.25,
+          "jump_ticks": 3,
+          "power": 283.25,
           "requires": [
             {
-              "have": 3,
+              "energy": false,
+              "have": 7,
               "met": true,
               "name": "Shipyard",
-              "need": 1
+              "need": 3
             },
             {
+              "energy": false,
               "have": 0,
               "met": false,
-              "name": "Frigate Tech",
-              "need": 1
+              "name": "Armour Technology",
+              "need": 2
+            },
+            {
+              "energy": false,
+              "have": 0,
+              "met": false,
+              "name": "Impulse Drive",
+              "need": 2
             }
           ],
-          "ship_class": "Frigate",
-          "ticks_per_ship": 3231,
+          "shield": 32.5,
+          "ship_class": "HeavyFighter",
+          "speed": 10000.0,
+          "tank": 2625.0,
+          "ticks_per_ship": 29,
           "unit_cost": {
-            "crystal": 400.0,
-            "deuterium": 200.0,
-            "metal": 1000.0
-          }
+            "crystal": 4000.0,
+            "deuterium": 0.0,
+            "metal": 6000.0
+          },
+          "weapon": 180.0
         },
         {
+          "cargo": 800.0,
+          "drive": "Impulse",
+          "flies": true,
+          "harvest": 0.5,
+          "hull": 2700.0,
+          "jump_fuel": 285.0,
+          "jump_ticks": 2,
+          "power": 756.5,
           "requires": [
             {
+              "energy": false,
+              "have": 7,
+              "met": true,
+              "name": "Shipyard",
+              "need": 5
+            },
+            {
+              "energy": false,
+              "have": 0,
+              "met": false,
+              "name": "Impulse Drive",
+              "need": 4
+            },
+            {
+              "energy": false,
               "have": 3,
+              "met": true,
+              "name": "Ion Technology",
+              "need": 2
+            }
+          ],
+          "shield": 65.0,
+          "ship_class": "Cruiser",
+          "speed": 15000.0,
+          "tank": 8400.0,
+          "ticks_per_ship": 76,
+          "unit_cost": {
+            "crystal": 7000.0,
+            "deuterium": 2000.0,
+            "metal": 20000.0
+          },
+          "weapon": 480.0000305175781
+        },
+        {
+          "cargo": 1500.0,
+          "drive": "Hyperspace",
+          "flies": true,
+          "harvest": 0.5,
+          "hull": 6000.0,
+          "jump_fuel": 475.0,
+          "jump_ticks": 2,
+          "power": 1826.0,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
+              "met": true,
+              "name": "Shipyard",
+              "need": 7
+            },
+            {
+              "energy": false,
+              "have": 1,
+              "met": false,
+              "name": "Hyperspace Drive",
+              "need": 4
+            }
+          ],
+          "shield": 260.0,
+          "ship_class": "Battleship",
+          "speed": 13000.0,
+          "tank": 10500.0,
+          "ticks_per_ship": 169,
+          "unit_cost": {
+            "crystal": 15000.0,
+            "deuterium": 0.0,
+            "metal": 45000.0
+          },
+          "weapon": 1200.0
+        },
+        {
+          "cargo": 20000.0,
+          "drive": "Combustion",
+          "flies": true,
+          "harvest": 5.0,
+          "hull": 1600.0,
+          "jump_fuel": 285.0,
+          "jump_ticks": 5,
+          "power": 162.5,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
+              "met": true,
+              "name": "Shipyard",
+              "need": 4
+            },
+            {
+              "energy": false,
+              "have": 3,
+              "met": false,
+              "name": "Combustion Drive",
+              "need": 6
+            },
+            {
+              "energy": false,
+              "have": 3,
+              "met": true,
+              "name": "Shielding Technology",
+              "need": 2
+            }
+          ],
+          "shield": 13.0,
+          "ship_class": "Recycler",
+          "speed": 2600.0,
+          "tank": 12600.0,
+          "ticks_per_ship": 45,
+          "unit_cost": {
+            "crystal": 6000.0,
+            "deuterium": 2000.0,
+            "metal": 10000.0
+          },
+          "weapon": 1.2000000476837158
+        },
+        {
+          "cargo": 5.0,
+          "drive": "Combustion",
+          "flies": true,
+          "harvest": 0.5,
+          "hull": 100.0,
+          "jump_fuel": 0.95,
+          "jump_ticks": 1,
+          "power": 10.0,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
+              "met": true,
+              "name": "Shipyard",
+              "need": 3
+            },
+            {
+              "energy": false,
+              "have": 3,
+              "met": true,
+              "name": "Combustion Drive",
+              "need": 3
+            },
+            {
+              "energy": false,
+              "have": 0,
+              "met": false,
+              "name": "Espionage Technology",
+              "need": 2
+            }
+          ],
+          "shield": 0.0,
+          "ship_class": "EspionageProbe",
+          "speed": 130000000.0,
+          "tank": 70.0,
+          "ticks_per_ship": 3,
+          "unit_cost": {
+            "crystal": 1000.0,
+            "deuterium": 0.0,
+            "metal": 0.0
+          },
+          "weapon": 0.0
+        },
+        {
+          "cargo": 500.0,
+          "drive": "Impulse",
+          "flies": true,
+          "harvest": 0.5,
+          "hull": 7500.0,
+          "jump_fuel": 950.0,
+          "jump_ticks": 4,
+          "power": 2015.0,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
+              "met": false,
+              "name": "Shipyard",
+              "need": 8
+            },
+            {
+              "energy": false,
+              "have": 0,
+              "met": false,
+              "name": "Impulse Drive",
+              "need": 6
+            },
+            {
+              "energy": false,
+              "have": 0,
+              "met": false,
+              "name": "Plasma Technology",
+              "need": 5
+            }
+          ],
+          "shield": 650.0,
+          "ship_class": "Bomber",
+          "speed": 4000.0,
+          "tank": 21000.0,
+          "ticks_per_ship": 211,
+          "unit_cost": {
+            "crystal": 25000.0,
+            "deuterium": 15000.0,
+            "metal": 50000.0
+          },
+          "weapon": 1200.0
+        },
+        {
+          "cargo": 0.0,
+          "flies": false,
+          "harvest": 0.0,
+          "hull": 200.0,
+          "jump_fuel": 0.0,
+          "jump_ticks": 0,
+          "power": 21.330001831054688,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
               "met": true,
               "name": "Shipyard",
               "need": 1
+            }
+          ],
+          "shield": 1.2999999523162842,
+          "ship_class": "SolarSatellite",
+          "speed": 0.0,
+          "tank": 0.0,
+          "ticks_per_ship": 6,
+          "unit_cost": {
+            "crystal": 2000.0,
+            "deuterium": 500.0,
+            "metal": 0.0
+          },
+          "weapon": 1.2000000476837158
+        },
+        {
+          "cargo": 2000.0,
+          "drive": "Hyperspace",
+          "flies": true,
+          "harvest": 0.5,
+          "hull": 11000.0,
+          "jump_fuel": 950.0,
+          "jump_ticks": 3,
+          "power": 3565.0,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
+              "met": false,
+              "name": "Shipyard",
+              "need": 9
             },
             {
+              "energy": false,
+              "have": 2,
+              "met": false,
+              "name": "Hyperspace Technology",
+              "need": 5
+            },
+            {
+              "energy": false,
+              "have": 1,
+              "met": false,
+              "name": "Hyperspace Drive",
+              "need": 6
+            }
+          ],
+          "shield": 650.0,
+          "ship_class": "Destroyer",
+          "speed": 6500.0,
+          "tank": 21000.0,
+          "ticks_per_ship": 310,
+          "unit_cost": {
+            "crystal": 50000.0,
+            "deuterium": 15000.0,
+            "metal": 60000.0
+          },
+          "weapon": 2400.0
+        },
+        {
+          "cargo": 1000000.0,
+          "drive": "Hyperspace",
+          "flies": true,
+          "harvest": 0.5,
+          "hull": 900000.0,
+          "jump_fuel": 0.95,
+          "jump_ticks": 20,
+          "power": 336500.0,
+          "requires": [
+            {
+              "energy": false,
+              "have": 7,
+              "met": false,
+              "name": "Shipyard",
+              "need": 12
+            },
+            {
+              "energy": false,
+              "have": 2,
+              "met": false,
+              "name": "Hyperspace Technology",
+              "need": 6
+            },
+            {
+              "energy": false,
+              "have": 1,
+              "met": false,
+              "name": "Hyperspace Drive",
+              "need": 7
+            },
+            {
+              "energy": false,
               "have": 1,
               "met": true,
-              "name": "Cruiser Tech",
+              "name": "Graviton Technology",
               "need": 1
             }
           ],
-          "ship_class": "Cruiser",
-          "ticks_per_ship": 10385,
+          "shield": 64999.99609375,
+          "ship_class": "Deathstar",
+          "speed": 130.0,
+          "tank": 21.0,
+          "ticks_per_ship": 25313,
           "unit_cost": {
-            "crystal": 1500.0,
-            "deuterium": 800.0,
-            "metal": 3000.0
-          }
+            "crystal": 4000000.0,
+            "deuterium": 1000000.0,
+            "metal": 5000000.0
+          },
+          "weapon": 240000.015625
         },
         {
+          "cargo": 750.0,
+          "drive": "Hyperspace",
+          "flies": true,
+          "harvest": 0.5,
+          "hull": 7000.0,
+          "jump_fuel": 237.5,
+          "jump_ticks": 2,
+          "power": 1592.0,
           "requires": [
             {
-              "have": 3,
-              "met": true,
+              "energy": false,
+              "have": 7,
+              "met": false,
               "name": "Shipyard",
-              "need": 1
+              "need": 8
             },
             {
+              "energy": false,
               "have": 2,
-              "met": true,
-              "name": "Hauler Tech",
-              "need": 1
+              "met": false,
+              "name": "Hyperspace Technology",
+              "need": 5
+            },
+            {
+              "energy": false,
+              "have": 1,
+              "met": false,
+              "name": "Hyperspace Drive",
+              "need": 5
+            },
+            {
+              "energy": false,
+              "have": 2,
+              "met": false,
+              "name": "Laser Technology",
+              "need": 12
             }
           ],
-          "ship_class": "Hauler",
-          "ticks_per_ship": 1847,
+          "shield": 520.0,
+          "ship_class": "Battlecruiser",
+          "speed": 13000.0,
+          "tank": 7000.0,
+          "ticks_per_ship": 197,
           "unit_cost": {
-            "crystal": 200.0,
-            "deuterium": 150.0,
-            "metal": 600.0
-          }
+            "crystal": 40000.0,
+            "deuterium": 15000.0,
+            "metal": 30000.0
+          },
+          "weapon": 840.0000610351562
         }
       ]
     },
     "defences": [
       {
         "count": 12,
-        "kind": "PulseTurret",
-        "power": 17.68000030517578,
+        "kind": "RocketLauncher",
+        "power": 112.4000015258789,
         "restoring": 2
       },
       {
-        "count": 0,
-        "kind": "LancerBattery",
-        "power": 53.040000915527344,
+        "count": 1,
+        "kind": "SmallShieldDome",
+        "power": 421.1000061035156,
         "restoring": 0
       }
     ],
@@ -974,7 +1922,15 @@
         "weapon_power": 18.0
       }
     ],
-    "home_defence_power": 340.5,
+    "energy": {
+      "fraction": 0.7923076923076923,
+      "fusion_burn": 0.65,
+      "fusion_starved": false,
+      "made": 412,
+      "needed": 520,
+      "per_satellite": 30
+    },
+    "home_defence_power": 2340.5,
     "location": {
       "q": 4,
       "r": -2
@@ -982,62 +1938,66 @@
     "next_raid_estimate_power": 300.25,
     "production": {
       "crystal": 1.25,
-      "deuterium": 0.4,
+      "deuterium": -0.4,
       "metal": 2.75
     },
     "queue_waiting_max": 3,
     "research": [
       {
         "level": 0,
-        "tech": "FuelEfficiency"
+        "tech": "EspionageTechnology"
       },
       {
         "level": 1,
-        "tech": "ExtendedFuelTanks"
+        "tech": "ComputerTechnology"
       },
       {
         "level": 2,
-        "tech": "ReinforcedHulls"
+        "tech": "WeaponsTechnology"
       },
       {
         "level": 3,
-        "tech": "AdvancedShields"
+        "tech": "ShieldingTechnology"
       },
       {
         "level": 0,
-        "tech": "WeaponsResearch"
+        "tech": "ArmourTechnology"
       },
       {
         "level": 1,
-        "tech": "Navigation"
+        "tech": "EnergyTechnology"
       },
       {
         "level": 2,
-        "tech": "HarvestingEfficiency"
+        "tech": "HyperspaceTechnology"
       },
       {
         "level": 3,
-        "tech": "CorvetteTech"
+        "tech": "CombustionDrive"
       },
       {
         "level": 0,
-        "tech": "FrigateTech"
+        "tech": "ImpulseDrive"
       },
       {
         "level": 1,
-        "tech": "CruiserTech"
+        "tech": "HyperspaceDrive"
       },
       {
         "level": 2,
-        "tech": "HaulerTech"
+        "tech": "LaserTechnology"
       },
       {
         "level": 3,
-        "tech": "EmergencyJump"
+        "tech": "IonTechnology"
       },
       {
         "level": 0,
-        "tech": "ModularFabrication"
+        "tech": "PlasmaTechnology"
+      },
+      {
+        "level": 1,
+        "tech": "GravitonTechnology"
       }
     ],
     "research_active": {
@@ -1045,21 +2005,21 @@
       "id": 325,
       "start_tick": 90,
       "target_level": 2,
-      "tech": "FuelEfficiency"
+      "tech": "EnergyTechnology"
     },
     "research_pending": [
       {
         "cost": {
-          "crystal": 5000.0,
-          "deuterium": 2500.0,
-          "metal": 8000.0
+          "crystal": 300.0,
+          "deuterium": 100.0,
+          "metal": 1000.0
         },
         "id": 340,
         "reserve": false,
         "start_in": 1800,
         "target_level": 1,
-        "tech": "CruiserTech",
-        "ticks": 90000,
+        "tech": "IonTechnology",
+        "ticks": 4680,
         "waiting_for": {
           "crystal": 0.0,
           "deuterium": 1200.0,
@@ -1068,39 +2028,41 @@
         "waiting_on": "Resources"
       }
     ],
+    "satellite_power": 126.5999984741211,
+    "satellites": 6,
     "shipyard_pending": [
       {
         "cost": {
-          "crystal": 800.0,
-          "deuterium": 400.0,
-          "metal": 2000.0
+          "crystal": 14000.0,
+          "deuterium": 4000.0,
+          "metal": 40000.0
         },
         "count": 2,
         "id": 335,
-        "item": "Frigate",
+        "item": "Cruiser",
         "start_in": 240,
-        "ticks": 600,
+        "ticks": 6480,
         "unit_cost": {
-          "crystal": 400.0,
-          "deuterium": 200.0,
-          "metal": 1000.0
+          "crystal": 7000.0,
+          "deuterium": 2000.0,
+          "metal": 20000.0
         },
         "waiting_on": "Slot"
       },
       {
         "cost": {
-          "crystal": 200.0,
+          "crystal": 0.0,
           "deuterium": 0.0,
-          "metal": 1200.0
+          "metal": 20000.0
         },
         "count": 10,
         "id": 336,
-        "item": "PulseTurret",
-        "ticks": 70,
+        "item": "RocketLauncher",
+        "ticks": 480,
         "unit_cost": {
-          "crystal": 20.0,
+          "crystal": 0.0,
           "deuterium": 0.0,
-          "metal": 120.0
+          "metal": 2000.0
         },
         "waiting_on": "Prerequisite"
       }
@@ -1110,14 +2072,14 @@
       "count": 2,
       "end_tick": 300,
       "id": 322,
-      "item": "Corvette",
+      "item": "SolarSatellite",
       "start_tick": 120
     },
     "storage": {
       "cap": {
-        "crystal": 5250.0,
-        "deuterium": 3750.0,
-        "metal": 7500.0
+        "crystal": 100000.0,
+        "deuterium": 200000.0,
+        "metal": 150000.0
       },
       "capped": [
         "deuterium"
@@ -1128,9 +2090,9 @@
         "metal": 5400
       },
       "protected": {
-        "crystal": 420.0,
-        "deuterium": 300.0,
-        "metal": 600.0
+        "crystal": 0.0,
+        "deuterium": 32000.0,
+        "metal": 12000.0
       }
     }
   },
@@ -1184,11 +2146,11 @@
           "id": 9001,
           "ships": [
             {
-              "class": "Corvette",
+              "class": "Cruiser",
               "count": 3
             },
             {
-              "class": "Frigate",
+              "class": "Battlecruiser",
               "count": 1
             }
           ]
@@ -1198,7 +2160,7 @@
           "id": 9002,
           "ships": [
             {
-              "class": "Scout",
+              "class": "LightFighter",
               "count": 2
             }
           ]
@@ -1229,13 +2191,20 @@
         {
           "id": 7,
           "owner_name": "Rival",
-          "ship_classes": {
-            "corvette": 2,
-            "cruiser": 0,
-            "frigate": 0,
-            "hauler": 1,
-            "scout": 1
-          },
+          "ship_classes": [
+            {
+              "class": "SmallCargo",
+              "count": 1
+            },
+            {
+              "class": "LightFighter",
+              "count": 2
+            },
+            {
+              "class": "EspionageProbe",
+              "count": 1
+            }
+          ],
           "ship_count": 4
         }
       ],

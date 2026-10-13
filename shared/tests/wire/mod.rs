@@ -18,19 +18,19 @@ use serde_json::{Value, json};
 
 use iac_shared::Resources;
 use iac_shared::constants::{
-    Density, EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, LANE_SEARCH_HOPS, OUTPOST_MAX_RING, OUTPOST_MIN_RING,
-    POLICY_CARGO_RETURN_PCT_MAX, POLICY_CARGO_RETURN_PCT_MIN, POLICY_ENGAGE_RATIO_X10_MAX,
+    Density, Drive, EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, LANE_SEARCH_HOPS, OUTPOST_MAX_RING,
+    OUTPOST_MIN_RING, POLICY_CARGO_RETURN_PCT_MAX, POLICY_CARGO_RETURN_PCT_MIN, POLICY_ENGAGE_RATIO_X10_MAX,
     POLICY_ENGAGE_RATIO_X10_MIN, POLICY_FUEL_UNBOUNDED_PCT, POLICY_MIN_FUEL_PCT_MAX, POLICY_RANGE_MAX,
-    POLICY_RANGE_MIN, REFINE_LOSS, ResourceKind, SCAN_BASE_RANGE, SCAN_COOLDOWN, SCAN_SCOUT_RANGE, ShipClass,
-    TerrainType, Zone,
+    POLICY_RANGE_MIN, RAID_LOST_SHIP_FRACTION, REFINE_LOSS, ResourceKind, SCAN_BASE_RANGE, SCAN_COOLDOWN,
+    SCAN_PROBE_RANGE, ShipClass, TerrainType, Zone,
 };
 use iac_shared::protocol::{
-    BOT_NAME_PREFIX, ClientMessage, ErrorCode, ExchangeMeter, MAX_ODDS_SECTORS, NAME_MAX_LEN, PolicyParams,
-    PolicyPreset, ServerMessage, ShipClassCounts, SignalKind, SiteRisk,
+    BOT_NAME_PREFIX, ClientMessage, EffectKind, ErrorCode, ExchangeMeter, MAX_ODDS_SECTORS, NAME_MAX_LEN,
+    PolicyParams, PolicyPreset, ServerMessage, SignalKind, SiteRisk,
 };
 use iac_shared::scaling::{
     BuildingType, DefenceKind, MAX_THREAT, RATIO_EVEN, RATIO_FAVOURABLE, RATIO_RISKY, RATIO_SAFE, RatioLabel,
-    ResearchType, SITE_GRADE_MAX, STORAGE_NEAR_CAP_RATIO, ship_power,
+    ResearchType, SITE_GRADE_MAX, STORAGE_NEAR_CAP_RATIO, ship_power, storage_building,
 };
 
 use model::{Body, Model};
@@ -128,15 +128,28 @@ pub fn extras(model: &Model) -> Extras {
         column(model, "hull", |class: ShipClass| class.base_stats().hull),
         column(model, "shield", |class: ShipClass| class.base_stats().shield),
         column(model, "weapon", |class: ShipClass| class.base_stats().weapon),
-        column(model, "cargo", |class: ShipClass| f32::from(class.base_stats().cargo)),
+        column(model, "cargo", |class: ShipClass| f64::from(class.base_stats().cargo)),
         column(model, "power", ship_power),
+        column(model, "speed", |class: ShipClass| f64::from(class.base_stats().speed)),
+        column(model, "fuel", |class: ShipClass| f64::from(class.base_stats().fuel)),
+        column(model, "tankJumps", |class: ShipClass| f64::from(class.tank_jumps())),
+        column(model, "harvest", ShipClass::harvest_power),
+        column(model, "drive", |class: ShipClass| class.drive().map_or("", Drive::label)),
+        column(model, "label", Drive::label),
+        column(model, "speedPerLevel", Drive::speed_per_level),
         column(model, "label", Density::label),
         column(model, "label", TerrainType::label),
         column(model, "label", ResourceKind::label),
         column(model, "weight", ResourceKind::weight),
+        column(model, "storage", |kind: ResourceKind| storage_building(kind).label()),
         column(model, "label", BuildingType::label),
         column(model, "label", ResearchType::label),
         column(model, "label", DefenceKind::label),
+        column(model, "hull", |kind: DefenceKind| kind.base_stats().hull),
+        column(model, "shield", |kind: DefenceKind| kind.base_stats().shield),
+        column(model, "weapon", |kind: DefenceKind| kind.base_stats().weapon),
+        column(model, "power", DefenceKind::power),
+        column(model, "label", EffectKind::label),
         column(model, "label", RatioLabel::label),
         column(model, "label", PolicyPreset::label),
         column(model, "label", SiteRisk::label),
@@ -160,7 +173,7 @@ pub fn extras(model: &Model) -> Extras {
         LANE_SEARCH_HOPS,
         STORAGE_NEAR_CAP_RATIO,
         SCAN_BASE_RANGE,
-        SCAN_SCOUT_RANGE,
+        SCAN_PROBE_RANGE,
         SCAN_COOLDOWN,
         EXPLORE_DURATION_TICKS,
         POLICY_MIN_FUEL_PCT_MAX,
@@ -173,12 +186,12 @@ pub fn extras(model: &Model) -> Extras {
         POLICY_FUEL_UNBOUNDED_PCT,
         FUEL_DEUT_PER_UNIT,
         REFINE_LOSS,
+        RAID_LOST_SHIP_FRACTION,
     ];
     let rust_defaults = BTreeMap::from([
         rust_default::<Resources>(),
         rust_default::<PolicyParams>(),
         rust_default::<ExchangeMeter>(),
-        rust_default::<ShipClassCounts>(),
     ]);
 
     for def in model.types.iter().filter(|def| matches!(def.body, Body::Struct(_))) {
