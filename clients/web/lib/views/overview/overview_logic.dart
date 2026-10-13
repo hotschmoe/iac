@@ -106,7 +106,8 @@ String? queuesShort(proto.Resources stock, proto.Resources cost) => switch (shor
     };
 
 /// The single most useful thing to do now, in priority order: raid, stranded
-/// fleet, storage near cap, idle lab, idle build slot, unscanned lanes.
+/// fleet, energy short, storage near cap, idle lab, idle build slot,
+/// unscanned lanes.
 NextUp nextUp(GameState s, EconomyView eco) {
   final d = eco.defence;
   final raidIn = d?.raidInTicks;

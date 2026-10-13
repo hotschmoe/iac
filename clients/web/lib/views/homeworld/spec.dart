@@ -44,8 +44,9 @@ class ItemSpec {
 
   bool get canQueue => reason == null;
 
-  /// A shipyard order, which is built in batches.
-  bool get batched => ship != null || defence != null;
+  /// A shipyard order whose batch is the player's to choose: not a defence
+  /// of which only so many may stand.
+  bool get batched => ship != null || (defence != null && defence!.max == null);
 }
 
 /// Locked, maxed and queue-full block queueing. For a building or a tech
