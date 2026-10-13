@@ -530,6 +530,13 @@ pub enum NpcBehaviorType {
     Swarm,
 }
 
+impl NpcBehaviorType {
+    /// The most jumps a group of this behaviour follows a fleet that left it.
+    pub fn chase_hexes(self) -> u8 {
+        crate::constants::CHASE_HEXES[self as usize]
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SectorTemplate {
     pub coord: Hex,

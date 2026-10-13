@@ -18,8 +18,8 @@ use iac_shared::constants::{
     REPAIR_COST_SHARE_HOME, REPAIR_COST_SHARE_OUTPOST, REPAIR_TICKS,
     RECALL_FUEL_MULTIPLIER, RECALL_DAMAGE_CHANCE_PER_HEX, RECALL_DAMAGE_CHANCE_CAP,
     RECALL_HULL_DAMAGE_MIN, RECALL_HULL_DAMAGE_MAX,
-    FUEL_DEUT_PER_UNIT,
-    NPC_PATROL_INTERVAL, SALVAGE_DESPAWN_TICKS, HOME_SALVAGE_WARN_TICKS, DERELICT_RESPAWN_TICKS, HARVEST_REPORT_TICKS,
+    FUEL_DEUT_PER_UNIT, FLEE_MIN_ROUNDS, FLEE_FUEL_MULTIPLIER, CHASE_MIN_RATIO,
+    SALVAGE_DESPAWN_TICKS, HOME_SALVAGE_WARN_TICKS, DERELICT_RESPAWN_TICKS, HARVEST_REPORT_TICKS,
     TEMPLATE_NPC_ID_BASE,
     MOVE_BASE_COOLDOWN,
     SCAN_COOLDOWN, SCAN_BASE_RANGE, SCAN_PROBE_RANGE, SCAN_REVEAL_TICKS,
@@ -33,6 +33,7 @@ use iac_shared::constants::{
     POLICY_MIN_SEAM_UNITS, POLICY_SEARCH_HOPS, POLICY_HULL_READY,
     POLICY_MIN_FUEL_PCT_MAX, POLICY_CARGO_RETURN_PCT_MIN, POLICY_CARGO_RETURN_PCT_MAX,
     POLICY_RANGE_MIN, POLICY_RANGE_MAX, POLICY_ENGAGE_RATIO_X10_MIN, POLICY_ENGAGE_RATIO_X10_MAX,
+    POLICY_DISENGAGE_RATIO_X10_MIN, POLICY_DISENGAGE_RATIO_X10_MAX,
     LANE_SEARCH_HOPS,
     OUTPOST_MIN_RING, OUTPOST_MAX_RING, OUTPOST_MAX_LEVEL, OUTPOST_RAID_LOSS, OUTPOST_SPACING,
 };
@@ -50,6 +51,7 @@ use iac_shared::protocol::{
     OutpostCompletedEvent, OutpostSurvey, PowerRange, SectorResources, SurveySite,
     BattleGroup, BattleLosses, BattleOutcome, BattleRoundEvent, BattleSide, BattleState,
     DockRepair, RepairQuote, ShipCount, ShipGroupState, ShipsLostEvent, UnitCount,
+    ChaseForecast, Fleeing, FlightQuote, Pursuit, PursuitEvent, PursuitPhase,
 };
 
 use crate::auth::{self, TokenHash};
@@ -247,6 +249,36 @@ impl Ships {
         }
     }
 
+    /// One step of a group's mending toward `muster`, the ships it was
+    /// generated with: every damaged ship regains a part of its full hull,
+    /// and a part of the ships of each class return, as far as it is short.
+    pub fn heal(&mut self, muster: &Ships, arms: Arms) {
+        for theirs in &muster.0 {
+            let full = scaling::ship_figures(theirs.ship_class, arms).hull;
+            let regained = scaling::npc_heal_hull(full);
+            let group = self.group_mut(theirs.ship_class);
+            for hull in &mut group.damaged {
+                *hull = hull.saturating_add(regained);
+            }
+            group.damaged.retain(|&hull| hull < full);
+            let short = theirs.count.saturating_sub(group.count);
+            group.count += short.min(scaling::npc_heal_ships(theirs.count));
+        }
+        self.settle();
+    }
+
+    /// Steps of `heal` it takes until the ships are `muster` again.
+    pub fn heal_steps(&self, muster: &Ships, arms: Arms) -> u32 {
+        muster.0.iter().fold(0, |steps, theirs| {
+            let full = scaling::ship_figures(theirs.ship_class, arms).hull;
+            let here = self.0.iter().find(|g| g.ship_class == theirs.ship_class);
+            let short = theirs.count.saturating_sub(here.map_or(0, |g| g.count));
+            let lowest = here.and_then(|g| g.damaged.first().copied()).unwrap_or(full);
+            let hull = full.saturating_sub(lowest).div_ceil(scaling::npc_heal_hull(full));
+            steps.max(short.div_ceil(scaling::npc_heal_ships(theirs.count))).max(hull)
+        })
+    }
+
     /// Hull the ships hold between them, and at full, fighting with `arms`.
     pub fn hull(&self, arms: Arms) -> (u64, u64) {
         self.0.iter().fold((0, 0), |(held, full), group| {
@@ -351,8 +383,10 @@ impl Fleet {
         self.refit.arms()
     }
 
+    /// The fleet as a round of a fight takes it. One that is charging a
+    /// jump is leaving: it is fired on and does not fire.
     pub fn troop(&self) -> Troop {
-        Troop { arms: self.arms(), squads: self.ships.squads() }
+        Troop { arms: self.arms(), squads: self.ships.squads(), silent: self.state == FleetStatus::Moving }
     }
 }
 
@@ -366,18 +400,55 @@ pub struct NpcFleet {
     pub arms: Arms,
     pub behavior: iac_shared::world::NpcBehaviorType,
     pub home_sector: Hex,
-    pub patrol_timer: u16,
     pub in_combat: bool,
     /// What the group cost to build, and its combined power, fixed at spawn.
     pub bounty: Resources,
     pub power: f32,
     /// "3x cruiser pack": how messages name the group.
     pub label: String,
+    /// The ships it was generated with: what it mends back to.
+    pub muster: Ships,
+    /// Ticks rested in its own sector toward the next step of its mending.
+    pub rested: u64,
+    /// Jumps made after a fleet since it was last in its own sector.
+    pub strayed: u8,
+    /// The jump it is charging: after a fleet, or on its way back.
+    pub errand: Option<Errand>,
+}
+
+/// A group's jump out of or back to its own sector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Errand {
+    /// The fleet it follows; None on the way back.
+    pub quarry: Option<u64>,
+    pub to: Hex,
+    /// The tick it lands on.
+    pub arrives: u64,
 }
 
 impl NpcFleet {
     pub fn troop(&self) -> Troop {
-        Troop { arms: self.arms, squads: self.ships.squads() }
+        Troop { arms: self.arms, squads: self.ships.squads(), silent: false }
+    }
+
+    pub fn whole(&self) -> bool {
+        self.ships == self.muster
+    }
+
+    /// Jumps it may still make after a fleet before it turns back.
+    pub fn leash(&self) -> u8 {
+        self.behavior.chase_hexes().saturating_sub(self.strayed)
+    }
+
+    /// Ticks one jump takes it: its slowest class on the drive of its ring.
+    pub fn jump_ticks(&self) -> u16 {
+        let ring = self.home_sector.dist_from_origin();
+        self.muster.counts().map(|(class, _)| scaling::npc_jump_ticks(class, ring)).max().unwrap_or(MOVE_BASE_COOLDOWN)
+    }
+
+    /// It is the group the template of its own sector spawns.
+    pub fn of_lair(&self) -> bool {
+        self.id == template_npc_id(self.home_sector)
     }
 }
 
@@ -565,6 +636,9 @@ pub struct Combat {
     pub peak_power: f32,
     /// Rounds in a row that took no hull from either side.
     pub quiet_rounds: u16,
+    /// Fleets that jumped out of the fight, in the order they left: whom a
+    /// group may follow once nobody is left to fight.
+    pub fled: Vec<u64>,
     /// What every fleet and group that has fought here lost so far, fleets
     /// first, each side in the order it joined.
     pub losses: Vec<BattleLosses>,
@@ -1072,6 +1146,19 @@ impl Reach<'_> {
                 .ok_or_else(|| format!("no lane toward {home} at {floor:.1}x or better")),
         }
     }
+
+    /// Where a fleet leaving a fight at `from` jumps: the first jump of the
+    /// way home if there is one, otherwise the lane it rates best, the
+    /// nearer to home of two alike.
+    fn way_out(&self, from: Hex) -> Result<Hex, String> {
+        if let Ok((step, _)) = self.way_home(from) {
+            return Ok(step);
+        }
+        let nearer = |n: &Hex| std::cmp::Reverse(Hex::distance(n, &self.home));
+        self.engine.world_gen.connected_neighbors(from).slice().iter().copied()
+            .max_by(|a, b| self.ratio(*a).total_cmp(&self.ratio(*b)).then(nearer(a).cmp(&nearer(b))))
+            .ok_or_else(|| format!("no lane leaves {from}"))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -1289,6 +1376,7 @@ impl GameEngine {
         self.reap_empty_fleets();
         self.process_policies()?;
         self.process_movement()?;
+        self.process_pursuit()?;
         self.process_stranded();
         self.process_combat()?;
         self.process_exploration()?;
@@ -1402,6 +1490,7 @@ impl GameEngine {
 
         // Phase 2: Process arrivals (exploration, docking, NPC encounters)
         for (fleet_id, target, owner_id) in arrived {
+            self.leave_combat(fleet_id, true);
             let first_visit = !self.explored.contains(&(owner_id, target.to_key()));
             self.explored.insert((owner_id, target.to_key()));
             self.note_chart(fleet_id, owner_id, target);
@@ -1452,9 +1541,11 @@ impl GameEngine {
     /// fleets and the groups, and everyone present is sent one report. A
     /// fleet stands in a round as its id orders it, a group likewise, so a
     /// world resumed from its document picks the same targets with the same
-    /// dice. A fight in open space has no limit of rounds: it ends when a
-    /// side has no unit left, when the last fleet has gone, or when
-    /// `STANDOFF_ROUNDS` rounds in a row took no hull from anybody.
+    /// dice. A fleet that is charging a jump is leaving: it stands in the
+    /// round as a target and fires nothing. A fight in open space has no
+    /// limit of rounds: it ends when a side has no unit left, when the last
+    /// fleet has gone, or when `STANDOFF_ROUNDS` rounds in a row took no
+    /// hull from anybody.
     fn process_combat(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let combat_ids: Vec<u64> = self.active_combats.keys().copied().collect();
 
@@ -1511,6 +1602,7 @@ impl GameEngine {
                     owner: self.fleets.get(&fleet_id).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone()),
                     label: String::new(),
                     mine: false,
+                    fleeing: self.fleets.get(&fleet_id).is_some_and(|f| f.state == FleetStatus::Moving),
                     units: units.clone(),
                 }).collect(),
                 ..battle_side(&fought.fleets)
@@ -1521,6 +1613,7 @@ impl GameEngine {
                     owner: None,
                     label: self.npc_fleets.get(&fleet_id).map(|n| n.label.clone()).unwrap_or_default(),
                     mine: false,
+                    fleeing: false,
                     units: units.clone(),
                 }).collect(),
                 ..battle_side(&fought.hostiles)
@@ -1573,15 +1666,16 @@ impl GameEngine {
         Ok(())
     }
 
-    /// End a fight. Fleets still in it are free. Hostiles that were
-    /// destroyed leave their wreckage and pay their score; hostiles that
-    /// were not are gone all the same and their sectors' templates stand
-    /// again, whole: a group keeps no losses from one fight to the next.
-    /// `withdrew` names the owner of a fleet whose leaving ended the fight.
+    /// End a fight. Fleets still in it are free, and one charging its jump
+    /// out goes on charging. A group that was destroyed leaves its wreckage
+    /// and pays its score, and its lair is cleared. A group that was not
+    /// keeps its losses and its damage: when fleets jumped out it may follow
+    /// the strongest of them (`begin_pursuit`), away from its own sector it
+    /// turns back, and in it it mends (`process_npc_behavior`). `withdrew`
+    /// names the owner of a fleet whose leaving ended the fight.
     fn end_combat(&mut self, combat_id: u64, outcome: BattleOutcome, withdrew: Option<String>) {
         let Some(combat) = self.active_combats.remove(&combat_id) else { return; };
         let sector = combat.sector;
-        let killed = matches!(outcome, BattleOutcome::HostilesDestroyed | BattleOutcome::BothDestroyed);
 
         let mut owners: std::collections::BTreeSet<String> = withdrew.into_iter().collect();
         owners.extend(combat.losses.iter().filter_map(|l| l.owner.clone()));
@@ -1593,29 +1687,38 @@ impl GameEngine {
             owners.extend(self.players.get(&fleet.owner_id).map(|p| p.name.clone()));
         }
 
-        let mut pile = None;
-        if killed {
-            let farm = f64::from(self.sector_farm_factor(sector));
-            let mut total = Resources::default();
-            for nid in &combat.npc_fleet_ids {
-                let Some(group) = self.npc_fleets.get(nid) else { continue; };
-                let salvage = npc_salvage(group, &self.world.pace).scale(farm);
-                total = total.add(salvage);
-                self.pending_events.push(GameEvent {
-                    tick: self.current_tick,
-                    kind: EventKind::FleetDestroyed(iac_shared::protocol::FleetDestroyedEvent {
-                        fleet_id: *nid,
-                        is_npc: true,
-                        sector,
-                        owner: None,
-                        mine: false,
-                        salvage,
-                        label: group.label.clone(),
-                    }),
-                });
+        let (fallen, standing): (Vec<u64>, Vec<u64>) = combat.npc_fleet_ids.iter().copied()
+            .filter(|nid| self.npc_fleets.contains_key(nid))
+            .partition(|nid| self.npc_fleets[nid].ships.is_empty());
+
+        let mut kills: Vec<(Hex, Resources, f32)> = Vec::new();
+        let mut total = Resources::default();
+        for nid in &fallen {
+            let group = &self.npc_fleets[nid];
+            let lair = if group.of_lair() { group.home_sector } else { sector };
+            let salvage = npc_salvage(group, &self.world.pace).scale(f64::from(self.sector_farm_factor(lair)));
+            total = total.add(salvage);
+            match kills.iter_mut().find(|(at, ..)| *at == lair) {
+                Some((_, pile, power)) => {
+                    *pile = pile.add(salvage);
+                    *power += group.power;
+                }
+                None => kills.push((lair, salvage, group.power)),
             }
-            pile = Some((total, self.drop_salvage(sector, total)));
+            self.pending_events.push(GameEvent {
+                tick: self.current_tick,
+                kind: EventKind::FleetDestroyed(iac_shared::protocol::FleetDestroyedEvent {
+                    fleet_id: *nid,
+                    is_npc: true,
+                    sector,
+                    owner: None,
+                    mine: false,
+                    salvage,
+                    label: group.label.clone(),
+                }),
+            });
         }
+        let pile = (!fallen.is_empty()).then(|| self.drop_salvage(sector, total));
 
         let (fleets, hostiles): (Vec<BattleLosses>, Vec<BattleLosses>) =
             combat.losses.iter().cloned().partition(|l| l.owner.is_some());
@@ -1629,20 +1732,193 @@ impl GameEngine {
                 losses: fleets.into_iter().chain(hostiles).collect(),
                 owners: owners.into_iter().collect(),
                 mine: false,
-                salvage: pile.map(|(_, (heap, _))| heap),
-                salvage_despawn_tick: pile.map(|(_, (_, tick))| tick),
+                salvage: pile.map(|(heap, _)| heap),
+                salvage_despawn_tick: pile.map(|(_, tick)| tick),
             }),
         });
 
-        if let Some((total, _)) = pile {
-            let key = sector.to_key();
-            self.credit_kill(combat.peak_power, &combat.player_fleet_ids, &combat.npc_fleet_ids, key, total);
-            self.heat_sector(sector);
-            self.ensure_override(key).npc_cleared_tick = Some(self.current_tick);
+        for (lair, spoils, power) in kills {
+            self.credit_kill(combat.peak_power, &combat.player_fleet_ids, power, lair.to_key(), spoils);
+            self.heat_sector(lair);
+            self.ensure_override(lair.to_key()).npc_cleared_tick = Some(self.current_tick);
         }
-        for nid in &combat.npc_fleet_ids {
+        for nid in &fallen {
             self.npc_fleets.remove(nid);
         }
+        for nid in standing {
+            if let Some(group) = self.npc_fleets.get_mut(&nid) {
+                group.in_combat = false;
+                group.rested = 0;
+            }
+            if outcome != BattleOutcome::Standoff {
+                self.begin_pursuit(nid, &combat.fled);
+            }
+            self.settle_group(nid);
+        }
+    }
+
+    /// No group enters `sector`: home ground, the hub, or a sector an
+    /// outpost stands in. A dock is a refuge.
+    fn is_refuge(&self, sector: Hex) -> bool {
+        world::is_home_ground(sector) || world::is_hub(sector) || self.outpost_at(sector).is_some()
+    }
+
+    /// Whether `group` goes after `fleet`, which has left it: Err says why
+    /// not. A group follows next door and no further at a time, never into
+    /// a refuge, and only as far as its leash.
+    fn trail(&self, group: &NpcFleet, fleet_id: u64) -> Result<Hex, String> {
+        let Some(fleet) = self.fleets.get(&fleet_id).filter(|f| !f.ships.is_empty()) else {
+            return Err(format!("fleet {fleet_id} is gone"));
+        };
+        let at = fleet.location;
+        if self.is_refuge(at) {
+            return Err(format!("fleet {fleet_id} has reached {at}, where no group follows"));
+        }
+        if group.leash() == 0 {
+            let far = group.strayed;
+            return Err(format!(
+                "it has followed {far} jump{} from its own sector at {} and goes no further",
+                if far == 1 { "" } else { "s" },
+                group.home_sector,
+            ));
+        }
+        if !self.world_gen.connected_neighbors(group.location).slice().contains(&at) {
+            return Err(format!("fleet {fleet_id} is out of its reach at {at}"));
+        }
+        Ok(at)
+    }
+
+    /// The fight a group stood in is over and fleets jumped out of it: it
+    /// goes after the strongest of them it can reach, if that is a fleet it
+    /// was beating (`CHASE_MIN_RATIO`).
+    fn begin_pursuit(&mut self, group_id: u64, fled: &[u64]) {
+        let Some(group) = self.npc_fleets.get(&group_id) else { return; };
+        if group.ships.is_empty() { return; }
+        let strongest = fled.iter()
+            .filter(|id| self.trail(group, **id).is_ok())
+            .filter_map(|id| self.fleets.get(id))
+            .map(|fleet| (fleet_power(fleet), fleet.id))
+            .max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
+        if let Some((power, quarry)) = strongest
+            && group.ships.power(group.arms) >= CHASE_MIN_RATIO * power
+        {
+            self.chase(group_id, quarry, PursuitPhase::Began);
+        }
+    }
+
+    /// Start `group_id` on a jump to where `quarry` stands, which `trail`
+    /// has allowed. A fleet under standing orders is woken to it.
+    fn chase(&mut self, group_id: u64, quarry: u64, phase: PursuitPhase) {
+        let Some(to) = self.fleets.get(&quarry).map(|f| f.location) else { return; };
+        let tick = self.current_tick;
+        let Some(group) = self.npc_fleets.get_mut(&group_id) else { return; };
+        let ticks = group.jump_ticks();
+        group.errand = Some(Errand { quarry: Some(quarry), to, arrives: tick + u64::from(ticks) });
+        group.strayed += 1;
+        group.rested = 0;
+        if let Some(policy) = self.policies.get_mut(&quarry) {
+            policy.next_eval_tick = policy.next_eval_tick.min(tick + 1);
+        }
+        self.push_pursuit(group_id, quarry, phase, None);
+    }
+
+    /// A group with no fight and no fleet to follow. Away from its own
+    /// sector it starts the next jump of the way back; a way it cannot find
+    /// puts it there. In its own sector and whole it stands down: the lair
+    /// is its template again, an ambush party is gone. Wounded, it stays
+    /// and mends.
+    fn settle_group(&mut self, group_id: u64) {
+        let Some(group) = self.npc_fleets.get(&group_id) else { return; };
+        if group.in_combat || group.errand.is_some() { return; }
+        let (from, home, ticks) = (group.location, group.home_sector, group.jump_ticks());
+        if from != home {
+            let reach = group.behavior.chase_hexes().saturating_add(2);
+            let step = self.lane_path(from, home, reach, &|n| !self.is_refuge(n)).and_then(|path| path.first().copied());
+            let tick = self.current_tick;
+            let Some(group) = self.npc_fleets.get_mut(&group_id) else { return; };
+            match step {
+                Some(to) => {
+                    group.errand = Some(Errand { quarry: None, to, arrives: tick + u64::from(ticks) });
+                    return;
+                }
+                None => group.location = home,
+            }
+        }
+        let Some(group) = self.npc_fleets.get_mut(&group_id) else { return; };
+        group.strayed = 0;
+        if group.whole() {
+            self.npc_fleets.remove(&group_id);
+        }
+    }
+
+    fn push_pursuit(&mut self, group_id: u64, quarry: u64, phase: PursuitPhase, why: Option<String>) {
+        let Some(group) = self.npc_fleets.get(&group_id) else { return; };
+        let owner = self.fleets.get(&quarry)
+            .and_then(|f| self.players.get(&f.owner_id))
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::Pursuit(PursuitEvent {
+                group_id,
+                label: group.label.clone(),
+                fleet_id: quarry,
+                owner,
+                mine: false,
+                sector: group.location,
+                phase,
+                to: group.errand.map(|e| e.to),
+                arrives_in: group.errand.map(|e| e.arrives.saturating_sub(self.current_tick) as u16),
+                hexes_left: group.leash(),
+                why,
+            }),
+        });
+    }
+
+    /// The groups' jumps. One that lands where a fleet stands fires on it
+    /// this tick: the fight is joined, or joined again, and a fleet still
+    /// charging its jump there is fired on until it is gone. One that lands
+    /// on an empty sector goes on after its fleet or turns back; one that
+    /// lands in its own sector is home.
+    fn process_pursuit(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let tick = self.current_tick;
+        let landing: Vec<u64> = self.npc_fleets.values()
+            .filter(|n| !n.in_combat && n.errand.is_some_and(|e| e.arrives <= tick))
+            .map(|n| n.id)
+            .collect();
+        for nid in landing {
+            let Some(group) = self.npc_fleets.get_mut(&nid) else { continue; };
+            let Some(errand) = group.errand.take() else { continue; };
+            group.location = errand.to;
+            let passive = group.behavior == iac_shared::world::NpcBehaviorType::Passive;
+            let here = errand.to;
+            let hunts = !passive && !self.is_refuge(here);
+            let met = self.fleets.values()
+                .filter(|f| hunts && f.location == here && !f.ships.is_empty())
+                .map(|f| f.id)
+                .min_by_key(|id| (Some(*id) != errand.quarry, *id));
+            if let Some(fleet_id) = met {
+                self.start_combat(fleet_id, nid)?;
+                continue;
+            }
+            if let Some(quarry) = errand.quarry {
+                let trail = self.npc_fleets.get(&nid).map(|group| self.trail(group, quarry));
+                match trail {
+                    Some(Ok(_)) => {
+                        self.chase(nid, quarry, PursuitPhase::Continued);
+                        continue;
+                    }
+                    Some(Err(why)) => {
+                        self.settle_group(nid);
+                        self.push_pursuit(nid, quarry, PursuitPhase::Abandoned, Some(why));
+                        continue;
+                    }
+                    None => {}
+                }
+            }
+            self.settle_group(nid);
+        }
+        Ok(())
     }
 
     /// The fights `player_id` has a fleet in or is present at, each with
@@ -1665,15 +1941,15 @@ impl GameEngine {
             .collect()
     }
 
-    /// Score for destroying the NPC group, once per respawn of the sector and
-    /// to every player who fought (cooperation costs nothing). It follows the
-    /// pile the kill left (finds factor and anti-farming heat included), so
+    /// Score for destroying the groups of one lair, `power` between them as
+    /// they were generated, once per respawn of the sector and to every
+    /// player who fought (cooperation costs nothing). It follows the pile
+    /// the kill left (finds factor and anti-farming heat included), so
     /// points and resources rise and fall together. `engaged` is the most
     /// power the players' side brought to bear.
-    fn credit_kill(&mut self, engaged: f32, player_fleets: &[u64], npcs: &[u64], sector_key: u32, pile: Resources) {
+    fn credit_kill(&mut self, engaged: f32, player_fleets: &[u64], power: f32, sector_key: u32, pile: Resources) {
         let fresh = self.sector_overrides.get(&sector_key).is_none_or(|o| o.npc_cleared_tick.is_none());
         if !fresh { return; }
-        let power: f32 = npcs.iter().filter_map(|id| self.npc_fleets.get(id)).map(|n| n.power).sum();
         let points = score::kill_points(pile, engaged, power);
         if points <= 0.0 { return; }
         let owners: HashSet<u64> = player_fleets.iter()
@@ -2019,8 +2295,10 @@ impl GameEngine {
 
     // ── NPC Behavior ──────────────────────────────────────────────
 
+    /// A cleared lair's group returns after its delay. A wounded group at
+    /// rest in its own sector mends a step at a time, every
+    /// `scaling::npc_heal_step_ticks`; whole again, it stands down.
     fn process_npc_behavior(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Respawn check
         for (&key, ov) in self.sector_overrides.iter_mut() {
             let Some(cleared_tick) = ov.npc_cleared_tick else { continue; };
             let coord = Hex::from_key(key);
@@ -2031,53 +2309,33 @@ impl GameEngine {
             }
         }
 
-        // Patrol movement
-        let mut rng = StdRng::seed_from_u64(self.current_tick.wrapping_mul(0x9E3779B97F4A7C15));
-
-        // Sorted so the per-tick rng draws land on the same patrols on every run:
-        // HashMap order is randomised per process.
-        let mut npc_ids: Vec<u64> = self.npc_fleets.keys().copied().collect();
-        npc_ids.sort_unstable();
-        for npc_id in npc_ids {
-            let Some(npc) = self.npc_fleets.get(&npc_id) else { continue; };
-            if npc.in_combat { continue; }
-            if npc.behavior != iac_shared::world::NpcBehaviorType::Patrol
-                && npc.behavior != iac_shared::world::NpcBehaviorType::Aggressive
-            {
-                continue;
-            }
-
-            let npc_mut = self.npc_fleets.get(&npc_id).unwrap();
-            if npc_mut.patrol_timer > 0 {
-                if let Some(npc_m) = self.npc_fleets.get_mut(&npc_id) {
-                    npc_m.patrol_timer -= 1;
-                }
-                continue;
-            }
-
-            let connections = self.world_gen.connected_neighbors(npc.location);
-            let conns: Vec<Hex> = connections.slice().iter().copied()
-                .filter(|c| !world::is_home_ground(*c) && !world::is_hub(*c) && self.outpost_at(*c).is_none())
-                .collect();
-            if conns.is_empty() { continue; }
-
-            let idx = rng.random_range(0..conns.len());
-            let new_location = conns[idx];
-
-            if let Some(npc_m) = self.npc_fleets.get_mut(&npc_id) {
-                npc_m.location = new_location;
-                npc_m.patrol_timer = NPC_PATROL_INTERVAL;
-            }
-
-            // Check if player fleet at new location -> trigger combat
-            for fleet in self.fleets.values() {
-                if fleet.location == new_location && fleet.state != FleetStatus::InCombat && !fleet.ships.is_empty() {
-                    self.start_combat(fleet.id, npc_id)?;
-                    break;
-                }
-            }
+        let pace = self.world.pace;
+        let resting: Vec<u64> = self.npc_fleets.values()
+            .filter(|n| !n.in_combat && n.errand.is_none() && n.location == n.home_sector && !n.whole())
+            .map(|n| n.id)
+            .collect();
+        for nid in resting {
+            let Some(group) = self.npc_fleets.get_mut(&nid) else { continue; };
+            group.rested += 1;
+            if group.rested < scaling::npc_heal_step_ticks(group.home_sector.dist_from_origin(), &pace) { continue; }
+            group.rested = 0;
+            let (muster, arms) = (group.muster.clone(), group.arms);
+            group.ships.heal(&muster, arms);
+            self.settle_group(nid);
         }
         Ok(())
+    }
+
+    /// The tick `group` will be whole again if it mends undisturbed from
+    /// now; None for one that is whole. Away from its own sector or in a
+    /// fight the clock is not running, and the tick is what it would be
+    /// were it to start now.
+    pub fn group_whole_at(&self, group: &NpcFleet) -> Option<u64> {
+        if group.whole() { return None; }
+        let step = scaling::npc_heal_step_ticks(group.home_sector.dist_from_origin(), &self.world.pace);
+        let steps = u64::from(group.ships.heal_steps(&group.muster, group.arms));
+        let resting = !group.in_combat && group.errand.is_none() && group.location == group.home_sector;
+        Some(self.current_tick + (steps * step).saturating_sub(if resting { group.rested } else { 0 }))
     }
 
     // ── Homeworlds ────────────────────────────────────────────────
@@ -3288,6 +3546,12 @@ impl GameEngine {
                 "a {group} holds {sector}; an outpost is founded on a sector its founder has won",
             ));
         }
+        if let Some(away) = self.npc_fleets.values().find(|n| n.home_sector == sector && !n.ships.is_empty()) {
+            return refuse(ErrorCode::InvalidTarget, format!(
+                "the {} that holds {sector} is away at {} and will be back; an outpost is founded on a sector its founder has won",
+                away.label, away.location,
+            ));
+        }
         if let Some(policy) = self.policies.get(&fleet_id) {
             return refuse(ErrorCode::InvalidCommand, format!(
                 "fleet {fleet_id} is under standing orders ({}); set it to manual before founding an outpost",
@@ -3908,9 +4172,28 @@ impl GameEngine {
         Ok(fleet)
     }
 
+    /// Start a jump to the connected sector `target`. From inside a fight
+    /// it is flight (`flight_order`): the fleet stops firing, stays a
+    /// target while the jump charges, and is out of the fight when it
+    /// lands. A fleet already charging a jump takes no other.
     pub fn handle_move(&mut self, player_id: u64, fleet_id: u64, target: Hex) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
-        if fleet.state == FleetStatus::InCombat { return Err(ErrorCode::OnCooldown); }
+        if fleet.state == FleetStatus::Moving { return Err(ErrorCode::OnCooldown); }
+        if fleet.state == FleetStatus::InCombat {
+            if !self.world_gen.connected_neighbors(fleet.location).slice().contains(&target) {
+                return Err(ErrorCode::NoConnection);
+            }
+            let (fuel, rounds) = self.flight_order(fleet).map_err(|refusal| refusal.code)?;
+            let hop = self.hop_fuel_cost(fleet);
+            let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
+            fleet_mut.fuel -= fuel;
+            fleet_mut.state = FleetStatus::Moving;
+            fleet_mut.move_target = Some(target);
+            fleet_mut.move_cooldown = rounds;
+            fleet_mut.action_cooldown = rounds;
+            self.warn_if_cannot_return(fleet_id, target, hop);
+            return Ok(());
+        }
         if fleet.action_cooldown > 0 { return Err(ErrorCode::OnCooldown); }
 
         if let Some(player) = self.players.get(&fleet.owner_id)
@@ -3949,12 +4232,14 @@ impl GameEngine {
         if !self.world_gen.connected_neighbors(fleet.location).slice().contains(&target) {
             return Err(ErrorCode::NoConnection);
         }
-        let fuel_cost = self.hop_fuel_cost(fleet);
+        let hop = self.hop_fuel_cost(fleet);
+        let flight = self.flight_quote(fleet, Some(target));
+        let fuel_cost = flight.as_ref().map_or(hop, |quote| quote.fuel);
         let can_jump = fleet.fuel >= fuel_cost;
         let fuel_after = if can_jump { fleet.fuel - fuel_cost } else { 0.0 };
         let route = self.home_route(player_id, target);
         let hops_home = route.direct;
-        let fuel_to_return = f64::from(hops_home) * fuel_cost;
+        let fuel_to_return = f64::from(hops_home) * hop;
         let odds = self.fleet_odds(fleet, target);
         Ok(MovePreview {
             fleet_id,
@@ -3971,6 +4256,114 @@ impl GameEngine {
             fleet_power: fleet_power(fleet),
             ratio: odds.ratio,
             label: odds.label,
+            flight,
+        })
+    }
+
+    /// The fuel a jump out of the fight `fleet` is in burns and the rounds
+    /// it charges for, under fire and silent: one fewer than its jump takes
+    /// ticks and never fewer than `FLEE_MIN_ROUNDS`. Err says why the order
+    /// is refused. Every flight goes through here: the order, its refusal,
+    /// the quote in the state and the standing orders' disengage rule.
+    pub fn flight_order(&self, fleet: &Fleet) -> Result<(f64, u16), Refusal> {
+        let (fleet_id, at) = (fleet.id, fleet.location);
+        match (fleet.state, fleet.move_target) {
+            (FleetStatus::InCombat, _) => {}
+            (FleetStatus::Moving, Some(target)) if self.combat_of(fleet_id).is_some() => {
+                return Err(Refusal::new(ErrorCode::OnCooldown, format!(
+                    "fleet {fleet_id} is already leaving the fight at {at} for {target}; stop calls the jump off, and its fuel is forfeit",
+                )));
+            }
+            _ => {
+                return Err(Refusal::new(ErrorCode::InvalidCommand, format!("fleet {fleet_id} is in no fight to leave")));
+            }
+        }
+        let fuel = self.hop_fuel_cost(fleet) * FLEE_FUEL_MULTIPLIER;
+        if fleet.fuel < fuel {
+            return Err(Refusal::new(ErrorCode::InsufficientFuel, format!(
+                "fleet {fleet_id} has {} fuel and the jump out of the fight at {at} burns {}: it cannot leave, \
+                 except by recall if it holds the fuel for that",
+                fuel_words(fleet.fuel), fuel_words(fuel),
+            )));
+        }
+        Ok((fuel, self.hop_ticks(fleet).saturating_sub(1).max(FLEE_MIN_ROUNDS)))
+    }
+
+    /// The odds of `combat` as it stands: its fleets that are firing against
+    /// every group in it, each with the losses and the damage it has taken.
+    fn fight_ratio(&self, combat: &Combat) -> f32 {
+        let mut fleet_ids = combat.player_fleet_ids.clone();
+        fleet_ids.sort_unstable();
+        let mut ours = Force::default();
+        for fleet in fleet_ids.iter().filter_map(|id| self.fleets.get(id)).filter(|f| f.state != FleetStatus::Moving) {
+            ours.join(&fleet_force(fleet));
+        }
+        let mut group_ids = combat.npc_fleet_ids.clone();
+        group_ids.sort_unstable();
+        let mut theirs = Force::default();
+        for group in group_ids.iter().filter_map(|id| self.npc_fleets.get(id)) {
+            theirs.join(&Force::of(group.arms, group.ships.squads()));
+        }
+        self.odds_ratio(&ours, &theirs)
+    }
+
+    /// What a `move` out of the fight `fleet` is in would cost right now,
+    /// with the group that would follow it, to `target` if one is named.
+    /// None for a fleet that is in no fight or is already leaving one.
+    pub fn flight_quote(&self, fleet: &Fleet, target: Option<Hex>) -> Option<FlightQuote> {
+        if fleet.state != FleetStatus::InCombat { return None; }
+        let combat = self.combat_of(fleet.id)?;
+        let rounds = self.hop_ticks(fleet).saturating_sub(1).max(FLEE_MIN_ROUNDS);
+        let ratio = self.fight_ratio(combat);
+        let ticks = self.hop_ticks(fleet);
+        let power = fleet_power(fleet);
+        let followed = !target.is_some_and(|to| self.is_refuge(to));
+        let chase = combat.npc_fleet_ids.iter()
+            .filter_map(|id| self.npc_fleets.get(id))
+            .filter(|group| followed && !group.ships.is_empty() && group.leash() > 0)
+            .filter(|group| group.ships.power(group.arms) >= CHASE_MIN_RATIO * power)
+            .map(|group| ChaseForecast {
+                group_id: group.id,
+                label: group.label.clone(),
+                hexes: group.leash(),
+                jump_ticks: group.jump_ticks(),
+                rounds_per_hex: ticks.saturating_sub(group.jump_ticks()),
+            })
+            .max_by_key(|chase| (chase.rounds_per_hex, chase.hexes, std::cmp::Reverse(chase.group_id)));
+        Some(FlightQuote {
+            fuel: self.hop_fuel_cost(fleet) * FLEE_FUEL_MULTIPLIER,
+            ticks: rounds.saturating_add(1),
+            rounds,
+            ratio,
+            label: scaling::ratio_label(ratio),
+            refusal: self.flight_order(fleet).err().map(|refusal| refusal.reason),
+            chase,
+        })
+    }
+
+    /// The jump out of a fight `fleet` is charging, if it is.
+    pub fn fleeing(&self, fleet: &Fleet) -> Option<Fleeing> {
+        let to = fleet.move_target.filter(|_| fleet.state == FleetStatus::Moving)?;
+        self.combat_of(fleet.id)?;
+        Some(Fleeing { to, ticks: fleet.move_cooldown + 1, rounds: fleet.move_cooldown })
+    }
+
+    /// The group on the trail of `fleet`, if one is: the first to land.
+    pub fn pursuit_of(&self, fleet: &Fleet) -> Option<Pursuit> {
+        let tick = self.current_tick;
+        let (group, errand) = self.npc_fleets.values()
+            .filter(|group| !group.in_combat)
+            .filter_map(|group| group.errand.filter(|e| e.quarry == Some(fleet.id)).map(|errand| (group, errand)))
+            .min_by_key(|(group, errand)| (errand.arrives, group.id))?;
+        let arrives_in = errand.arrives.saturating_sub(tick).min(u64::from(u16::MAX)) as u16;
+        let gone_in = if fleet.state == FleetStatus::Moving { fleet.move_cooldown + 1 } else { self.hop_ticks(fleet) };
+        Some(Pursuit {
+            group_id: group.id,
+            label: group.label.clone(),
+            from: group.location,
+            arrives_in,
+            catches: errand.to == fleet.location && arrives_in < gone_in,
+            hexes_left: group.leash(),
         })
     }
 
@@ -4084,7 +4477,7 @@ impl GameEngine {
             return (self.sector_threat(coord), self.sector_opposing(coord));
         }
         match self.known.remembered(player_id, coord) {
-            Some(seen) => (seen.threat, remembered_opposing(seen)),
+            Some(seen) => (seen.threat, remembered_opposing(seen, self.current_tick)),
             None => (ring_threat(coord, ThreatBasis::Estimate), Opposing::Ring(coord.dist_from_origin())),
         }
     }
@@ -4887,7 +5280,7 @@ impl GameEngine {
         fleet_mut.move_target = None;
         fleet_mut.move_cooldown = 0;
 
-        self.leave_combat(fleet_id);
+        self.leave_combat(fleet_id, false);
         self.dock_fleet(fleet_id).map_err(|_| ErrorCode::ServerError)?;
 
         Ok(())
@@ -5342,14 +5735,21 @@ impl GameEngine {
 
     /// Stop whatever the fleet is doing. Aborting a jump forfeits the fuel
     /// already burned — that's the price of hesitation — and backing out of
-    /// a boarding leaves the site on alert; the owner is told of either.
+    /// a boarding leaves the site on alert; the owner is told of either. A
+    /// fleet that calls off its jump out of a fight fights on.
     pub fn handle_stop(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
         let fleet = self.owned_fleet(player_id, fleet_id)?;
         match fleet.state {
             FleetStatus::Moving | FleetStatus::Harvesting | FleetStatus::Exploring => {
                 let was_exploring = fleet.state == FleetStatus::Exploring;
                 let location = fleet.location;
+                let fighting = self.combat_of(fleet_id).is_some();
                 let cost = match (fleet.state, fleet.move_target) {
+                    (FleetStatus::Moving, Some(target)) if fighting => Some(format!(
+                        "fleet {fleet_id} called off its jump to {target}: the {} fuel it burned for the jump is forfeit, \
+                         and it fights on at {location}",
+                        fuel_words(self.hop_fuel_cost(fleet) * FLEE_FUEL_MULTIPLIER),
+                    )),
                     (FleetStatus::Moving, Some(target)) => Some(format!(
                         "fleet {fleet_id} called off its jump to {target}: the {} fuel it burned for the jump is forfeit",
                         fuel_words(self.hop_fuel_cost(fleet)),
@@ -5367,7 +5767,7 @@ impl GameEngine {
                     self.push_alert(AlertLevel::Warning, fleet_id, location, message);
                 }
                 let fleet_mut = self.fleets.get_mut(&fleet_id).unwrap();
-                fleet_mut.state = FleetStatus::Idle;
+                fleet_mut.state = if fighting { FleetStatus::InCombat } else { FleetStatus::Idle };
                 fleet_mut.move_target = None;
                 fleet_mut.move_cooldown = 0;
                 if was_exploring {
@@ -5716,6 +6116,9 @@ impl GameEngine {
         params.cargo_return_pct = params.cargo_return_pct.clamp(POLICY_CARGO_RETURN_PCT_MIN, POLICY_CARGO_RETURN_PCT_MAX);
         params.max_range = params.max_range.clamp(POLICY_RANGE_MIN, POLICY_RANGE_MAX);
         params.engage_ratio_x10 = params.engage_ratio_x10.clamp(POLICY_ENGAGE_RATIO_X10_MIN, POLICY_ENGAGE_RATIO_X10_MAX);
+        params.disengage_ratio_x10 = params.disengage_ratio_x10
+            .clamp(POLICY_DISENGAGE_RATIO_X10_MIN, POLICY_DISENGAGE_RATIO_X10_MAX)
+            .min(params.engage_ratio_x10);
         params.fuel_budget_pct = params.fuel_budget_pct.min(POLICY_FUEL_UNBOUNDED_PCT);
 
         // The allowance starts empty: a fleet flies its first sortie on the
@@ -5744,8 +6147,9 @@ impl GameEngine {
             format!("fuel budget {}% of deuterium income", params.fuel_budget_pct)
         };
         let reason = format!(
-            "doctrine set: {} (range {}, engage {:.1}x, {fuel}{}){}",
+            "doctrine set: {} (range {}, engage {:.1}x, disengage {:.1}x, {fuel}{}){}",
             preset.label(), params.max_range, f32::from(params.engage_ratio_x10) / 10.0,
+            f32::from(params.disengage_ratio_x10) / 10.0,
             if params.refine { ", refining from the hold when short of fuel" } else { "" },
             if was_laden { "; the hold loaded by hand goes back to the stockpile" } else { "" },
         );
@@ -5781,6 +6185,13 @@ impl GameEngine {
                 continue;
             };
             if fleet.ships.is_empty() { continue; }
+            if fleet.state == FleetStatus::InCombat {
+                if let Some(p) = self.policies.get_mut(&fid) {
+                    p.next_eval_tick = tick + POLICY_EVAL_INTERVAL as u64;
+                }
+                self.policy_disengage(fid, preset);
+                continue;
+            }
             // Only steer a fleet that is free to act.
             if fleet.state != FleetStatus::Idle && fleet.state != FleetStatus::Docked { continue; }
             if fleet.action_cooldown > 0 || fleet.move_cooldown > 0 { continue; }
@@ -5790,7 +6201,9 @@ impl GameEngine {
             }
 
             let wait = self.policy_unload_wait(fid).or_else(|| self.policy_fuel_wait(fid));
-            let acted = if let Some((why, at_home)) = self.policy_hull_low(fid) {
+            let acted = if let Some(why) = self.policy_pursued(fid) {
+                self.policy_head_home(fid, preset, &why)
+            } else if let Some((why, at_home)) = self.policy_hull_low(fid) {
                 if at_home {
                     self.hold_policy(fid, preset, &format!("waiting at the dock to be mended: {why}"))
                 } else {
@@ -5851,6 +6264,52 @@ impl GameEngine {
             ),
             at_home,
         ))
+    }
+
+    /// A fleet under orders with a group on its trail runs for home before
+    /// it does anything else: the reason, for a fleet away from home.
+    fn policy_pursued(&self, fleet_id: u64) -> Option<String> {
+        let fleet = self.fleets.get(&fleet_id)?;
+        if self.players.get(&fleet.owner_id).is_some_and(|p| p.homeworld == fleet.location) { return None; }
+        let pursuit = self.pursuit_of(fleet)?;
+        Some(format!(
+            "running for home: the {} is on its trail and lands here in {} tick{}",
+            pursuit.label, pursuit.arrives_in, if pursuit.arrives_in == 1 { "" } else { "s" },
+        ))
+    }
+
+    /// The disengage rule, for a fleet under orders that stands in a fight:
+    /// when its odds in the fight as it now stands are below the doctrine's
+    /// `disengage_ratio_x10` it jumps out toward home, and says why. A fleet
+    /// that cannot leave says that, once. True if it left.
+    fn policy_disengage(&mut self, fleet_id: u64, preset: PolicyPreset) -> bool {
+        let Some(fleet) = self.fleets.get(&fleet_id).cloned() else { return false; };
+        let Some(params) = self.policies.get(&fleet_id).map(|p| p.params) else { return false; };
+        let Some(home) = self.players.get(&fleet.owner_id).map(|p| p.homeworld) else { return false; };
+        let Some(quote) = self.flight_quote(&fleet, None) else { return false; };
+        if quote.ratio * 10.0 >= f32::from(params.disengage_ratio_x10) { return false; }
+        let at = fleet.location;
+        let odds = format!(
+            "odds fell to {:.2}x, {}, below the doctrine's {:.1}x",
+            quote.ratio, quote.label.label(), f32::from(params.disengage_ratio_x10) / 10.0,
+        );
+        let way = quote.refusal.clone().map_or_else(|| self.policy_reach(&fleet, &params, home).way_out(at), Err);
+        let left = way.and_then(|step| {
+            self.handle_move(fleet.owner_id, fleet_id, step)
+                .map(|()| step)
+                .map_err(|code| format!("the jump to {step} was refused ({code:?})"))
+        });
+        match left {
+            Ok(step) => {
+                let rounds = quote.rounds;
+                self.push_policy_event(fleet_id, preset, "flee", &format!(
+                    "left the fight at {at}: {odds}; jumping to {step}, under fire for {rounds} round{}",
+                    if rounds == 1 { "" } else { "s" },
+                ));
+                true
+            }
+            Err(why) => self.hold_policy(fleet_id, preset, &format!("cannot leave the fight at {at} ({odds}): {why}")),
+        }
     }
 
     /// A full store leaves cargo aboard a docked fleet, and a fleet that
@@ -6663,14 +7122,17 @@ impl GameEngine {
             id: npc_fleet_id,
             location,
             power: ships.power(arms),
+            muster: ships.clone(),
             ships,
             arms,
             behavior: npc.behavior,
             home_sector: location,
-            patrol_timer: 0,
             in_combat: false,
             label: npc.label(),
             bounty: npc.ship_class.build_cost().scale(f64::from(count)),
+            rested: 0,
+            strayed: 0,
+            errand: None,
         };
 
         self.npc_fleets.insert(npc_fleet_id, npc_fleet.clone());
@@ -6700,9 +7162,7 @@ impl GameEngine {
                     if let Some(combat_mut) = self.active_combats.get_mut(&existing_id) {
                         combat_mut.add_npc_fleet(npc_id);
                     }
-                    if let Some(n) = self.npc_fleets.get_mut(&npc_id) {
-                        n.in_combat = true;
-                    }
+                    self.engage_group(npc_id);
                 }
 
                 self.pending_events.push(GameEvent {
@@ -6731,6 +7191,7 @@ impl GameEngine {
             round: 0,
             peak_power: 0.0,
             quiet_rounds: 0,
+            fled: Vec::new(),
             losses: Vec::new(),
             last_round: None,
         };
@@ -6739,9 +7200,7 @@ impl GameEngine {
         self.active_combats.insert(combat_id, new_combat);
 
         self.engage_fleet(fleet_id);
-        if let Some(n) = self.npc_fleets.get_mut(&npc_id) {
-            n.in_combat = true;
-        }
+        self.engage_group(npc_id);
 
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
@@ -6781,51 +7240,80 @@ impl GameEngine {
         Ok(())
     }
 
-    /// Take a fleet that has left the sector out of the fight it was in. The
-    /// fight goes on for the fleets that stay; with none left it is over.
-    fn leave_combat(&mut self, fleet_id: u64) {
-        let Some(combat) = self.active_combats.values_mut().find(|c| c.has_player_fleet(fleet_id)) else { return; };
-        let combat_id = combat.id;
-        combat.player_fleet_ids.retain(|id| *id != fleet_id);
-        let fleets = &self.fleets;
-        if !combat.player_fleet_ids.iter().any(|id| fleets.get(id).is_some_and(|f| !f.ships.is_empty())) {
-            let withdrew = fleets.get(&fleet_id).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone());
-            self.end_combat(combat_id, BattleOutcome::Withdrawn, withdrew);
+    /// Put a group into a fight: the jump it was charging is abandoned, and
+    /// the clock of its mending stops.
+    fn engage_group(&mut self, group_id: u64) {
+        if let Some(group) = self.npc_fleets.get_mut(&group_id) {
+            group.in_combat = true;
+            group.errand = None;
+            group.rested = 0;
         }
     }
 
-    /// Put a fleet into a fight. A jump it was still charging is abandoned,
-    /// as `stop` would: only a moving fleet carries a jump target or
-    /// cooldown. Its fuel is gone as it is for a stop, and the owner is told
-    /// in the same terms. A boarding is abandoned too, and told of: the
-    /// timer was the boarding's, and a fight is not a backing-out, so the
-    /// site is not put on alert.
+    /// The fight `fleet_id` stands in, firing or leaving.
+    pub fn combat_of(&self, fleet_id: u64) -> Option<&Combat> {
+        self.active_combats.values().find(|c| c.has_player_fleet(fleet_id))
+    }
+
+    /// Take a fleet that has left the sector out of the fight it was in:
+    /// `jumped` out of it under fire, or gone home by the emergency jump.
+    /// The fight goes on for the fleets that stay; with none left it is
+    /// over, and a group may follow those that jumped.
+    fn leave_combat(&mut self, fleet_id: u64, jumped: bool) {
+        let Some(combat) = self.active_combats.values_mut().find(|c| c.has_player_fleet(fleet_id)) else { return; };
+        let combat_id = combat.id;
+        combat.player_fleet_ids.retain(|id| *id != fleet_id);
+        if jumped {
+            combat.fled.push(fleet_id);
+        }
+        let fleets = &self.fleets;
+        if !combat.player_fleet_ids.iter().any(|id| fleets.get(id).is_some_and(|f| !f.ships.is_empty())) {
+            let withdrew = fleets.get(&fleet_id).and_then(|f| self.players.get(&f.owner_id)).map(|p| p.name.clone());
+            let outcome = if jumped { BattleOutcome::Fled } else { BattleOutcome::Withdrawn };
+            self.end_combat(combat_id, outcome, withdrew);
+        }
+    }
+
+    /// Put a fleet into a fight. A fleet that is charging a jump keeps it:
+    /// it is leaving, so it is fired on without answering until the jump
+    /// lands, and its owner is told. A boarding is abandoned, and told of:
+    /// the timer was the boarding's, and a fight is not a backing-out, so
+    /// the site is not put on alert. Standing orders look at the fight at
+    /// their next turn.
     fn engage_fleet(&mut self, fleet_id: u64) {
-        let charging = self.fleets.get(&fleet_id).and_then(|fleet| match (fleet.state, fleet.move_target) {
-            (FleetStatus::Moving, Some(target)) => Some((fleet.location, target, self.hop_fuel_cost(fleet))),
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        let at = fleet.location;
+        let boarding = fleet.state == FleetStatus::Exploring;
+        let leaving = match (fleet.state, fleet.move_target) {
+            (FleetStatus::Moving, Some(target)) => Some((target, fleet.move_cooldown + 1)),
             _ => None,
-        });
-        let boarding = self.fleets.get(&fleet_id).filter(|fleet| fleet.state == FleetStatus::Exploring).map(|fleet| fleet.location);
-        if let Some((at, target, fuel)) = charging {
+        };
+        if let Some((target, ticks)) = leaving {
             self.push_alert(AlertLevel::Warning, fleet_id, at, format!(
-                "fleet {fleet_id} was caught in a fight at {at} while charging its jump to {target}: \
-                 the jump is abandoned, and the {} fuel it burned for the jump is forfeit",
-                fuel_words(fuel),
+                "fleet {fleet_id} was caught at {at} while charging its jump to {target}: \
+                 it is fired on and does not answer until the jump lands in {ticks} tick{}",
+                if ticks == 1 { "" } else { "s" },
             ));
         }
-        if let Some(at) = boarding {
+        if boarding {
             self.push_alert(AlertLevel::Warning, fleet_id, at, format!(
                 "fleet {fleet_id} was caught in a fight at {at} while boarding the derelict: \
                  the boarding is abandoned and nothing was recovered",
             ));
         }
+        let tick = self.current_tick;
+        if let Some(policy) = self.policies.get_mut(&fleet_id) {
+            policy.next_eval_tick = policy.next_eval_tick.min(tick + 1);
+        }
         if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
-            if boarding.is_some() {
+            if boarding {
                 fleet.action_cooldown = 0;
             }
-            fleet.state = FleetStatus::InCombat;
-            fleet.move_target = None;
-            fleet.move_cooldown = 0;
+            if leaving.is_none() {
+                fleet.state = FleetStatus::InCombat;
+                fleet.move_target = None;
+                fleet.move_cooldown = 0;
+            }
         }
     }
 
@@ -7103,7 +7591,10 @@ fn worth_aboard(load: Resources, room: f64) -> f32 {
 
 /// The ships of a remembered sector: the groups last seen there, scaled to
 /// the power they were rated at, or the ring's group if none was in sight.
-fn remembered_opposing(seen: &SectorState) -> Opposing {
+/// A group seen wounded is counted whole once the tick it was to be whole by
+/// is past at `now`; one seen passing through, after a fleet or on its way
+/// back, is not counted there.
+fn remembered_opposing(seen: &SectorState, now: u64) -> Opposing {
     use iac_shared::protocol::NpcBehavior::{Aggressive, Swarm};
     let ring = || Opposing::Ring(seen.location.dist_from_origin());
     if seen.outpost.is_some() && seen.hostiles.is_none() {
@@ -7124,8 +7615,19 @@ fn remembered_opposing(seen: &SectorState) -> Opposing {
     }
     let multiplier = seen.threat.est_power / rated;
     let mut force = Force::default();
-    for ship in groups.iter().flat_map(|g| &g.ships) {
-        force.join(&Force::of_group(ship.ship_class, ship.count, multiplier));
+    for group in groups.iter().filter(|g| g.errand.is_none()) {
+        let mended = group.whole_at.is_some_and(|tick| tick <= now) && group.ship_count > 0;
+        for ship in &group.ships {
+            let count = if mended {
+                (u64::from(ship.count) * u64::from(group.muster)).div_ceil(u64::from(group.ship_count)) as u32
+            } else {
+                ship.count
+            };
+            force.join(&Force::of_group(ship.ship_class, count, multiplier));
+        }
+    }
+    if force.is_empty() {
+        return ring();
     }
     Opposing::Ships(force)
 }

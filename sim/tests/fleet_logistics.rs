@@ -17,9 +17,7 @@ use iac_shared::protocol::{
 };
 use iac_shared::scaling::{ratio_label, ship_tank, RatioLabel, ResearchLevels};
 use iac_shared::world::{self, NpcBehaviorType};
-use iac_sim::engine::{template_npc_id, FleetStatus, Ships};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use iac_sim::engine::{template_npc_id, Errand, FleetStatus, Ships};
 use iac_sim::snapshot::ExploreCredit;
 use iac_sim::GameEngine;
 
@@ -248,6 +246,7 @@ fn home_fuel_prices_the_lanes_a_fleet_flies_and_a_recall_does_not() {
             cargo_return_pct: 100,
             max_range: 8,
             engage_ratio_x10: 15,
+            disengage_ratio_x10: 9,
             fuel_budget_pct: 100,
             refine: false,
         }))
@@ -832,11 +831,6 @@ fn a_boarding_pays_on_the_tick_it_announces() {
         .find(|&h| e.engine.derelict_site_at(h).is_some() && e.engine.world_gen.generate_sector(h).npc_template.is_none())
         .expect("a derelict with no hostile group over it");
     deploy(&mut e.engine, fid, site, None);
-    edit(&mut e.engine, |s| {
-        for npc in s.npc_fleets.values_mut() {
-            npc.patrol_timer = 1_000;
-        }
-    });
 
     let mark = e.mark();
     e.order(Command::ExploreSite { fleet_id: fid }).expect("a boarding party goes in");
@@ -887,45 +881,29 @@ fn a_fight_that_catches_a_boarding_tells_its_owner_and_frees_the_fleet() {
         .expect("a derelict with no hostile group over it");
     deploy(&mut e.engine, fid, site, Some(MIGHTY));
 
-    let legal = |engine: &GameEngine, from: Hex| -> Vec<Hex> {
-        engine.world_gen.connected_neighbors(from).slice().iter().copied()
-            .filter(|c| !world::is_home_ground(*c) && !world::is_hub(*c) && engine.outpost_at(*c).is_none())
-            .collect()
-    };
-    let now = e.engine.current_tick();
-    let mut approach: Option<(Hex, u16, u64)> = None;
-    for from in e.engine.world_gen.connected_neighbors(site).slice().to_vec() {
-        let steps = legal(&e.engine, from);
-        let Some(want) = steps.iter().position(|h| *h == site) else { continue };
-        for delay in 1..u64::from(EXPLORE_DURATION_TICKS) {
-            let move_tick = now + delay;
-            let mut rng = StdRng::seed_from_u64(move_tick.wrapping_mul(0x9E3779B97F4A7C15));
-            if rng.random_range(0..steps.len()) == want {
-                approach = Some((from, (delay - 1) as u16, move_tick));
-                break;
-            }
-        }
-        if approach.is_some() { break; }
-    }
-    let (from, timer, move_tick) = approach.expect("a neighbor whose one patrol step lands on the derelict before the boarding pays");
-
+    let from = e.engine.world_gen.connected_neighbors(site).slice().iter().copied()
+        .find(|c| !world::is_home_ground(*c) && !world::is_hub(*c))
+        .expect("a lane into the derelict's sector");
+    let lands = e.engine.current_tick() + 5;
     let npc_id = 900_000;
     horde(&mut e.engine, npc_id, from, &[(ShipClass::LightFighter, 1)], 1.0);
     edit(&mut e.engine, |s| {
-        for npc in s.npc_fleets.values_mut() {
-            npc.patrol_timer = 1_000;
-        }
         let patrol = s.npc_fleets.get_mut(&npc_id).unwrap();
         patrol.behavior = NpcBehaviorType::Patrol;
-        patrol.patrol_timer = timer;
+        patrol.home_sector = site;
+        patrol.strayed = 1;
+        patrol.errand = Some(Errand { quarry: None, to: site, arrives: lands });
     });
 
     let mark = e.mark();
     e.order(Command::ExploreSite { fleet_id: fid }).expect("a boarding party goes in");
     let quiet = e.engine.derelict_site_at(site).expect("the site stands").1;
-    e.run_until(u64::from(EXPLORE_DURATION_TICKS) + 5, |e| e.engine.current_tick() >= move_tick);
-    assert_eq!(e.engine.npc_fleets[&npc_id].location, site, "the patrol walked into the boarding");
-    assert_eq!(e.engine.fleets[&fid].state, FleetStatus::InCombat, "and took the fleet into the fight");
+    e.run_until(u64::from(EXPLORE_DURATION_TICKS) + 5, |e| e.engine.current_tick() >= lands);
+    let joined = e.since(mark, |k| match k {
+        EventKind::CombatStarted(c) if c.enemy_fleet_id == npc_id => Some((c.player_fleet_id, c.sector)),
+        _ => None,
+    });
+    assert_eq!(joined, vec![(fid, site)], "the patrol came back to its sector in the middle of the boarding and fired on the fleet");
 
     e.run_until(30, |e| e.engine.fleets[&fid].state != FleetStatus::InCombat);
     let told = alerts_since(&e, mark);

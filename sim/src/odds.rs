@@ -29,7 +29,7 @@ impl Force {
     pub fn of(arms: Arms, squads: Vec<Squad>) -> Force {
         let mut force = Force::default();
         if squads.iter().any(|s| s.count > 0) {
-            force.troops.push(Troop { arms, squads });
+            force.troops.push(Troop { arms, squads, silent: false });
         }
         force
     }
@@ -104,6 +104,7 @@ fn scaled(troops: &[Troop], units: u32, of: u32) -> Vec<Troop> {
         .iter()
         .map(|troop| Troop {
             arms: troop.arms,
+            silent: troop.silent,
             squads: troop
                 .squads
                 .iter()
@@ -121,7 +122,7 @@ fn scaled(troops: &[Troop], units: u32, of: u32) -> Vec<Troop> {
 }
 
 fn after(before: &[Troop], squads: Vec<Vec<Squad>>) -> Vec<Troop> {
-    before.iter().zip(squads).map(|(troop, squads)| Troop { arms: troop.arms, squads }).collect()
+    before.iter().zip(squads).map(|(troop, squads)| Troop { arms: troop.arms, squads, silent: troop.silent }).collect()
 }
 
 pub fn outlook(ours: &Force, theirs: &Force) -> Outlook {

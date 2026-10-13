@@ -4,6 +4,7 @@
     "destroyed": 229,
     "groups": [
       {
+        "fleeing": false,
         "fleet_id": 3,
         "mine": true,
         "owner": "Admiral",
@@ -41,6 +42,7 @@
     "destroyed": 2,
     "groups": [
       {
+        "fleeing": false,
         "fleet_id": 4294967400,
         "label": "400x light fighter swarm",
         "mine": false,
@@ -57,6 +59,7 @@
         ]
       },
       {
+        "fleeing": false,
         "fleet_id": 4294967401,
         "label": "2x espionage probe picket",
         "mine": false,

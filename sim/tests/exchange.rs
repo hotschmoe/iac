@@ -396,7 +396,7 @@ fn the_hub_is_empty_space_and_no_hostile_group_enters_it() {
         assert_eq!(WorldGen::init(seed).connected_neighbors(HUB).slice().len(), 6, "every lane to the hub is open");
     }
 
-    let mut e = trader("season", (1, 1, 1), 1, Resources { metal: 100.0, ..Resources::default() });
+    let mut e = trader("season", (1, 1, 1), 10, Resources { metal: 100.0, ..Resources::default() });
     let (pid, fid) = (e.pid, e.fid);
     e.run(2);
     let here = &chart(&e.engine, pid)[&HUB.to_key()];
@@ -410,27 +410,32 @@ fn the_hub_is_empty_space_and_no_hostile_group_enters_it() {
     );
 
     let posts: Vec<Hex> = hex_ring(HUB, 1).collect();
-    let mut moved = 0;
-    for _ in 0..40 {
-        for (i, &at) in posts.iter().enumerate() {
-            horde(&mut e.engine, 900_000 + i as u64, at, &[(ShipClass::LightFighter, 1)], 1.0);
-        }
-        edit(&mut e.engine, |s| {
-            for patrol in s.npc_fleets.values_mut().filter(|npc| npc.id >= 900_000) {
-                patrol.behavior = NpcBehaviorType::Patrol;
-            }
-        });
+    let (post, onward) = (posts[0], posts[1]);
+    assert!(e.engine.world_gen.connected_neighbors(post).slice().contains(&onward), "two posts beside the hub share a lane");
+    let pack = 900_000;
+    horde(&mut e.engine, pack, post, &[(ShipClass::LightFighter, 60)], 1.0);
+    edit(&mut e.engine, |s| s.npc_fleets.get_mut(&pack).unwrap().behavior = NpcBehaviorType::Aggressive);
+    e.order(Command::Move { fleet_id: fid, target: post }).expect("a jump out of the hub");
+    e.run_until(20, |e| e.engine.fleets[&fid].state == FleetStatus::InCombat);
+
+    let preview = |e: &mut Empire, target: Hex| match e.engine.execute(pid, Command::PreviewMove { fleet_id: fid, target }).reply {
+        Some(ServerMessage::PreviewMove(preview)) => preview.flight.expect("a jump out of a fight is flight"),
+        other => panic!("no preview: {other:?}"),
+    };
+    let elsewhere = preview(&mut e, onward).chase.expect("sixty fighters follow forty that leave them");
+    assert_eq!((elsewhere.group_id, elsewhere.hexes), (pack, 2));
+    assert_eq!(preview(&mut e, HUB).chase, None, "and would not follow them into the hub");
+
+    e.order(Command::Move { fleet_id: fid, target: HUB }).expect("a fleet may leave a fight for the hub");
+    e.run_until(20, |e| e.engine.fleets[&fid].location == HUB);
+    for _ in 0..20 {
         e.run(1);
-        for (i, &at) in posts.iter().enumerate() {
-            let now = e.engine.npc_fleets[&(900_000 + i as u64)].location;
-            assert_ne!(now, HUB, "a patrol beside the hub never jumps into it");
-            moved += usize::from(now != at);
-        }
+        assert_eq!(e.engine.npc_fleets[&pack].location, post, "the pack stays out of the hub");
         assert!(e.engine.active_combats.is_empty(), "no fight at the hub");
     }
-    assert!(moved >= 200, "the patrols did move: {moved} jumps");
+    assert!(e.fleet().pursued_by.is_none() && e.engine.npc_fleets[&pack].errand.is_none(), "nothing is on the fleet's trail");
     assert_eq!(e.engine.fleets[&fid].location, HUB);
-    trade(&mut e, Metal, Crystal, None).expect("the exchange is open with patrols all around");
+    trade(&mut e, Metal, Crystal, None).expect("the exchange is open with a pack beside it");
 }
 
 /// An empire with `haulers` wings standing at its home dock.

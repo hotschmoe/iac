@@ -41,11 +41,13 @@ pub struct Squad {
 }
 
 /// One fleet, group or battery in a fight: its squads in catalogue order,
-/// and what they fight with.
+/// and what they fight with. A `silent` troop is leaving: it is fired on
+/// like any other and fires no shot.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Troop {
     pub arms: Arms,
     pub squads: Vec<Squad>,
+    pub silent: bool,
 }
 
 impl Troop {
@@ -137,6 +139,7 @@ struct Line {
     troop: usize,
     start: usize,
     len: usize,
+    silent: bool,
 }
 
 struct Side {
@@ -180,7 +183,14 @@ fn muster(troops: &[Troop]) -> Side {
             let fresh = Unit { hull: figures.hull, line, shield: 100, dead: false };
             side.units.extend(std::iter::repeat_n(fresh, whole));
             side.units.extend(squad.damaged.iter().map(|&hull| Unit { hull: hull.min(figures.hull), ..fresh }));
-            side.lines.push(Line { kind: squad.unit.index(), figures, troop, start, len: side.units.len() - start });
+            side.lines.push(Line {
+                kind: squad.unit.index(),
+                figures,
+                troop,
+                start,
+                len: side.units.len() - start,
+                silent: t.silent,
+            });
         }
     }
     side
@@ -199,7 +209,7 @@ fn fire(from: &Side, at: &mut Side, dice: &mut Dice) -> (Vec<Fire>, u64) {
     }
     for (firing, line) in from.lines.iter().enumerate() {
         let attack = line.figures.attack;
-        if attack == 0 {
+        if attack == 0 || line.silent {
             continue;
         }
         for _ in 0..line.len {

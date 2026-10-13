@@ -15,7 +15,7 @@ use iac_shared::constants::{
 use iac_shared::hex::{hex_spiral, Hex};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{
-    AlertLevel, BattleOutcome, BattleRoundEvent, BattleSide, CombatEndedEvent, Command, ErrorCode, EventKind,
+    AlertLevel, BattleOutcome, BattleRoundEvent, BattleSide, CombatEndedEvent, Command, ErrorCode, EventKind, Fleeing,
     HarvestResource, PolicyParams, PolicyPreset, ThreatBasis, Volley,
 };
 use iac_shared::scaling::{self, RatioLabel, ShipyardItem};
@@ -704,14 +704,16 @@ fn orders_flown(engine: &mut iac_sim::GameEngine, pid: u64, fid: u64) -> Vec<(St
 }
 
 #[test]
-fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_orders() {
+fn a_jump_a_fight_catches_goes_on_under_fire_and_a_recall_leaves_the_fleet_free_for_standing_orders() {
     let mut engine = world("persistent");
     let (pid, fid) = join(&mut engine, "Jumper");
     let at = lone_fighter_sector(&engine, Passive);
     let escort = engine.handle_split(pid, fid, &counts(&[(ShipClass::LightFighter, 1)]), false).unwrap();
     deploy(&mut engine, fid, at, None);
     deploy(&mut engine, escort, at, Some(MIGHTY));
-    let onward = engine.world_gen.connected_neighbors(at).slice()[0];
+    let onward = engine.world_gen.connected_neighbors(at).slice().iter().copied()
+        .find(|n| engine.world_gen.generate_sector(*n).npc_template.is_none_or(|t| t.behavior == Passive))
+        .expect("a sector next door that starts no fight");
 
     let tank = engine.fleets[&fid].fuel;
     assert!(engine.execute(pid, Command::Move { fleet_id: fid, target: onward }).error.is_none());
@@ -719,14 +721,33 @@ fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_or
     assert_eq!(tank - engine.fleets[&fid].fuel, 20.0, "one Light Fighter burns 20 fuel a jump, paid when it is ordered");
     let attack = engine.execute(pid, Command::Attack { fleet_id: escort, target_fleet_id: template_npc_id(at) });
     assert!(attack.error.is_none(), "{:?}", attack.error);
-    assert_eq!(engine.fleets[&fid].state, FleetStatus::InCombat, "a fleet still charging its jump is in the sector's fight");
-    let fought = run_until(&mut engine, 10, |e| e.active_combats.is_empty());
-    assert_eq!((engine.fleets[&fid].location, engine.fleets[&fid].state), (at, FleetStatus::Idle), "the jump is lost");
-    assert_eq!(engine.fleets[&fid].fuel, tank - 20.0, "and so is the fuel it burned");
+    let charging = &engine.fleets[&fid];
+    assert_eq!((charging.state, charging.move_target), (FleetStatus::Moving, Some(onward)), "a fleet charging its jump keeps it");
+    assert!(engine.combat_of(fid).is_some(), "and stands in the sector's fight until it is gone");
+    let shown = iac_sim::views::full_state(&engine, pid).unwrap().fleets.into_iter().find(|f| f.id == fid).unwrap();
+    assert_eq!(shown.fleeing, Some(Fleeing { to: onward, ticks: 2, rounds: 1 }), "which its owner is shown");
+    assert_eq!(shown.flight, None, "a fleet that is leaving is quoted no second flight");
+    let (code, why) = engine.execute(pid, Command::Move { fleet_id: fid, target: onward }).error.expect("it takes no other jump");
+    assert_eq!(code, ErrorCode::OnCooldown);
+    assert_eq!(why, format!("fleet {fid} is already leaving the fight at {at} for {onward}; stop calls the jump off, and its fuel is forfeit"));
+
+    let fought = run_until(&mut engine, 10, |e| e.fleets[&fid].location == onward);
+    let silent: Vec<(bool, u64)> = fought
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::BattleRound(r) => r.fleets.groups.iter().find(|g| g.fleet_id == fid).map(|g| (g.fleeing, r.fleets.shots)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(silent.len(), 1, "it stood in the one round fought before its jump landed");
+    assert!(silent[0].0, "marked as leaving");
+    assert_eq!(silent[0].1, 1, "and of the two fleets only the escort fired");
+    assert_eq!(engine.fleets[&fid].state, FleetStatus::Idle, "the jump landed");
+    assert_eq!(engine.fleets[&fid].fuel, tank - 20.0, "on the fuel it had paid");
     let caught: Vec<_> = fought
         .iter()
         .filter_map(|e| match &e.kind {
-            EventKind::Alert(a) if a.message.contains("was caught in a fight") => Some(a),
+            EventKind::Alert(a) if a.message.contains("was caught") => Some(a),
             _ => None,
         })
         .collect();
@@ -734,8 +755,8 @@ fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_or
     assert_eq!(
         caught[0].message,
         format!(
-            "fleet {fid} was caught in a fight at {at} while charging its jump to {onward}: \
-             the jump is abandoned, and the 20 fuel it burned for the jump is forfeit"
+            "fleet {fid} was caught at {at} while charging its jump to {onward}: \
+             it is fired on and does not answer until the jump lands in 2 ticks"
         ),
     );
     assert!(

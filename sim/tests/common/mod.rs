@@ -188,14 +188,17 @@ pub fn horde(engine: &mut GameEngine, id: u64, at: Hex, ships: &[(ShipClass, u32
                 id,
                 location: at,
                 power: ships.power(arms),
+                muster: ships.clone(),
                 ships,
                 arms,
                 behavior: NpcBehaviorType::Passive,
                 home_sector: at,
-                patrol_timer: 0,
                 in_combat: false,
                 bounty: iac_shared::constants::Resources::default(),
                 label: "horde".to_string(),
+                rested: 0,
+                strayed: 0,
+                errand: None,
             },
         );
     });

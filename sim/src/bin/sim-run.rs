@@ -264,6 +264,8 @@ struct StyleRow {
     haul: f32,
     raid_salvage: f32,
     ships_lost: f32,
+    /// Fights left by a jump under fire.
+    fled: f32,
     refuel_deuterium: f64,
     idle: SlotIdle,
     why: IdleWhy<f32>,
@@ -288,6 +290,7 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
                 haul: 0.0,
                 raid_salvage: 0.0,
                 ships_lost: 0.0,
+                fled: 0.0,
                 refuel_deuterium: 0.0,
                 idle: SlotIdle::default(),
                 why: IdleWhy::default(),
@@ -312,6 +315,7 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
         row.haul += p.field.haul();
         row.raid_salvage += p.field.raid_salvage;
         row.ships_lost += p.field.ships_lost as f32;
+        row.fled += p.field.fights_fled as f32;
         row.refuel_deuterium += p.field.refuel_deuterium;
         row.idle.building += p.idle.building;
         row.idle.research += p.idle.research;
@@ -331,7 +335,7 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
         let s = &mut row.score;
         for value in [
             &mut s.econ, &mut s.fleet, &mut s.defence, &mut s.outpost, &mut s.core, &mut s.combat, &mut s.explore,
-            &mut s.extra, &mut s.total, &mut row.haul, &mut row.raid_salvage, &mut row.ships_lost,
+            &mut s.extra, &mut s.total, &mut row.haul, &mut row.raid_salvage, &mut row.ships_lost, &mut row.fled,
             &mut row.idle.building, &mut row.idle.research, &mut row.idle.shipyard, &mut row.spilled,
             &mut row.fleet_hours, &mut row.unpaid_hours,
         ] {
@@ -450,8 +454,9 @@ fn style_table(players: &[PlayerSummary]) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{:<20} {:>2} {SCORE_HEADER} {:>7} {:>7} {:>6} {:>8} {:>7} {:>7} {:>6} {:>9} {:>11}",
-        "style", "n", "haul", "raidsal", "lost", "refuel", "spilled", "field h", "unpaid", "vs turtle", "vs hands-on"
+        "{:<20} {:>2} {SCORE_HEADER} {:>7} {:>7} {:>6} {:>6} {:>8} {:>7} {:>7} {:>6} {:>9} {:>11}",
+        "style", "n", "haul", "raidsal", "lost", "fled", "refuel", "spilled", "field h", "unpaid", "vs turtle",
+        "vs hands-on"
     );
     for row in &rows {
         let (personality, attention) = row.style.split_once('/').unwrap_or((row.style.as_str(), ""));
@@ -459,13 +464,14 @@ fn style_table(players: &[PlayerSummary]) -> String {
         let hands_on = total_of(format!("{personality}/{}", Attention::HandsOn.label()));
         let _ = writeln!(
             out,
-            "{:<20} {:>2} {} {:>7.1} {:>7.1} {:>6.1} {:>8.0} {:>6.1}% {:>7.0} {:>6} {:>9} {:>11}",
+            "{:<20} {:>2} {} {:>7.1} {:>7.1} {:>6.1} {:>6.1} {:>8.0} {:>6.1}% {:>7.0} {:>6} {:>9} {:>11}",
             row.style,
             row.players,
             score_columns(&row.score),
             row.haul,
             row.raid_salvage,
             row.ships_lost,
+            row.fled,
             row.refuel_deuterium,
             100.0 * row.spilled,
             row.fleet_hours,

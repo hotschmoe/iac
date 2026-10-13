@@ -7,6 +7,7 @@
           "destroyed": 229,
           "groups": [
             {
+              "fleeing": false,
               "fleet_id": 3,
               "mine": true,
               "owner": "Admiral",
@@ -44,6 +45,7 @@
           "destroyed": 2,
           "groups": [
             {
+              "fleeing": false,
               "fleet_id": 4294967400,
               "label": "400x light fighter swarm",
               "mine": false,
@@ -60,6 +62,7 @@
               ]
             },
             {
+              "fleeing": false,
               "fleet_id": 4294967401,
               "label": "2x espionage probe picket",
               "mine": false,
@@ -161,6 +164,7 @@
       "policy": {
         "params": {
           "cargo_return_pct": 70,
+          "disengage_ratio_x10": 9,
           "engage_ratio_x10": 22,
           "fuel_budget_pct": 100,
           "max_range": 9,
@@ -327,6 +331,13 @@
       "cargo_blocked": false,
       "cargo_capacity": 220.0,
       "cooldown_remaining": 0,
+      "flight": {
+        "fuel": 18000.0,
+        "label": "favourable",
+        "ratio": 1.6200000047683716,
+        "rounds": 1,
+        "ticks": 2
+      },
       "fuel": 271.5,
       "fuel_max": 500.0,
       "home_fuel": 63.0,
@@ -366,6 +377,100 @@
         }
       ],
       "state": "InCombat"
+    },
+    {
+      "at_outpost": false,
+      "attack": 240,
+      "cargo": {
+        "crystal": 3.0,
+        "deuterium": 0.0,
+        "metal": 12.5
+      },
+      "cargo_blocked": false,
+      "cargo_capacity": 220.0,
+      "cooldown_remaining": 2,
+      "fleeing": {
+        "rounds": 2,
+        "ticks": 3,
+        "to": {
+          "q": 8,
+          "r": -11
+        }
+      },
+      "fuel": 271.5,
+      "fuel_max": 500.0,
+      "home_fuel": 63.0,
+      "hops_home": 2,
+      "hull": 17890,
+      "hull_max": 19200,
+      "id": 4,
+      "jump_fuel": 31.5,
+      "jump_ticks": 4,
+      "laden": false,
+      "location": {
+        "q": 9,
+        "r": -11
+      },
+      "power": 61.5,
+      "pursued_by": {
+        "arrives_in": 1,
+        "catches": true,
+        "from": {
+          "q": 10,
+          "r": -12
+        },
+        "group_id": 4294967555,
+        "hexes_left": 1,
+        "label": "2x battlecruiser pack"
+      },
+      "range_hops": 4,
+      "refit": {
+        "armour": 0,
+        "shielding": 0,
+        "weapons": 0
+      },
+      "refit_due": true,
+      "repair": {
+        "home": {
+          "hull": 640,
+          "payment": {
+            "crystal": 0.0,
+            "deuterium": 0.0,
+            "metal": 0.0
+          },
+          "price": 0.0,
+          "ships": 4
+        },
+        "hull": 640,
+        "outpost": {
+          "hull": 160,
+          "payment": {
+            "crystal": 0.0,
+            "deuterium": 0.0,
+            "metal": 180.0
+          },
+          "price": 720.0,
+          "ships": 1
+        },
+        "ships": 4
+      },
+      "scan_range": 1,
+      "shield": 480,
+      "ship_count": 48,
+      "ships": [
+        {
+          "at_risk": 6,
+          "class": "SmallCargo",
+          "count": 48,
+          "damaged": 9,
+          "hull": 17890,
+          "hull_max": 19200,
+          "unit_attack": 5,
+          "unit_hull": 400,
+          "unit_shield": 10
+        }
+      ],
+      "state": "Moving"
     }
   ],
   "homeworld": {
@@ -2374,7 +2479,24 @@
       "hostiles": [
         {
           "behavior": "Aggressive",
+          "chase_hexes": 2,
+          "errand": {
+            "arrives_at": 4822,
+            "hexes_left": 1,
+            "home": {
+              "q": 5,
+              "r": -3
+            },
+            "quarry": 3,
+            "quarry_owner": "Admiral",
+            "to": {
+              "q": 2,
+              "r": -2
+            }
+          },
           "id": 9001,
+          "jump_ticks": 2,
+          "muster": 7,
           "ship_count": 4,
           "ships": [
             {
@@ -2399,11 +2521,15 @@
               "unit_hull": 7000,
               "unit_shield": 400
             }
-          ]
+          ],
+          "whole_at": 5260
         },
         {
           "behavior": "Passive",
+          "chase_hexes": 0,
           "id": 9002,
+          "jump_ticks": 2,
+          "muster": 2,
           "ship_count": 2,
           "ships": [
             {
@@ -2588,7 +2714,24 @@
       "hostiles": [
         {
           "behavior": "Aggressive",
+          "chase_hexes": 2,
+          "errand": {
+            "arrives_at": 4822,
+            "hexes_left": 1,
+            "home": {
+              "q": 5,
+              "r": -3
+            },
+            "quarry": 3,
+            "quarry_owner": "Admiral",
+            "to": {
+              "q": 2,
+              "r": -2
+            }
+          },
           "id": 9001,
+          "jump_ticks": 2,
+          "muster": 7,
           "ship_count": 4,
           "ships": [
             {
@@ -2613,11 +2756,15 @@
               "unit_hull": 7000,
               "unit_shield": 400
             }
-          ]
+          ],
+          "whole_at": 5260
         },
         {
           "behavior": "Passive",
+          "chase_hexes": 0,
           "id": 9002,
+          "jump_ticks": 2,
+          "muster": 2,
           "ship_count": 2,
           "ships": [
             {

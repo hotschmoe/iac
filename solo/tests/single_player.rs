@@ -542,11 +542,11 @@ fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
     let (_, reply) = load(T0, other_generator.as_bytes());
     assert!(reply["refused"].as_str().unwrap().contains("worldgen version 2, this build runs version 4"), "{reply}");
 
-    assert_eq!(SAVE_FORMAT, 9);
-    let before_a_fleet_was_counts = text.replacen("\"format\":9", "\"format\":8", 1);
-    let (_, reply) = load(T0, before_a_fleet_was_counts.as_bytes());
+    assert_eq!(SAVE_FORMAT, 10);
+    let before_groups_kept_their_losses = text.replacen("\"format\":10", "\"format\":9", 1);
+    let (_, reply) = load(T0, before_groups_kept_their_losses.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert_eq!(reply["refused"], "this save is format 8, this build reads format 9; start a new game");
+    assert_eq!(reply["refused"], "this save is format 9, this build reads format 10; start a new game");
 
     let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":10", 1);
     let (_, reply) = load(T0, other_format.as_bytes());

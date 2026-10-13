@@ -12,9 +12,9 @@ use crate::constants::{
     Density, Drive, ResourceKind, Resources, ShipClass, ShipStats, Zone, BUILD_SLOT_LEVELS, EXCHANGE_FEE_MAX,
     EXCHANGE_FEE_MIN, EXCHANGE_METER_SHARE, EXCHANGE_WINDOW_TICKS, FUEL_DEUT_PER_UNIT, FUEL_SAVING_MAX,
     FUEL_SAVING_PER_LEVEL, HARVEST_YIELD_LEVELS, HARVEST_YIELD_PER_LEVEL, HOME_TEMPERATURE_MAX, JUMP_SPEED_REF,
-    MAP_PAYS, OUTPOST_BUILD_RATE, OUTPOST_COST, OUTPOST_GROWTH, OUTPOST_RAID_FACTOR, OUTPOST_REPAIR_SHARE,
-    OUTPOST_STORE_BASE, OUTPOST_YIELD_PER_HOUR, RECALL_SAVING_PER_LEVEL, REFINE_LOSS, SENSOR_HOPS_PER_LEVEL,
-    TANK_PER_DEUT_TANK_LEVEL,
+    MAP_PAYS, NPC_DRIVE_FREE_RINGS, NPC_DRIVE_RINGS_PER_LEVEL, NPC_HEAL_SHARE, NPC_HEAL_STEPS, OUTPOST_BUILD_RATE,
+    OUTPOST_COST, OUTPOST_GROWTH, OUTPOST_RAID_FACTOR, OUTPOST_REPAIR_SHARE, OUTPOST_STORE_BASE,
+    OUTPOST_YIELD_PER_HOUR, RECALL_SAVING_PER_LEVEL, REFINE_LOSS, SENSOR_HOPS_PER_LEVEL, TANK_PER_DEUT_TANK_LEVEL,
 };
 use crate::maths;
 use crate::pace::Pace;
@@ -1756,6 +1756,36 @@ pub fn npc_respawn_hours(dist: u16) -> f32 {
     2.0 + 0.25 * dist as f32
 }
 
+/// Ticks between two steps of a wounded group's healing at ring `dist`:
+/// `NPC_HEAL_SHARE` of the respawn delay, an economy timer, cut into
+/// `NPC_HEAL_STEPS`.
+pub fn npc_heal_step_ticks(dist: u16, pace: &Pace) -> u64 {
+    let whole = pace.econ_ticks(f64::from(npc_respawn_hours(dist)) * 3600.0 * NPC_HEAL_SHARE);
+    whole.div_ceil(u64::from(NPC_HEAL_STEPS)).max(1)
+}
+
+/// Ships a group generated with `muster` gets back at one step of its healing.
+pub fn npc_heal_ships(muster: u32) -> u32 {
+    muster.div_ceil(NPC_HEAL_STEPS).max(1)
+}
+
+/// Hull a damaged ship whose full hull is `full` regains at one step.
+pub fn npc_heal_hull(full: u32) -> u32 {
+    full.div_ceil(NPC_HEAL_STEPS).max(1)
+}
+
+/// The level of its drive a group at ring `dist` flies with.
+pub fn npc_drive_level(dist: u16) -> u8 {
+    (dist.saturating_sub(NPC_DRIVE_FREE_RINGS).div_ceil(NPC_DRIVE_RINGS_PER_LEVEL)).min(u16::from(MAX_RESEARCH_LEVEL)) as u8
+}
+
+/// Ticks one jump takes a group of `class` whose lair is at ring `dist`.
+pub fn npc_jump_ticks(class: ShipClass, dist: u16) -> u16 {
+    let level = npc_drive_level(dist);
+    let drives = ResearchLevels { combustion_drive: level, impulse_drive: level, hyperspace_drive: level, ..ResearchLevels::default() };
+    jump_ticks(ship_speed(class, &drives))
+}
+
 /// T1 to T9: one step per doubling of `power` over `NPC_POWER_BASE`.
 pub fn threat_rating(power: f32) -> u8 {
     if power.is_nan() || power <= NPC_POWER_BASE {
@@ -1892,15 +1922,16 @@ impl RatioLabel {
         }
     }
 
-    /// What a fight in the band costs, as `RATIO_MARGINS` measured it: the
-    /// sentence a client prints beside the label.
+    /// What a fight in the band costs if it is fought to its end, as
+    /// `RATIO_MARGINS` measured it: the sentence a client prints beside the
+    /// label. A fleet may leave a fight; the odds do not count on it.
     pub fn outcome(self) -> &'static str {
         match self {
             RatioLabel::Safe => "a win that keeps nine tenths of the fleet",
             RatioLabel::Favourable => "a win that keeps two thirds to nine tenths of the fleet",
             RatioLabel::Even => "a win three times in four or better, at the cost of a third of the fleet or more",
-            RatioLabel::Risky => "as likely lost as won",
-            RatioLabel::Deadly => "the fleet is lost",
+            RatioLabel::Risky => "as likely lost as won, fought to the end",
+            RatioLabel::Deadly => "the fleet is lost unless it leaves",
         }
     }
 }
