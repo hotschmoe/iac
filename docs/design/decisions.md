@@ -3,6 +3,51 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (the OGame study's eleven questions: the defaults)
+
+The owner was shown the eleven questions of `docs/design/ogame.md`, section 14,
+each with its default, and answered "defaults". So, by the study's numbering:
+
+1. **Energy comes in with the mines.** Solar Plant, Fusion Reactor, Solar
+   Satellite, Energy Technology's effect and Graviton have their OGame job.
+2. **This game's own jobs are carried by OGame's items**, as section 5.5
+   lists, the three loose fits included (fuel saving on Energy Technology, the
+   fleet's tank on the Deuterium Tank, ore yield on Laser Technology). The
+   owner was told that the fuel saving then costs far more than it does today.
+3. **A raid is fought as a battle**, at most six rounds, lost only when no
+   defender is left.
+4. **A fight in open space has no six-round limit.** It ends when a side is
+   destroyed or has left, or a round passes with no hull lost.
+5. **The price of flight is the study's.** A fleet that orders a jump out of a
+   fight stops firing and is fired on until it is gone; Patrol groups follow
+   one hex, Aggressive and Swarm two, and only what they were beating; a fleet
+   as fast as its pursuer is never caught; docks are refuges.
+6. **Repair is free and at once at the homeworld**, a tenth of a ship's cost
+   from the store at the outpost, and not to be had at a breached outpost.
+7. **Refit at the home dock, by a stamp on the fleet**: Weapons, Shielding and
+   Armour; a merged fleet takes the lower levels until it docks; the outpost
+   mends and does not refit.
+8. **OGame's storage**: 100,000 of each resource with no building. The owner
+   was told this removes the early squeeze the Storage Vault makes today.
+9. **The Recycler mines and strips derelicts, the Espionage Probe scans and
+   reads a derelict, the Colony Ship is left out, the Deathstar is in, and a
+   new empire starts with two Light Fighters.**
+10. **Fuel from the hold**: by an order, not in a fight, at a loss of 15
+    percent, built first.
+11. **Pirates keep their losses and their damage and mend in ten steps** over
+    half the time a destroyed group takes to return (1.4 to 3.5 hours at pace
+    1 for rings 3 to 20), divided by pace; the clock stops while the group
+    fights or pursues.
+
+Every figure here is a knob, in the owner's word, and is named as a constant
+when built. The order of work is the study's section 12: fuel from the hold,
+stockpiles in 64 bits, the catalogue as one change, the fleet and the fight,
+flight and pursuit, raids as battles, the windshield and the battle view.
+
+**Standing instruction, the same message.** "dispatch agents as work comes in.
+commit and push at milestones": master is pushed when a piece of work is
+merged and verified, without asking each time.
+
 ## 2026-10-13 (OGame's ships, defences, buildings and research; refit at home; fuel from the hold)
 
 The owner's words, after being shown what each research does today:
