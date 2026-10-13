@@ -18,7 +18,8 @@
         "crystal": 2.0,
         "deuterium": 3.0,
         "metal": 1.0
-      }
+      },
+      "ship_count": 4
     },
     "tick": 9,
     "type": "tick_update"
@@ -36,7 +37,8 @@
         "crystal": 2.0,
         "deuterium": 3.0,
         "metal": 1.0
-      }
+      },
+      "ship_count": 4
     },
     "tick": 9,
     "type": "tick_update"

@@ -12,14 +12,17 @@ use iac_shared::constants::{
     Density, ResourceKind, Resources, ShipClass, Zone, DEFAULT_WORLD_SEED, HOME_SALVAGE_WARN_TICKS,
     SALVAGE_DESPAWN_TICKS, SCAN_REVEAL_TICKS,
 };
-use iac_shared::hex::{hex_ring, hex_spiral, Hex};
+use iac_shared::hex::{hex_spiral, Hex};
 use iac_shared::pace::Pace;
-use iac_shared::protocol::{AlertLevel, Command, ErrorCode, EventKind, HarvestResource, PolicyParams, PolicyPreset, ThreatBasis};
-use iac_shared::scaling::{self, RatioLabel};
+use iac_shared::protocol::{
+    AlertLevel, BattleOutcome, BattleRoundEvent, BattleSide, CombatEndedEvent, Command, ErrorCode, EventKind,
+    HarvestResource, PolicyParams, PolicyPreset, ThreatBasis, Volley,
+};
+use iac_shared::scaling::{self, RatioLabel, ShipyardItem};
 use iac_shared::world::NpcBehaviorType::Passive;
 use iac_shared::world::{home_seats, is_home_seat};
 use iac_sim::commands::auth_failure;
-use iac_sim::engine::{template_npc_id, AuthError, FleetStatus, SectorOverride};
+use iac_sim::engine::{template_npc_id, AuthError, FleetStatus, SectorOverride, Ships};
 use iac_sim::snapshot::ExploreCredit;
 
 fn salvage_events(events: &[iac_shared::protocol::GameEvent]) -> Vec<iac_shared::protocol::SalvageDespawnedEvent> {
@@ -190,19 +193,19 @@ fn ring_around(center: Hex, radius: u16) -> Vec<Hex> {
         .collect()
 }
 
-fn prospector(name: &str, weapon_power: f32, max_range: u8) -> (iac_sim::GameEngine, u64, u64, Hex) {
+/// A fleet under `prospect` at home with two rings charted around it: the
+/// starting fighters with research no empire reaches when `strong`, a lone
+/// Small Cargo that loses to anything armed when not.
+fn prospector(name: &str, strong: bool, max_range: u8) -> (iac_sim::GameEngine, u64, u64, Hex) {
     let mut engine = world("persistent");
     let (pid, fid) = join(&mut engine, name);
     let home = engine.players[&pid].homeworld;
+    if strong {
+        empower(&mut engine, pid, fid);
+    }
     edit(&mut engine, |s| {
-        let fleet = s.fleets.get_mut(&fid).unwrap();
-        for ship in &mut fleet.ships[..fleet.ship_count] {
-            ship.weapon_power = weapon_power;
-            if weapon_power < 1.0 {
-                ship.hull = 1.0;
-                ship.shield = 0.0;
-                ship.shield_max = 0.0;
-            }
+        if !strong {
+            s.fleets.get_mut(&fid).unwrap().ships = Ships::of(&[(ShipClass::SmallCargo, 1)]);
         }
         for h in ring_around(home, 2) {
             s.explored.insert((pid, h.to_key()));
@@ -227,7 +230,7 @@ fn policy_actions(events: &[iac_shared::protocol::GameEvent]) -> Vec<(String, St
 
 #[test]
 fn a_weak_prospector_never_leaves_the_charted_ring_into_a_fight_it_would_lose() {
-    let (mut engine, _pid, fid, home) = prospector("Weakling", 0.1, 4);
+    let (mut engine, _pid, fid, home) = prospector("Weakling", false, 4);
     let mut holds = Vec::new();
     for _ in 0..300 {
         engine.tick().unwrap();
@@ -241,7 +244,7 @@ fn a_weak_prospector_never_leaves_the_charted_ring_into_a_fight_it_would_lose() 
 
 #[test]
 fn a_strong_prospector_pushes_the_frontier_past_the_charted_ring() {
-    let (mut engine, pid, _fid, home) = prospector("Bruiser", 5000.0, 4);
+    let (mut engine, pid, _fid, home) = prospector("Bruiser", true, 4);
     let events = run(&mut engine, 400);
     let moves = policy_actions(&events).iter().filter(|(a, _)| a == "move").count();
     assert!(moves > 0);
@@ -324,9 +327,7 @@ fn harvesting_empties_a_tile_by_its_ring_reserve_and_research_only_raises_the_yi
             s.players.get_mut(&pid).unwrap().research.laser_technology = level;
             let fleet = s.fleets.get_mut(&fid).unwrap();
             fleet.location = at;
-            for ship in &mut fleet.ships[..fleet.ship_count] {
-                ship.ship_class = ShipClass::Recycler;
-            }
+            fleet.ships = Ships::of(&[(ShipClass::Recycler, 2)]);
         });
         let started = engine.execute(pid, Command::Harvest { fleet_id: fid, resource: HarvestResource::Metal });
         assert!(started.error.is_none());
@@ -343,7 +344,7 @@ fn harvesting_empties_a_tile_by_its_ring_reserve_and_research_only_raises_the_yi
 
 #[test]
 fn a_prospector_with_nothing_left_in_range_holds_and_says_why_without_flooding() {
-    let (mut engine, _pid, fid, home) = prospector("Boxed", 5000.0, 2);
+    let (mut engine, _pid, fid, home) = prospector("Boxed", true, 2);
     let events = run(&mut engine, 200);
     let actions = policy_actions(&events);
     assert!(actions.iter().all(|(a, _)| a != "move"), "everything in range is charted: nothing to move to");
@@ -356,7 +357,7 @@ fn a_prospector_with_nothing_left_in_range_holds_and_says_why_without_flooding()
 
 #[test]
 fn a_prospector_goes_back_for_the_chart_a_lost_fleet_never_brought_home() {
-    let (mut engine, pid, fid, home) = prospector("Second", 5000.0, 2);
+    let (mut engine, pid, fid, home) = prospector("Second", true, 2);
     let entered = engine.world_gen.connected_neighbors(home).slice()[0];
     let chart = (pid, entered.to_key(), ExploreCredit::Charted);
     edit(&mut engine, |s| {
@@ -372,7 +373,7 @@ fn a_prospector_goes_back_for_the_chart_a_lost_fleet_never_brought_home() {
 
 #[test]
 fn a_standing_hold_is_reported_once_a_minute_not_every_evaluation() {
-    let (mut engine, ..) = prospector("Patient", 0.1, 4);
+    let (mut engine, ..) = prospector("Patient", false, 4);
     let holds = |events: Vec<iac_shared::protocol::GameEvent>| {
         policy_actions(&events).into_iter().filter(|(a, _)| a == "hold").collect::<Vec<_>>()
     };
@@ -429,14 +430,12 @@ fn delegate(name: &str, preset: PolicyPreset, max_range: u8) -> (iac_sim::GameEn
     let mut engine = world("persistent");
     let (pid, fid) = join(&mut engine, name);
     let home = engine.players[&pid].homeworld;
+    empower(&mut engine, pid, fid);
     edit(&mut engine, |s| {
         let player = s.players.get_mut(&pid).unwrap();
         player.buildings.deuterium_tank = 8;
         player.resources.deuterium = 5_000.0;
         let fleet = s.fleets.get_mut(&fid).unwrap();
-        for ship in &mut fleet.ships[..fleet.ship_count] {
-            ship.weapon_power = 5000.0;
-        }
         fleet.fuel_max *= scaling::tank_modifier(8);
         fleet.fuel = fleet.fuel_max;
     });
@@ -577,7 +576,7 @@ fn a_salvage_fleet_passes_over_wreckage_it_may_not_reach_for_wreckage_it_may() {
         .collect();
     assert!(scooped.contains(&within), "{scooped:?}");
     assert!(engine.sector_overrides[&shut.to_key()].salvage.is_some(), "the pile behind the odds is still there");
-    assert_eq!(engine.fleets[&fid].ship_count, 3);
+    assert_eq!(engine.fleets[&fid].ships.total(), 3);
 }
 
 #[test]
@@ -623,34 +622,42 @@ fn a_fleet_that_hauls_goes_round_a_fight_it_would_win() {
 }
 
 #[test]
-fn a_fleet_under_orders_lets_its_shields_come_back_before_it_acts() {
-    let (mut engine, _pid, fid, _home) = prospector("Bruised", 5000.0, 4);
+fn a_mauled_fleet_under_orders_goes_home_to_be_mended_before_it_does_anything_else() {
+    let (mut engine, _pid, fid, home) = prospector("Bruised", true, 4);
+    let out = outward_chain(&engine, home, 2);
     edit(&mut engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
-        for ship in &mut fleet.ships[..fleet.ship_count] {
-            ship.shield = 0.0;
-        }
+        fleet.location = out[1];
+        fleet.refit = scaling::Refit::of(&scaling::ResearchLevels::default());
+        fleet.ships = squadron(ShipClass::LightFighter, 1, &[250]);
     });
-    let shields = |e: &iac_sim::GameEngine| {
-        let fleet = &e.fleets[&fid];
-        let ships = &fleet.ships[..fleet.ship_count];
-        ships.iter().map(|s| s.shield).sum::<f32>() / ships.iter().map(|s| s.shield_max).sum::<f32>()
-    };
+    let (held, full) = engine.fleets[&fid].ships.hull(engine.fleets[&fid].arms());
+    assert_eq!((held, full), (650, 800), "one Light Fighter whole and one at 250 of its 400 hull");
 
-    let mut waited = Vec::new();
-    let mut acted_at = None;
-    for _ in 0..80 {
-        let before = shields(&engine);
-        engine.tick().unwrap();
-        for (action, why) in policy_actions(&engine.drain_events()) {
-            match action.as_str() {
-                "hold" => waited.push(why),
-                _ => acted_at = acted_at.or(Some(before)),
-            }
-        }
-    }
-    assert!(waited[0].starts_with("shields recharging"), "{waited:?}");
-    assert!(acted_at.is_some_and(|up| up >= 0.95), "it scanned or jumped with shields at {acted_at:?}");
+    let events = run_until(&mut engine, 200, |e| e.fleets[&fid].location == home);
+    let acts = policy_actions(&events);
+    assert_eq!(
+        acts[0],
+        (
+            "move".to_string(),
+            "returning to be mended: hull at 81% of full, and a fleet under orders works at 85% or more".to_string(),
+        ),
+        "its first act under orders, and it scans nothing on the way: {acts:?}",
+    );
+    assert!(acts.iter().all(|(action, _)| action == "move"), "{acts:?}");
+
+    let mended: Vec<String> = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::Alert(a) if a.message.contains("was mended at the home dock") => Some(a.message.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(mended.len(), 1, "{mended:?}");
+    let fleet = &engine.fleets[&fid];
+    assert_eq!(fleet.ships.hull(fleet.arms()).0, fleet.ships.hull(fleet.arms()).1, "the home dock made it whole");
+    let next = policy_actions(&run(&mut engine, 30));
+    assert!(next.iter().all(|(_, why)| !why.contains("mended")), "and it goes on with its orders: {next:?}");
 }
 
 #[test]
@@ -701,10 +708,9 @@ fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_or
     let mut engine = world("persistent");
     let (pid, fid) = join(&mut engine, "Jumper");
     let at = lone_fighter_sector(&engine, Passive);
-    let scout = engine.fleets[&fid].ships[0].id;
-    let escort = engine.handle_split(pid, fid, &[scout]).unwrap();
+    let escort = engine.handle_split(pid, fid, &counts(&[(ShipClass::LightFighter, 1)]), false).unwrap();
     deploy(&mut engine, fid, at, None);
-    deploy(&mut engine, escort, at, Some(5000.0));
+    deploy(&mut engine, escort, at, Some(MIGHTY));
     let onward = engine.world_gen.connected_neighbors(at).slice()[0];
 
     let tank = engine.fleets[&fid].fuel;
@@ -755,12 +761,14 @@ fn a_jump_cut_short_by_a_fight_or_a_recall_leaves_the_fleet_free_for_standing_or
     assert!(!flown.is_empty(), "standing orders never ran after the recall");
 }
 
-/// A fleet and a hostile that cannot hurt each other enough to end it:
-/// the fight lasts until something else stops it.
+/// A fleet that cannot hurt a hostile, which wears it down too slowly to
+/// end it soon: Espionage Probes, which have no weapon, behind hulls 26
+/// times their own. The fight lasts until something else stops it.
 fn endless_fight(engine: &mut iac_sim::GameEngine, pid: u64, fid: u64, at: Hex) {
-    deploy(engine, fid, at, Some(0.0));
+    muster(engine, fid, &[(ShipClass::EspionageProbe, 3)], at);
     edit(engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.refit.armour = MIGHTY.armour;
         fleet.fuel = 1e12;
         fleet.fuel_max = 1e12;
         fleet.cargo = Resources { metal: 40.0, ..Resources::default() };
@@ -789,25 +797,31 @@ fn a_recalled_fleet_is_out_of_its_fight_and_the_hostiles_it_left_can_be_fought_a
     let stock = engine.players[&pid].resources.metal;
 
     assert!(engine.execute(pid, Command::Recall { fleet_id: fid }).error.is_none());
-    let hulls = |e: &iac_sim::GameEngine| e.fleets[&fid].ships[..e.fleets[&fid].ship_count].iter().map(|s| s.hull).collect::<Vec<_>>();
-    let on_arrival = hulls(&engine);
+    let on_arrival = engine.fleets[&fid].ships.clone();
     let after = run(&mut engine, 5);
 
     assert_eq!((engine.fleets[&fid].location, engine.fleets[&fid].state), (home, FleetStatus::Idle));
     assert!(engine.players[&pid].resources.metal >= stock + 40.0, "the cargo is banked");
     assert!(engine.active_combats.is_empty(), "the fight went on without the fleet in the sector");
-    let shots = after
-        .iter()
-        .filter(|e| matches!(&e.kind, EventKind::CombatRound(r) if r.target_fleet_id == fid || r.attacker_fleet_id == fid))
-        .count();
-    assert_eq!(shots, 0, "a fleet at home was still trading fire");
-    assert_eq!(hulls(&engine), on_arrival, "a fleet at home was still taking damage");
+    let rounds = after.iter().filter(|e| matches!(&e.kind, EventKind::BattleRound(_))).count();
+    assert_eq!(rounds, 0, "a fleet at home was still trading fire");
+    assert_eq!(engine.fleets[&fid].ships, on_arrival, "a fleet at home was still taking damage");
     assert_eq!(ended_without_victory(&after, at), 1, "the owner is told the fight is over");
+    let how = after.iter().find_map(|e| match &e.kind {
+        EventKind::CombatEnded(c) => Some((c.outcome, c.rounds, c.losses.iter().map(|l| l.fleet_id).collect::<Vec<_>>())),
+        _ => None,
+    });
+    assert_eq!(
+        how,
+        Some((BattleOutcome::Withdrawn, 3, vec![fid, template_npc_id(at)])),
+        "it ended because the last fleet left, after the rounds it stood, and both sides are accounted for",
+    );
 
     let owner = engine.players[&pid].clone();
     let told = after.iter().filter_map(|e| iac_sim::views::event_for(e, &owner, &engine)).collect::<Vec<_>>();
     assert_eq!(ended_without_victory(&told, at), 1, "and the event reaches them at home");
 
+    muster(&mut engine, fid, &[(ShipClass::LightFighter, 2)], home);
     pile_of(&fight(&mut engine, pid, fid, at));
 }
 
@@ -842,7 +856,7 @@ fn every_fleet_in_a_crowded_sector_fights_scores_and_comes_out_free() {
     let crews: Vec<(u64, u64)> = (0..9).map(|i| join(&mut engine, &format!("Crew{i}"))).collect();
     let at = lone_fighter_sector(&engine, Passive);
     for &(_, fid) in &crews {
-        deploy(&mut engine, fid, at, Some(5000.0));
+        deploy(&mut engine, fid, at, Some(MIGHTY));
     }
     let (lead, lead_fleet) = crews[0];
     let attack = engine.execute(lead, Command::Attack { fleet_id: lead_fleet, target_fleet_id: template_npc_id(at) });
@@ -864,6 +878,175 @@ fn every_fleet_in_a_crowded_sector_fights_scores_and_comes_out_free() {
         let order = engine.execute(pid, Command::Scan { fleet_id: fid });
         assert!(order.error.is_none(), "{name} takes no orders: {:?}", order.error);
     }
+}
+
+const HORDE: u64 = 900_001;
+
+/// A fleet of `ours` beside a hostile group of `theirs` on quiet ground
+/// two jumps from home, and the fight between them played to its end:
+/// every round as it was reported, and how it ended.
+fn pitched(
+    name: &str,
+    ours: &[(ShipClass, u32)],
+    theirs: &[(ShipClass, u32)],
+) -> (iac_sim::GameEngine, u64, Vec<BattleRoundEvent>, CombatEndedEvent) {
+    let mut engine = world("persistent");
+    let (pid, fid) = join(&mut engine, name);
+    let home = engine.players[&pid].homeworld;
+    let at = outward_chain(&engine, home, 2)[1];
+    muster(&mut engine, fid, ours, at);
+    horde(&mut engine, HORDE, at, theirs, 1.0);
+    let attack = engine.execute(pid, Command::Attack { fleet_id: fid, target_fleet_id: HORDE });
+    assert!(attack.error.is_none(), "{:?}", attack.error);
+    let events = run_until(&mut engine, 500, |e| e.active_combats.is_empty());
+    let rounds = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::BattleRound(round) => Some(round.clone()),
+            _ => None,
+        })
+        .collect();
+    let ended = events
+        .iter()
+        .find_map(|e| match &e.kind {
+            EventKind::CombatEnded(ended) => Some(ended.clone()),
+            _ => None,
+        })
+        .expect("the fight ended");
+    (engine, fid, rounds, ended)
+}
+
+fn fire(side: &BattleSide, from: ShipClass, at: ShipClass) -> Option<&Volley> {
+    let (from, at) = (ShipyardItem::Ship(from), ShipyardItem::Ship(at));
+    side.volleys.iter().find(|v| v.from == from && v.at == at)
+}
+
+#[test]
+fn a_fight_of_hundreds_a_side_is_reported_a_round_a_tick_by_class_and_ends_with_what_each_side_lost() {
+    use ShipClass::{Cruiser, HeavyFighter, LightFighter, SmallCargo};
+    let ours = [(SmallCargo, 20), (LightFighter, 400), (Cruiser, 80)];
+    let theirs = [(LightFighter, 400), (HeavyFighter, 60)];
+    let (engine, fid, rounds, ended) = pitched("Admiral", &ours, &theirs);
+    assert!(rounds.len() >= 3, "a fight of hundreds is not over in a volley: {} rounds", rounds.len());
+
+    let count_of = |fleet: &[(ShipClass, u32)]| -> Vec<(ShipyardItem, u32)> {
+        fleet.iter().map(|&(class, count)| (ShipyardItem::Ship(class), count)).collect()
+    };
+    let (mut standing, mut hostile) = (count_of(&ours), count_of(&theirs));
+    let mut lost: Vec<(ShipyardItem, u32)> = Vec::new();
+    for (i, round) in rounds.iter().enumerate() {
+        assert_eq!((round.round, round.fleets.groups.len(), round.hostiles.groups.len()), (i as u32 + 1, 1, 1));
+        let (fleet, group) = (&round.fleets.groups[0], &round.hostiles.groups[0]);
+        assert_eq!((fleet.fleet_id, fleet.owner.as_deref(), group.fleet_id, group.label.as_str()), (fid, Some("Admiral"), HORDE, "horde"));
+
+        for (side, units, before) in [(&round.fleets, &group.units, &mut hostile), (&round.hostiles, &fleet.units, &mut standing)] {
+            let sum = |pick: fn(&Volley) -> u64| side.volleys.iter().map(pick).sum::<u64>();
+            assert_eq!(
+                (side.shots, side.absorbed, side.hull_damage, u64::from(side.destroyed)),
+                (sum(|v| v.shots.into()), sum(|v| v.absorbed), sum(|v| v.hull_damage), sum(|v| v.destroyed.into())),
+                "round {}: a side's totals are its volleys summed",
+                round.round,
+            );
+            assert!(side.volleys.iter().all(|v| v.bounced + v.wasted <= v.shots && v.absorbed + v.hull_damage <= side.power));
+            assert_eq!(side.destroyed, units.iter().map(|u| u.lost).sum::<u32>(), "what one side destroyed the other lost");
+            for unit in units {
+                let was = before.iter_mut().find(|(kind, _)| *kind == unit.unit).expect("a kind that entered the round");
+                assert_eq!(was.1 - unit.lost, unit.count, "round {}: {:?}", round.round, unit.unit);
+                was.1 = unit.count;
+                assert!(unit.at_risk <= unit.damaged && unit.damaged <= unit.count && unit.hull <= unit.hull_max);
+            }
+        }
+        for unit in fleet.units.iter().filter(|u| u.lost > 0) {
+            match lost.iter_mut().find(|(kind, _)| *kind == unit.unit) {
+                Some(so_far) => so_far.1 += unit.lost,
+                None => lost.push((unit.unit, unit.lost)),
+            }
+        }
+        assert!(round.fleets.volleys.len() <= 6 && round.hostiles.volleys.len() <= 6, "a line for each pair of classes and no more");
+        let size = serde_json::to_string(round).unwrap().len();
+        assert!(size < 3000, "round {} of nine hundred ships is {size} bytes on the wire", round.round);
+    }
+
+    let first = &rounds[0];
+    let shots_from = |side: &BattleSide, class: ShipClass| -> u32 {
+        side.volleys.iter().filter(|v| v.from == ShipyardItem::Ship(class)).map(|v| v.shots).sum()
+    };
+    assert_eq!(shots_from(&first.fleets, LightFighter), 400, "a Light Fighter has no rapid fire here: one shot a round");
+    assert_eq!((shots_from(&first.fleets, SmallCargo), shots_from(&first.hostiles, LightFighter)), (20, 400));
+    let heavy = shots_from(&first.hostiles, HeavyFighter);
+    assert!((60..80).contains(&heavy), "sixty Heavy Fighters fire again only after a shot at a Small Cargo: {heavy}");
+    let cruisers = u64::from(shots_from(&first.fleets, Cruiser));
+    assert!(cruisers > 200, "eighty Cruisers among Light Fighters: {cruisers} shots");
+    assert_eq!(first.fleets.power, 400 * 50 + cruisers * 400 + 20 * 5, "the power fired is every shot's attack");
+
+    assert_eq!((ended.outcome, ended.player_victory, ended.rounds as usize), (BattleOutcome::HostilesDestroyed, true, rounds.len()));
+    assert!(hostile.iter().all(|(_, left)| *left == 0), "{hostile:?}");
+    let [mine, theirs_lost] = ended.losses.as_slice() else { panic!("one entry a side: {:?}", ended.losses) };
+    assert_eq!((mine.fleet_id, mine.destroyed, theirs_lost.fleet_id, theirs_lost.destroyed), (fid, false, HORDE, true));
+    lost.sort_by_key(|(kind, _)| kind.index());
+    assert_eq!(mine.lost.iter().map(|l| (l.unit, l.count)).collect::<Vec<_>>(), lost, "the summary is the rounds' losses added up");
+    assert_eq!(theirs_lost.lost.iter().map(|l| (l.unit, l.count)).collect::<Vec<_>>(), count_of(&[(LightFighter, 400), (HeavyFighter, 60)]));
+    assert!(ended.salvage.is_some_and(|pile| pile.total() > 0.0), "the hostiles' destruction leaves their wreckage");
+
+    let fleet = &engine.fleets[&fid];
+    let last = &rounds.last().unwrap().fleets.groups[0];
+    let after: Vec<(ShipyardItem, u32, u32)> =
+        fleet.ships.groups().iter().map(|g| (ShipyardItem::Ship(g.ship_class), g.count, g.damaged.len() as u32)).collect();
+    let reported: Vec<(ShipyardItem, u32, u32)> = last.units.iter().filter(|u| u.count > 0).map(|u| (u.unit, u.count, u.damaged)).collect();
+    assert_eq!(after, reported, "the fleet is what the last round left standing");
+    assert!(fleet.ships.has_damage(), "and it carries its damage out of the fight");
+    let state = iac_sim::views::full_state(&engine, fleet.owner_id).unwrap();
+    let told = state.fleets.iter().find(|f| f.id == fid).unwrap();
+    assert!(told.hull < told.hull_max && told.repair.is_some() && state.battles.is_empty());
+}
+
+#[test]
+fn cruisers_fire_six_times_a_round_among_light_fighters_and_heavy_fighters_once() {
+    use ShipClass::{Cruiser, HeavyFighter, LightFighter};
+    let (_, _, rounds, ended) = pitched("Broadside", &[(Cruiser, 60)], &[(LightFighter, 400)]);
+    let first = &rounds[0];
+    let volley = fire(&first.fleets, Cruiser, LightFighter).expect("the Cruisers fired at the Light Fighters");
+    assert_eq!(first.fleets.volleys.len(), 1);
+    assert!(
+        (270..=450).contains(&volley.shots),
+        "rapid fire 6 is a shot again five times in six: sixty Cruisers fire about 360 shots, not {}",
+        volley.shots,
+    );
+    assert!(volley.destroyed > 150, "and a Cruiser's 400 breaks a Light Fighter's 400 hull at a shot: {volley:?}");
+    assert!(volley.wasted > 0, "some of them at fighters already destroyed in the round: {volley:?}");
+    let answer = fire(&first.hostiles, LightFighter, Cruiser).expect("the Light Fighters fired back");
+    assert_eq!(answer.shots, 400, "all four hundred, those destroyed in the round too: fire is simultaneous");
+    assert!(answer.absorbed > 0 && answer.hull_damage > 0 && answer.bounced == 0, "{answer:?}");
+    assert_eq!((ended.outcome, ended.rounds <= 4), (BattleOutcome::HostilesDestroyed, true), "{} rounds", ended.rounds);
+
+    let (_, _, rounds, _) = pitched("Plain", &[(HeavyFighter, 60)], &[(LightFighter, 400)]);
+    assert_eq!(fire(&rounds[0].fleets, HeavyFighter, LightFighter).map(|v| v.shots), Some(60), "no rapid fire, one shot a ship");
+}
+
+#[test]
+fn a_shot_too_weak_for_a_shield_bounces_and_a_fight_nobody_can_hurt_anybody_in_is_a_standoff() {
+    use ShipClass::{Battleship, EspionageProbe, Recycler};
+    let (_, _, rounds, ended) = pitched("Scrap", &[(Recycler, 5)], &[(Battleship, 2)]);
+    for round in &rounds {
+        let volley = fire(&round.fleets, Recycler, Battleship).expect("the Recyclers fired");
+        assert_eq!(
+            (volley.shots, volley.bounced, volley.absorbed, volley.hull_damage),
+            (volley.shots, volley.shots, 0, 0),
+            "an attack of 1 is under a hundredth of a Battleship's 200 shield: it does nothing at all",
+        );
+        let standing = &round.hostiles.groups[0].units[0];
+        assert_eq!((standing.count, standing.damaged, standing.hull), (2, 0, standing.hull_max));
+    }
+    assert_eq!((ended.outcome, ended.player_victory), (BattleOutcome::FleetsDestroyed, false));
+    assert!(ended.salvage.is_none() && ended.losses[0].destroyed && !ended.losses[1].destroyed);
+
+    let (engine, fid, rounds, ended) = pitched("Watchers", &[(EspionageProbe, 5)], &[(EspionageProbe, 3)]);
+    assert_eq!(rounds.len(), 1);
+    assert_eq!((rounds[0].fleets.shots, rounds[0].hostiles.shots), (0, 0), "a Probe has no weapon");
+    assert_eq!((ended.outcome, ended.rounds, ended.player_victory), (BattleOutcome::Standoff, 1, false));
+    assert!(ended.losses.iter().all(|l| l.lost.is_empty() && !l.destroyed), "{:?}", ended.losses);
+    let fleet = &engine.fleets[&fid];
+    assert_eq!((fleet.state, fleet.ships.total()), (FleetStatus::Idle, 5), "the fleet stays where it is, with what it had");
 }
 
 fn settle(engine: &mut iac_sim::GameEngine, name: &str) -> Hex {
@@ -955,23 +1138,26 @@ fn home_ground_is_quiet_and_an_unscouted_lair_is_as_strong_as_the_chart_says() {
 }
 
 #[test]
-fn a_starter_fleet_wins_through_the_inner_ring_and_dies_past_it() {
-    for (ring, survives) in [(7, true), (8, true), (9, false), (10, false)] {
+fn a_starter_fleet_wins_through_ring_seven_gambles_at_ring_eight_and_dies_past_the_inner_ring() {
+    use RatioLabel::{Deadly, Even, Favourable, Risky, Safe};
+    let rings = [
+        (5, Favourable, Safe, 60..=60),
+        (7, Even, Even, 50..=60),
+        (8, Risky, Risky, 25..=55),
+        (9, Deadly, Deadly, 0..=3),
+        (10, Deadly, Deadly, 0..=3),
+    ];
+    for (ring, least, most, wins) in rings {
         let mut engine = world("persistent");
         let (pid, fid) = join(&mut engine, "Rookie");
-        let at = hex_ring(Hex::ORIGIN, ring)
-            .find(|at| engine.world_gen.generate_sector(*at).npc_template.is_some_and(|t| t.behavior != Passive))
-            .expect("a hostile lair in the ring");
+        let at = lair(&engine, ring, |_| true);
         let unscouted = engine.fleet_odds(&engine.fleets[&fid], at).label;
         deploy(&mut engine, fid, at, None);
         let odds = engine.fleet_odds(&engine.fleets[&fid], at).label;
         assert_eq!(unscouted, odds, "ring {ring}: the estimate and the sighting agree");
-        let outcome = engine.execute(pid, Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) });
-        assert!(outcome.error.is_none(), "{:?}", outcome.error);
-        run_until(&mut engine, 2000, |e| e.active_combats.is_empty());
-        let alive = engine.fleets.get(&fid).is_some_and(|f| f.ship_count > 0);
-        assert_eq!(alive, survives, "ring {ring}, rated {}", odds.label());
-        assert_eq!(odds > RatioLabel::Deadly, survives, "ring {ring} was rated {}", odds.label());
+        assert!((least..=most).contains(&odds), "ring {ring} was rated {}", odds.label());
+        let Fights { fought, won, hull_kept } = fights(&engine, pid, fid, at, 60);
+        assert!(wins.contains(&won), "ring {ring}, rated {}: won {won} of {fought}, kept {hull_kept:.2} of the hull", odds.label());
     }
 }
 
@@ -981,15 +1167,18 @@ fn a_label_tells_the_outcome_whatever_the_classes() {
     use ShipClass::{Battleship, Cruiser, HeavyFighter, LightFighter};
     let cases = [
         (LightFighter, 3, 10, Deadly),
-        (LightFighter, 8, 9, Even),
-        (LightFighter, 16, 9, Favourable),
-        (HeavyFighter, 6, 9, Safe),
-        (HeavyFighter, 6, 13, Even),
+        (LightFighter, 8, 10, Even),
+        (LightFighter, 16, 10, Favourable),
+        (LightFighter, 40, 10, Safe),
+        (HeavyFighter, 2, 13, Deadly),
         (HeavyFighter, 8, 13, Favourable),
-        (Cruiser, 4, 11, Safe),
-        (Cruiser, 5, 15, Favourable),
+        (HeavyFighter, 20, 13, Safe),
+        (Cruiser, 1, 11, Safe),
+        (Cruiser, 4, 17, Even),
+        (Cruiser, 4, 15, Favourable),
+        (Cruiser, 8, 15, Safe),
         (Battleship, 1, 20, Deadly),
-        (Battleship, 5, 20, Even),
+        (Battleship, 12, 20, Safe),
     ];
     for (class, count, ring, told) in cases {
         let mut engine = world("persistent");
@@ -1006,11 +1195,13 @@ fn a_label_tells_the_outcome_whatever_the_classes() {
         assert_eq!((unscouted.label, seen.label), (told, told), "{what}");
 
         let Fights { fought, won, hull_kept } = fights(&engine, pid, fid, at, 60);
+        // Both sides fire at once, so no label is free: what each means was
+        // measured over 492 pairings of five classes and thirteen rings.
         let (wins, kept) = match told {
-            Safe => (fought..=fought, 0.97..=1.0),
-            Favourable => (fought..=fought, 0.84..=0.995),
-            Even => (fought * 9 / 10..=fought, 0.45..=0.88),
-            _ => (0..=fought / 5, 0.0..=0.1),
+            Safe => (fought * 19 / 20..=fought, 0.84..=1.0),
+            Favourable => (fought * 19 / 20..=fought, 0.60..=0.93),
+            Even => (fought * 7 / 10..=fought, 0.33..=0.92),
+            _ => (0..=fought * 9 / 20, 0.0..=0.22),
         };
         assert!(wins.contains(&won) && kept.contains(&hull_kept), "{what}: won {won} of {fought}, kept {hull_kept:.2} of the hull");
     }
@@ -1018,7 +1209,7 @@ fn a_label_tells_the_outcome_whatever_the_classes() {
 
 #[test]
 fn a_default_patrol_holds_where_power_alone_said_engage_and_fights_what_it_beats() {
-    let convoy = |scouts: usize| {
+    let convoy = |scouts: u32| {
         let mut engine = world("persistent");
         let (pid, fid) = join(&mut engine, "Warden");
         let at = lair(&engine, 9, |b| b == Passive);
@@ -1035,7 +1226,7 @@ fn a_default_patrol_holds_where_power_alone_said_engage_and_fights_what_it_beats
     let orders = policy_actions(&run(&mut engine, 3));
     assert!(orders.iter().all(|(action, _)| action != "attack"), "{orders:?}");
     assert!(orders.iter().any(|(action, why)| action == "move" && why.contains("too strong")), "it withdraws: {orders:?}");
-    assert_eq!(engine.fleets[&fid].ship_count, 4);
+    assert_eq!(engine.fleets[&fid].ships.total(), 4);
 
     let (mut engine, pid, fid, at) = convoy(20);
     let Fights { fought, won, hull_kept } = fights(&engine, pid, fid, at, 60);

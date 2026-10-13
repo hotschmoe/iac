@@ -1,13 +1,13 @@
 // Client command handling: routes a protocol `Command` to the engine and words
 // the refusal. Pure state in, state out; hosts add transport and sessions.
 
-use iac_shared::constants::{ResourceKind, Resources, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL};
+use iac_shared::constants::{ResourceKind, Resources, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, MAX_FLEET_SHIPS};
 use iac_shared::protocol::{
     ClientMessage, Command, ErrorCode, ErrorMessage, ExchangeQuote, FleetOdds, HarvestResource, ServerMessage,
-    MAX_ODDS_SECTORS,
+    ShipCount, MAX_ODDS_SECTORS,
 };
 
-use crate::engine::{AuthError, ExchangeDeal, FleetStatus, GameEngine};
+use crate::engine::{AuthError, ExchangeDeal, Fleet, FleetStatus, GameEngine};
 use crate::views;
 
 /// What a command produced for its sender: an optional answer, an optional
@@ -37,7 +37,9 @@ impl GameEngine {
             Command::Stop { fleet_id } => self.handle_stop(pid, fleet_id),
             Command::Scan { fleet_id } => self.handle_scan(pid, fleet_id),
             Command::ExploreSite { fleet_id } => self.handle_explore_site(pid, fleet_id),
-            Command::Split { fleet_id, ref ship_ids } => self.handle_split(pid, fleet_id, ship_ids).map(|_| ()),
+            Command::Split { fleet_id, ref ships, damaged_first } => {
+                self.handle_split(pid, fleet_id, ships, damaged_first).map(|_| ())
+            }
             Command::Merge { fleet_id, other_fleet_id } => self.handle_merge(pid, fleet_id, other_fleet_id),
             Command::Leaderboard { limit } => {
                 reply = Some(ServerMessage::Leaderboard(crate::score::leaderboard(self, limit as usize, pid)));
@@ -354,13 +356,41 @@ fn insufficient_resources_message(engine: &GameEngine, player_id: u64, cmd: &Com
     )
 }
 
+/// Why a `split` naming `ships` was refused for `fleet`.
+fn split_refusal(fleet: Option<&Fleet>, ships: &[ShipCount]) -> String {
+    let Some(fleet) = fleet else {
+        return "split needs a fleet of yours with ships aboard".to_string();
+    };
+    if ships.is_empty() {
+        return "split needs at least one class and a count of its ships to take".to_string();
+    }
+    for (i, order) in ships.iter().enumerate() {
+        let label = order.ship_class.label();
+        if order.count == 0 {
+            return format!("split names {label} with a count of 0");
+        }
+        if ships[..i].iter().any(|earlier| earlier.ship_class == order.ship_class) {
+            return format!("split names {label} twice; give each class one count");
+        }
+        let aboard = fleet.ships.count(order.ship_class);
+        if order.count > aboard {
+            return format!("fleet {} has {aboard} {label}, not the {} the split names", fleet.id, order.count);
+        }
+    }
+    format!(
+        "the split would take all {} ships of fleet {}; at least one ship must stay behind",
+        fleet.ships.total(),
+        fleet.id,
+    )
+}
+
 /// Human-readable explanation for a rejected command. The code stays the
 /// machine-readable part; this says which fleet, sector or queue is at fault.
 pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command, code: ErrorCode) -> String {
     let fleet_id = command_fleet_id(cmd);
     let fleet = fleet_id
         .and_then(|id| engine.fleets.get(&id))
-        .filter(|f| f.owner_id == player_id && f.ship_count > 0);
+        .filter(|f| f.owner_id == player_id && !f.ships.is_empty());
     let fid = fleet_id.unwrap_or(0);
 
     match (code, cmd) {
@@ -442,11 +472,11 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         (ErrorCode::NotInSector, Command::Merge { other_fleet_id, .. }) => {
             format!("fleets {fid} and {other_fleet_id} are not in the same sector")
         }
-        (ErrorCode::InvalidTarget, Command::Split { .. }) => {
-            "split needs at least one ship id aboard the fleet, and at least one ship must stay behind".to_string()
-        }
+        (ErrorCode::InvalidTarget, Command::Split { ships, .. }) => split_refusal(fleet, ships),
         (ErrorCode::InvalidTarget, Command::Merge { .. }) => "a fleet cannot merge with itself".to_string(),
-        (ErrorCode::InvalidCommand, Command::Merge { .. }) => "the merged fleet would exceed 64 ships".to_string(),
+        (ErrorCode::InvalidCommand, Command::Merge { .. }) => {
+            format!("the merged fleet would exceed {MAX_FLEET_SHIPS} ships")
+        }
         (ErrorCode::NoResources, Command::Harvest { .. }) => "this sector has nothing left to harvest".to_string(),
         (ErrorCode::NoResources, Command::CollectSalvage { .. }) => "no salvage in this sector".to_string(),
         (ErrorCode::StorageTooSmall, _) => storage_too_small_message(engine, player_id, cmd),

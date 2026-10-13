@@ -254,13 +254,18 @@ impl<P: ScriptedPlayer> Seat<P> {
         let now = engine.current_tick();
         let following = self.player.watching(now + 1) && self.view.as_ref().is_some_and(|view| view.tick + 1 == now);
         match &mut self.view {
-            Some(view) if following => apply(view, views::tick_update(engine, self.player_id, &[])),
+            Some(view) if following => {
+                apply(view, views::tick_update(engine, self.player_id, &[]));
+                view.battles = views::battles_of(engine, self.player_id);
+            }
             _ => self.view = None,
         }
     }
 }
 
-/// What a client does with a `tick_update`.
+/// What a client does with a `tick_update`, but for its fights: a client
+/// takes each one's round from the update's `BattleRound` event, and a seat
+/// is handed no events, so `Seat::observe` reads them as a full state would.
 fn apply(state: &mut GameState, update: TickUpdate) {
     state.tick = update.tick;
     if let Some(player) = update.player {

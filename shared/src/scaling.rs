@@ -731,15 +731,100 @@ pub fn research_prerequisites_met(
 
 // ── Research Modifier Functions ──────────────────────────────────
 
-/// Weapons, Shielding and Armour Technology: a tenth a level each.
-pub fn apply_research_to_stats(base: ShipStats, research: &ResearchLevels) -> ShipStats {
-    let bonus = |level: u8| 1.0 + 0.10 * f32::from(level);
-    ShipStats {
-        hull: base.hull * bonus(research.armour_technology),
-        shield: base.shield * bonus(research.shielding_technology),
-        weapon: base.weapon * bonus(research.weapons_technology),
-        ..base
+/// The Weapons, Shielding and Armour Technology a force fights with. A fleet
+/// carries the levels it last docked at home with; a defence and a Solar
+/// Satellite stand at home and are always at their owner's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Refit {
+    pub weapons: u8,
+    pub shielding: u8,
+    pub armour: u8,
+}
+
+impl Refit {
+    pub fn of(research: &ResearchLevels) -> Refit {
+        Refit {
+            weapons: research.weapons_technology,
+            shielding: research.shielding_technology,
+            armour: research.armour_technology,
+        }
     }
+
+    /// The lower of each level: what two fleets merged in the field fight with.
+    pub fn lower(self, other: Refit) -> Refit {
+        Refit {
+            weapons: self.weapons.min(other.weapons),
+            shielding: self.shielding.min(other.shielding),
+            armour: self.armour.min(other.armour),
+        }
+    }
+
+    /// Some level of `current` is above this one's: a dock at home would raise it.
+    pub fn behind(self, current: Refit) -> bool {
+        current.weapons > self.weapons || current.shielding > self.shielding || current.armour > self.armour
+    }
+
+    /// A tenth a level each, as OGame has it.
+    pub fn arms(self) -> Arms {
+        let grown = |level: u8| 1000 + 100 * u16::from(level);
+        Arms { attack: grown(self.weapons), shield: grown(self.shielding), hull: grown(self.armour) }
+    }
+}
+
+/// What a unit's attack, shield and hull are multiplied by in a fight, in
+/// thousandths of the class's figures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Arms {
+    pub attack: u16,
+    pub shield: u16,
+    pub hull: u16,
+}
+
+impl Arms {
+    pub const BASE: Arms = Arms { attack: 1000, shield: 1000, hull: 1000 };
+
+    /// A pirate group's: all three figures at one multiplier.
+    pub fn of_grade(multiplier: f32) -> Arms {
+        let grade = (multiplier * 1000.0).round().clamp(1.0, f32::from(u16::MAX)) as u16;
+        Arms { attack: grade, shield: grade, hull: grade }
+    }
+}
+
+/// One unit's whole-number figures in a fight. A round is fought on these
+/// and on nothing else, so it is the same arithmetic on every target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UnitFigures {
+    pub hull: u32,
+    pub shield: u32,
+    pub attack: u32,
+}
+
+impl UnitFigures {
+    /// `attack + (hull + shield) / 10`, the scale ships, raids and threat
+    /// ratings share, for a unit holding `hull` of its hull.
+    pub fn power_at(&self, hull: u32) -> f32 {
+        self.attack as f32 + (hull as f32 + self.shield as f32) / 10.0
+    }
+
+    pub fn power(&self) -> f32 {
+        self.power_at(self.hull)
+    }
+}
+
+/// The figures of one `item` fighting with `arms`, cut off to whole numbers
+/// as OGame cuts them.
+pub fn unit_figures(item: ShipyardItem, arms: Arms) -> UnitFigures {
+    let base = item.base_stats();
+    let scaled = |figure: f32, per_mille: u16| (u64::from(figure as u32) * u64::from(per_mille) / 1000) as u32;
+    UnitFigures {
+        hull: scaled(base.hull, arms.hull),
+        shield: scaled(base.shield, arms.shield),
+        attack: scaled(base.weapon, arms.attack),
+    }
+}
+
+pub fn ship_figures(class: ShipClass, arms: Arms) -> UnitFigures {
+    unit_figures(ShipyardItem::Ship(class), arms)
 }
 
 /// Buildings that can be under construction at once: one, plus one for
@@ -899,7 +984,7 @@ pub const CANCEL_REFUND_FRACTION: f64 = 0.50;
 
 /// OGame's defences, without the two missiles, built from the shipyard
 /// queue. They never move, burn no fuel, and a raid can wear them down.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum DefenceKind {
     RocketLauncher = 0,
@@ -1036,17 +1121,17 @@ fn stats_power(stats: &ShipStats) -> f32 {
 /// Power of one defence with the owner's Weapons, Shielding and Armour
 /// Technology: a defence stands at home and is always current.
 pub fn structure_power(kind: DefenceKind, research: &ResearchLevels) -> f32 {
-    stats_power(&apply_research_to_stats(kind.base_stats(), research))
+    unit_figures(ShipyardItem::Defence(kind), Refit::of(research).arms()).power()
 }
 
 /// Power of one Solar Satellite at home, with the owner's research.
 pub fn satellite_power(research: &ResearchLevels) -> f32 {
-    stats_power(&apply_research_to_stats(ShipClass::SolarSatellite.base_stats(), research))
+    ship_figures(ShipClass::SolarSatellite, Refit::of(research).arms()).power()
 }
 
 /// What the shipyard queue builds: a ship class or a defence.
 /// On the wire it is just the name ("Cruiser", "RocketLauncher").
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ShipyardItem {
     Ship(ShipClass),
@@ -1054,6 +1139,24 @@ pub enum ShipyardItem {
 }
 
 impl ShipyardItem {
+    /// Every kind of unit a fight can hold.
+    pub const COUNT: usize = ShipClass::COUNT + DefenceKind::COUNT;
+
+    /// Its place in the catalogue: the ships, then the defences.
+    pub fn index(self) -> usize {
+        match self {
+            ShipyardItem::Ship(c) => c as usize,
+            ShipyardItem::Defence(d) => ShipClass::COUNT + d as usize,
+        }
+    }
+
+    pub fn from_index(index: usize) -> Option<ShipyardItem> {
+        match ShipClass::ALL.get(index) {
+            Some(&class) => Some(ShipyardItem::Ship(class)),
+            None => DefenceKind::from_usize(index.checked_sub(ShipClass::COUNT)?).map(ShipyardItem::Defence),
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             ShipyardItem::Ship(c) => c.label(),
@@ -1065,6 +1168,13 @@ impl ShipyardItem {
         match self {
             ShipyardItem::Ship(c) => c.build_cost(),
             ShipyardItem::Defence(d) => d.build_cost(),
+        }
+    }
+
+    pub fn base_stats(self) -> ShipStats {
+        match self {
+            ShipyardItem::Ship(c) => c.base_stats(),
+            ShipyardItem::Defence(d) => d.base_stats(),
         }
     }
 
@@ -1157,9 +1267,12 @@ pub fn rapid_fire_against(class: ShipClass, target: ShipyardItem) -> u16 {
     }
 }
 
-/// Rapid fire of one ship class against another; 0 for none.
-pub fn rapid_fire_vs(class: ShipClass, target: ShipClass) -> u16 {
-    rapid_fire_against(class, ShipyardItem::Ship(target))
+/// Rapid fire of any unit against `target`; 0 for none, and for every defence.
+pub fn rapid_fire_of(unit: ShipyardItem, target: ShipyardItem) -> u16 {
+    match unit {
+        ShipyardItem::Ship(class) => rapid_fire_against(class, target),
+        ShipyardItem::Defence(_) => 0,
+    }
 }
 
 /// Everything a ship of `class` has rapid fire against, ships first, each
@@ -1351,16 +1464,24 @@ pub fn outpost_repair_price(level: u8) -> f64 {
 /// keeps what is scarcest. The payment is also the floor of the store that
 /// a raid cannot take.
 pub fn outpost_repair_payment(level: u8, store: Resources) -> (Resources, f64) {
-    let mut owed = outpost_repair_price(level);
+    pay_by_weight(outpost_repair_price(level), store)
+}
+
+/// What a price counted in metal takes from `stock`, and how much metal the
+/// stock is short of paying it: metal first, then crystal and deuterium,
+/// each unit at its par value. An outpost's own repair and the mending of
+/// ships at a dock are both paid this way.
+pub fn pay_by_weight(price: f64, stock: Resources) -> (Resources, f64) {
+    let mut owed = price;
     let mut payment = Resources::default();
     for kind in ResourceKind::ALL {
-        let (stock, covers) = (store.get(kind).max(0.0), owed / kind.weight());
-        if stock >= covers {
+        let (held, covers) = (stock.get(kind).max(0.0), owed / kind.weight());
+        if held >= covers {
             *payment.get_mut(kind) = covers;
             owed = 0.0;
         } else {
-            *payment.get_mut(kind) = stock;
-            owed -= stock * kind.weight();
+            *payment.get_mut(kind) = held;
+            owed -= held * kind.weight();
         }
     }
     (payment, owed)
@@ -1649,39 +1770,49 @@ pub fn threat_band(rating: u8) -> u8 {
     rating.clamp(1, MAX_THREAT).div_ceil(3)
 }
 
-/// Ratio at and above which a fight is SAFE: the fleet keeps 98 percent of its hull or more.
+/// Ratio at and above which a fight is SAFE: a win that keeps nine tenths
+/// of the fleet. Both sides fire at once, so no fight against armed ships
+/// is free. What each band means was measured on fleets of one class
+/// against the lairs of thirteen rings, sixty fights a pairing: SAFE won
+/// 58 to 60 of them and kept 0.85 or more of its hull.
 pub const RATIO_SAFE: f32 = 2.5;
-/// FAVOURABLE from here: a sure win that costs about 1 to 15 percent of the hull.
+/// FAVOURABLE from here: won 59 or 60 of 60 and kept 0.63 to 0.91.
 pub const RATIO_FAVOURABLE: f32 = 1.5;
-/// EVEN from here: a win in practice, but 15 to 50 percent of the hull is lost.
+/// EVEN from here: won 45 to 60 of 60 and kept 0.36 to 0.90 on average,
+/// the fights it lost counted as nothing kept.
 pub const RATIO_EVEN: f32 = 1.1;
-/// RISKY from here: anything from a lost fleet to a win that keeps half the hull.
-/// Below it (DEADLY) the fleet is lost, or wins one fight in six at best.
+/// RISKY from here: won 10 to 51 of 60. Below it (DEADLY) the fleet won 25
+/// of 60 at best, most pairings none, and kept under a fifth.
 pub const RATIO_RISKY: f32 = 0.9;
 
 /// What each ratio means, as (ratio, margin): the margin is the share of its
-/// hull the fleet is expected to keep minus the share the other side is.
-/// Measured in fights between equal ship classes, where the ratio is plain
-/// power against power, so 1.5 is a fight that keeps about 86 percent of the
-/// hull whatever the classes. The ends are "all of theirs kept" and "none of
-/// ours lost".
+/// worth the fleet is expected to keep minus the share the other side is.
+/// Measured on the round a fight is fought by (`iac_sim::combat`), in fights
+/// to the end between equal ship classes, where the ratio is plain numbers
+/// against numbers: 300 fights a point with 60 ships on the smaller side,
+/// the mean of Light Fighters, Heavy Fighters, Cruisers, Battleships and
+/// Destroyers, which lie within 0.03 of each other. (Battlecruisers, whose
+/// shield takes more than half of one another's shot, end further apart:
+/// 0.82 at 1.5.) So 1.5 is a fight that keeps about 69 percent of the
+/// fleet's worth whatever the classes. An even fight has no margin: neither
+/// side fires first.
 pub const RATIO_MARGINS: [(f32, f32); 16] = [
-    (0.1, -MARGIN_MAX),
-    (0.5, -0.91),
-    (0.625, -0.74),
-    (0.75, -0.58),
-    (0.83, -0.39),
-    (0.9, -0.24),
-    (1.0, 0.25),
-    (1.1, 0.53),
-    (1.25, 0.72),
-    (1.5, 0.86),
-    (1.75, 0.933),
-    (2.0, 0.967),
-    (2.5, 0.99),
-    (3.0, 0.996),
-    (4.0, 0.9995),
-    (10.0, MARGIN_MAX),
+    (0.1, -0.987),
+    (0.5, -0.834),
+    (0.625, -0.730),
+    (0.75, -0.580),
+    (0.83, -0.449),
+    (0.9, -0.326),
+    (1.0, 0.0),
+    (1.1, 0.294),
+    (1.25, 0.504),
+    (1.5, 0.685),
+    (1.75, 0.778),
+    (2.0, 0.834),
+    (2.5, 0.893),
+    (3.0, 0.924),
+    (4.0, 0.953),
+    (10.0, 0.987),
 ];
 const MARGIN_MAX: f32 = 0.99999;
 
@@ -1692,28 +1823,54 @@ fn margin_depth(margin: f32) -> f32 {
     if m >= 0.0 { -maths::ln(1.0 - m) } else { maths::ln(1.0 + m) }
 }
 
+/// A fight is rated FAVOURABLE or better only if the fleet won every time
+/// the odds played it, and EVEN or better only if it won this share of
+/// them. A handful of ships wins or loses whole, so what it keeps on
+/// average says little of the risk; many ships end near the average and
+/// the rule changes nothing for them.
+pub const EVEN_WINS: f32 = 0.8;
+/// How far under a band's edge a ratio is put that the rule above keeps
+/// out of the band.
+const RATIO_STEP: f32 = 0.01;
+
 /// The ratio of a fight in which the fleet is expected to keep `ours_kept`
-/// of its hull and the other side `theirs_kept` of its own (both 0 to 1):
-/// the power ratio at which equal ship classes end the same way.
-pub fn outcome_ratio(ours_kept: f32, theirs_kept: f32) -> f32 {
+/// of its worth and the other side `theirs_kept` of its own (both 0 to 1):
+/// the ratio of numbers at which equal ship classes end the same way. It is
+/// then held under the band its win record does not earn: `won` is the
+/// share of the fights played in which the other side was destroyed and
+/// the fleet was not, `lost` the share in which the fleet was destroyed.
+/// A fleet destroyed every time is DEADLY whatever it took with it.
+pub fn outcome_ratio(ours_kept: f32, theirs_kept: f32, won: f32, lost: f32) -> f32 {
     let depth = margin_depth(ours_kept - theirs_kept);
     let mut low = RATIO_MARGINS[0];
+    let mut ratio = RATIO_MARGINS[RATIO_MARGINS.len() - 1].0;
     for high in RATIO_MARGINS.into_iter().skip(1) {
         let (from, to) = (margin_depth(low.1), margin_depth(high.1));
         if depth <= to {
-            return low.0 + (high.0 - low.0) * ((depth - from) / (to - from)).clamp(0.0, 1.0);
+            ratio = low.0 + (high.0 - low.0) * ((depth - from) / (to - from)).clamp(0.0, 1.0);
+            break;
         }
         low = high;
     }
-    low.0
+    let most = if lost >= 1.0 {
+        RATIO_RISKY - RATIO_STEP
+    } else if won < EVEN_WINS {
+        RATIO_EVEN - RATIO_STEP
+    } else if won < 1.0 {
+        RATIO_FAVOURABLE - RATIO_STEP
+    } else {
+        ratio
+    };
+    ratio.min(most)
 }
 
 /// How a fleet is expected to fare against what waits in a sector. The ratio
-/// is `outcome_ratio` of the fight played on averages (`iac_sim::odds`), so it
-/// counts rapid fire, shot size against hull and shield, and who fires first;
-/// between equal ship classes it is close to power against power. Damage
-/// exchange is quadratic in fleet size, so the bands sit close together
-/// around 1.0 and a fight is decided long before the ratio reaches 2.
+/// is `outcome_ratio` of the fight itself played forward (`iac_sim::odds`),
+/// so it counts rapid fire, the bounce, a shield that is full again every
+/// round, the damage a fleet carries and what each side fights with; between
+/// equal ship classes it is numbers against numbers. Damage exchange is
+/// quadratic in fleet size, so the bands sit close together around 1.0 and
+/// a fight is decided long before the ratio reaches 2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RatioLabel {
@@ -1732,6 +1889,18 @@ impl RatioLabel {
             RatioLabel::Even => "EVEN",
             RatioLabel::Risky => "RISKY",
             RatioLabel::Deadly => "DEADLY",
+        }
+    }
+
+    /// What a fight in the band costs, as `RATIO_MARGINS` measured it: the
+    /// sentence a client prints beside the label.
+    pub fn outcome(self) -> &'static str {
+        match self {
+            RatioLabel::Safe => "a win that keeps nine tenths of the fleet",
+            RatioLabel::Favourable => "a win that keeps two thirds to nine tenths of the fleet",
+            RatioLabel::Even => "a win three times in four or better, at the cost of a third of the fleet or more",
+            RatioLabel::Risky => "as likely lost as won",
+            RatioLabel::Deadly => "the fleet is lost",
         }
     }
 }

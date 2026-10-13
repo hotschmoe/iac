@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants::{Density, Drive, ResourceKind, ShipClass, TerrainType};
 use crate::scaling::{
-    self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, Prereqs, RatioLabel, ResearchLevels, ResearchType,
-    ShipyardItem,
+    self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, Prereqs, RatioLabel, Refit, ResearchLevels,
+    ResearchType, ShipyardItem,
 };
 use crate::hex::Hex;
 use crate::pace::Pace;
@@ -162,21 +162,35 @@ pub enum Command {
         #[serde(default)]
         fleet_id: u64,
     },
-    /// Detach the listed ships from `fleet_id` into a new fleet at the same
-    /// sector. The new fleet starts with no standing orders and takes a share
-    /// of fuel and cargo proportional to the tank and hold it carries off.
-    /// At least one ship must stay behind. Both fleets must be idle. Rejected
-    /// with `FleetLimitReached` at the fleet cap, `InvalidTarget` for ship ids
-    /// not in the fleet or an attempt to take every ship. At the homeworld
-    /// this is also how docked ships are launched as their own fleet. The
-    /// reply is an `Alert` (info) event naming the new fleet id.
+    /// Detach `ships`, so many of each class named, from `fleet_id` into a
+    /// new fleet at the same sector. Whole ships of a class go first and
+    /// damaged ones only when the whole run out; with `damaged_first` the
+    /// most damaged go first, which is how the wounded are sent home. The
+    /// new fleet starts with no standing orders, fights with the levels of
+    /// the fleet it left (`FleetState.refit`) and takes a share of fuel and
+    /// cargo proportional to the tank and hold it carries off. At least one
+    /// ship must stay behind. The fleet must be idle. Rejected with
+    /// `FleetLimitReached` at the fleet cap, `InvalidTarget` for a class
+    /// named twice, a count of zero, more ships of a class than the fleet
+    /// has, or an attempt to take every ship. At the homeworld this is also
+    /// how docked ships are launched as their own fleet. The reply is an
+    /// `Alert` (info) event naming the new fleet id.
     #[serde(rename = "split")]
-    Split { fleet_id: u64, ship_ids: Vec<u64> },
+    Split {
+        fleet_id: u64,
+        ships: Vec<ShipCount>,
+        #[serde(default)]
+        damaged_first: bool,
+    },
     /// Fold `other_fleet_id` into `fleet_id`. Both must be yours, idle, and in
     /// the same sector (`NotInSector` otherwise). Ships, cargo and fuel are
     /// pooled (fuel up to the combined tank), the merged fleet keeps the
     /// standing orders of `fleet_id`, and `other_fleet_id` ceases to exist.
-    /// This works anywhere, so a fresh fleet can rescue a stranded one.
+    /// Away from home it fights with the lower of the two fleets' Weapons,
+    /// Shielding and Armour levels until it docks at home. Refused with
+    /// `InvalidCommand` when the two hold more than `MAX_FLEET_SHIPS` ships
+    /// between them. This works anywhere, so a fresh fleet can rescue a
+    /// stranded one.
     #[serde(rename = "merge")]
     Merge { fleet_id: u64, other_fleet_id: u64 },
     /// Sell `amount` units of `give` from the hold of `fleet_id` to the hub's
@@ -676,15 +690,15 @@ pub struct FleetOdds {
 
 /// How a fleet would fare against what the player knows of a sector.
 ///
-/// The server plays the fight on averages, with the ships on each side:
-/// rapid fire between classes, each shot against hull and shield, the fleet
-/// firing first. `ratio` puts the expected result on the scale of a power
-/// ratio between equal ship classes (1.0 is an even match, 0.1 to 10), and
-/// `label` is its band: at least 2.5 is safe (99 percent of the hull kept or
-/// more), 1.5 favourable (86 to 99), 1.1 even (a win that keeps 53 to 86),
-/// 0.9 risky (anything from a loss to a win with half the hull), below that
-/// deadly. A sector with nothing in sight is rated against the group its
-/// ring spawns. Standing orders use the same number (`engage_ratio_x10`).
+/// The server plays the fight itself, the round a fight is fought by, a few
+/// times over with fixed dice and the two sides as they stand, damage and
+/// refit included, both scaled down together when they are large. `ratio`
+/// puts the share of its worth each side kept on the scale of a power ratio
+/// between equal ship classes (1.0 is an even match, 0.1 to 10), and `label`
+/// is its band (`RatioLabel`): safe from 2.5, favourable from 1.5, even
+/// from 1.1, risky from 0.9, below that deadly. A sector with nothing in
+/// sight is rated against the group its ring spawns. Standing orders use
+/// the same number (`engage_ratio_x10`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SectorOdds {
     pub sector: Hex,
@@ -759,6 +773,13 @@ pub struct TickUpdate {
     /// they have none: a client drops the one it held.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub outpost: Option<OutpostState>,
+    /// Every fight under way that the player has a fleet in or is present
+    /// at, whole, every tick, as in `GameState.battles` but without
+    /// `last_round`: the round fought this tick is the `BattleRound` event
+    /// of the same update. Left out when there is none: a client replaces
+    /// its list with this one.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub battles: Vec<BattleState>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub events: Option<Vec<GameEvent>>,
 }
@@ -779,7 +800,27 @@ pub struct GameState {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub outpost: Option<OutpostState>,
     pub known_sectors: Vec<SectorState>,
+    /// The fights under way that the player has a fleet in or is present
+    /// at, each with its last round: what a client that arrives in the
+    /// middle of one has missed. The rounds before that are not kept.
+    /// Left out when there is none.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub battles: Vec<BattleState>,
     pub world: WorldInfo,
+}
+
+/// A fight under way, as `GameState.battles` and `TickUpdate.battles` carry it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BattleState {
+    pub sector: Hex,
+    /// Rounds fought so far.
+    pub rounds: u32,
+    /// The last of them, in a full state; absent before the first is
+    /// fought, and in a tick update, whose events carry the round.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_round: Option<BattleRoundEvent>,
+    /// What each fleet and group has lost so far, as `CombatEnded` will say.
+    pub losses: Vec<BattleLosses>,
 }
 
 /// A player's outpost: a station on one sector of rings 9 to 20, built from
@@ -836,6 +877,8 @@ pub struct OutpostState {
     pub grade: f32,
     /// What the platform defends with; 0 while breached or unfinished.
     pub platform_power: f32,
+    /// What the owner's ships standing in the sector add.
+    pub ships_power: f32,
     /// The platform and the owner's ships standing in the sector: what the
     /// next raid meets.
     pub defence_power: f32,
@@ -993,6 +1036,8 @@ pub struct PlayerState {
     pub name: String,
     pub resources: Resources,
     pub homeworld: Hex,
+    /// Every ship of every fleet the player has, docked or away.
+    pub ship_count: u32,
     /// Where the player's meter at the hub's exchange stands this tick.
     #[serde(default)]
     pub exchange: ExchangeMeter,
@@ -1003,7 +1048,30 @@ pub struct FleetState {
     pub id: u64,
     pub location: Hex,
     pub state: FleetStatus,
-    pub ships: Vec<ShipState>,
+    /// Its ships by class, in catalogue order; a class it has none of is
+    /// left out. A fleet is a count for each class and the hull of its
+    /// damaged ships: no ship has an id.
+    pub ships: Vec<ShipGroupState>,
+    /// Every ship of every class.
+    pub ship_count: u32,
+    /// Hull the whole fleet holds, and at full. Hull lost stays lost until a
+    /// dock mends it (`repair`).
+    pub hull: u64,
+    pub hull_max: u64,
+    /// What the fleet fires in one round, and the shield it raises at the
+    /// start of each, with `refit` counted.
+    pub attack: u64,
+    pub shield: u64,
+    /// The Weapons, Shielding and Armour Technology the fleet fights with:
+    /// the levels it last docked at home with. Research that finishes while
+    /// it is away reaches it when it next docks there, not at the outpost.
+    pub refit: Refit,
+    /// The owner's levels are above `refit`: docking at home would raise it.
+    #[serde(default)]
+    pub refit_due: bool,
+    /// What mending its damaged ships would take; absent when none is damaged.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub repair: Option<RepairQuote>,
     pub cargo: Resources,
     /// Hold size: the most `cargo` can total, as the server enforces it.
     pub cargo_capacity: f64,
@@ -1041,7 +1109,8 @@ pub struct FleetState {
     #[serde(default)]
     pub cooldown_remaining: u16,
     /// Combat power of the whole fleet on the scale raids and threat ratings
-    /// share: each ship counts `weapon + (hull + shield) / 10`.
+    /// share: each ship counts its attack and a tenth of its shield and of
+    /// the hull it holds, with `refit` counted.
     #[serde(default)]
     pub power: f32,
     /// How many more hops outward the fleet can fly and still get home:
@@ -1097,16 +1166,61 @@ pub enum FleetStatus {
     Exploring,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShipState {
-    pub id: u64,
+/// The ships of one class in a fleet or a hostile group. Shields are not a
+/// state: every unit's is full at the start of every round.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ShipGroupState {
     #[serde(rename = "class")]
     pub ship_class: ShipClass,
-    pub hull: f32,
-    pub hull_max: f32,
-    pub shield: f32,
-    pub shield_max: f32,
-    pub weapon_power: f32,
+    pub count: u32,
+    /// How many are not whole.
+    pub damaged: u32,
+    /// How many of those stand at or under `EXPLODE_BELOW_PCT` hundredths of
+    /// their hull: each may explode the next time a shot breaks its shield.
+    pub at_risk: u32,
+    /// Hull they hold between them, and at full.
+    pub hull: u64,
+    pub hull_max: u64,
+    /// One ship's attack, shield and full hull in a round, with what its
+    /// fleet or group fights with counted.
+    pub unit_attack: u32,
+    pub unit_shield: u32,
+    pub unit_hull: u32,
+}
+
+/// What mending a fleet's damaged ships takes at each dock.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepairQuote {
+    /// Damaged ships, and the hull they lack between them.
+    pub ships: u32,
+    pub hull: u64,
+    /// The home dock: it mends a fleet the tick it docks, and every tick it
+    /// stands there.
+    pub home: DockRepair,
+    /// The owner's outpost; absent when they have none.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub outpost: Option<DockRepair>,
+}
+
+/// One dock's answer to a fleet's damage, as things stand this tick.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DockRepair {
+    /// The whole repair priced in metal: for each ship the dock's share of
+    /// its cost at par, times the share of its hull that is gone. 0 at a
+    /// dock that mends for nothing.
+    pub price: f64,
+    /// What the dock's stock would pay now: metal first, crystal and
+    /// deuterium at their weights where the metal runs out.
+    pub payment: Resources,
+    /// Ships that payment makes whole, the most damaged first, and the hull
+    /// it restores in all. A ship the stock does not cover is left as it
+    /// is, and so is every ship after it.
+    pub ships: u32,
+    pub hull: u64,
+    /// Why this dock would mend nothing, in the engine's words; absent when
+    /// it would mend.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub refusal: Option<String>,
 }
 
 /// One sector as the player knows it.
@@ -1239,18 +1353,15 @@ pub struct SectorResources {
     pub deuterium: Density,
 }
 
+/// A hostile group. `ships` is by class as a fleet's is; a group that has
+/// not fought, or was only remembered, is listed whole.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NpcFleetInfo {
     pub id: u64,
-    pub ships: Vec<NpcShipInfo>,
+    pub ships: Vec<ShipGroupState>,
+    /// Every ship of every class.
+    pub ship_count: u32,
     pub behavior: NpcBehavior,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NpcShipInfo {
-    #[serde(rename = "class")]
-    pub ship_class: ShipClass,
-    pub count: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1265,17 +1376,18 @@ pub enum NpcBehavior {
 pub struct FleetBrief {
     pub id: u64,
     pub owner_name: String,
-    pub ship_count: u16,
+    pub ship_count: u32,
     /// Its ships by class, in catalogue order; a class it has none of is left out.
     #[serde(default)]
     pub ship_classes: Vec<ShipCount>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// So many ships of one class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShipCount {
     #[serde(rename = "class")]
     pub ship_class: ShipClass,
-    pub count: u16,
+    pub count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1313,7 +1425,10 @@ pub struct HomeworldState {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub research_active: Option<ResearchItem>,
     pub research_pending: Vec<QueuedResearch>,
-    pub docked_ships: Vec<ShipState>,
+    /// The ships of every fleet standing at home, summed by class, in
+    /// catalogue order, and how many they are in all.
+    pub docked_ships: Vec<ShipGroupState>,
+    pub docked_ship_count: u32,
     /// Defences standing at home (those being rebuilt after a raid are
     /// counted in `restoring`, not `count`).
     pub defences: Vec<DefenceState>,
@@ -1524,8 +1639,9 @@ pub enum EffectKind {
     StorageProtected,
     /// What every fleet's tank is multiplied by.
     TankFactor,
-    /// What attack, shield or hull is multiplied by, for ships built from
-    /// now on and for defences.
+    /// What attack, shield or hull is multiplied by: for defences and
+    /// Solar Satellites at once, for a fleet from when it next docks at
+    /// home (`FleetState.refit`).
     Attack,
     Shield,
     Hull,
@@ -1710,9 +1826,10 @@ pub struct ShipOption {
     /// Ticks to build one ship at the current Shipyard and Nanite Factory levels.
     pub ticks_per_ship: u64,
     pub requires: Vec<Requirement>,
-    /// What a ship built now fights with: the class's figures with the
-    /// owner's Armour, Shielding and Weapons Technology. A ship keeps what
-    /// it was built with.
+    /// What a ship in a fleet docked at home fights with: the class's
+    /// figures with the owner's Armour, Shielding and Weapons Technology,
+    /// cut off to whole numbers as a round counts them. A fleet away from
+    /// home fights with `FleetState.refit`.
     pub hull: f32,
     pub shield: f32,
     pub weapon: f32,
@@ -1816,18 +1933,18 @@ impl HomeworldCatalog {
         let ship_options = ShipClass::ALL
             .into_iter()
             .map(|c| {
-                let built = scaling::apply_research_to_stats(c.base_stats(), research);
+                let built = scaling::ship_figures(c, scaling::Refit::of(research).arms());
                 let speed = scaling::ship_speed(c, research);
                 ShipOption {
                     ship_class: c,
                     unit_cost: c.build_cost(),
                     ticks_per_ship: scaling::ship_build_time(c, buildings, pace),
                     requires: ship_requirements(buildings, research, c),
-                    hull: built.hull,
-                    shield: built.shield,
-                    weapon: built.weapon,
-                    power: built.weapon + (built.hull + built.shield) / 10.0,
-                    cargo: f64::from(built.cargo) * pace.cargo_mult(),
+                    hull: built.hull as f32,
+                    shield: built.shield as f32,
+                    weapon: built.attack as f32,
+                    power: built.power(),
+                    cargo: f64::from(c.base_stats().cargo) * pace.cargo_mult(),
                     flies: c.flies(),
                     drive: scaling::ship_drive(c, research).map(|(drive, _, _)| drive),
                     speed,
@@ -1842,7 +1959,7 @@ impl HomeworldCatalog {
         let defence_options = DefenceKind::ALL
             .into_iter()
             .map(|kind| {
-                let built = scaling::apply_research_to_stats(kind.base_stats(), research);
+                let built = scaling::unit_figures(ShipyardItem::Defence(kind), scaling::Refit::of(research).arms());
                 DefenceOption {
                     kind,
                     count: defences[kind as usize],
@@ -1850,9 +1967,9 @@ impl HomeworldCatalog {
                     room: kind.max_count().map(|most| most.saturating_sub(committed[kind as usize])),
                     unit_cost: kind.build_cost(),
                     ticks_per_unit: scaling::defence_build_time(kind, buildings, pace),
-                    hull: built.hull,
-                    shield: built.shield,
-                    weapon: built.weapon,
+                    hull: built.hull as f32,
+                    shield: built.shield as f32,
+                    weapon: built.attack as f32,
                     power: scaling::structure_power(kind, research),
                     requires: defence_requirements(buildings, research, kind),
                 }
@@ -2033,8 +2150,8 @@ pub struct GameEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum EventKind {
-    CombatRound(CombatRoundEvent),
-    ShipDestroyed(ShipDestroyedEvent),
+    BattleRound(BattleRoundEvent),
+    ShipsLost(ShipsLostEvent),
     FleetDestroyed(FleetDestroyedEvent),
     ResourceHarvested(ResourceHarvestedEvent),
     SectorEntered(SectorEnteredEvent),
@@ -2213,40 +2330,152 @@ pub struct PolicyActionEvent {
     pub reason: String,
 }
 
-/// One shot in a fight.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CombatRoundEvent {
+/// One round of a fight, one a tick while it lasts. It is OGame's round:
+/// every unit's shield is full at its start; every unit of both sides then
+/// fires, at once, each at one unit of the other side picked at random,
+/// and again while its rapid fire against what it hit holds. A shot weaker
+/// than a hundredth of the target's full shield bounces; one that breaks
+/// the shield takes the rest from the hull; a unit left with no shield and
+/// at or under `EXPLODE_BELOW_PCT` hundredths of its hull may explode. The
+/// report is by class, never by ship, so it is the same size for five ships
+/// and for five thousand.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BattleRoundEvent {
     pub sector: Hex,
-    pub attacker_fleet_id: u64,
-    /// Empire owning the attacking fleet; `None` for an NPC.
-    pub attacker_owner: Option<String>,
-    pub attacker_ship_id: u64,
-    pub target_fleet_id: u64,
-    /// Empire owning the target fleet; `None` for an NPC.
-    pub target_owner: Option<String>,
-    pub target_ship_id: u64,
-    pub damage: f32,
-    pub shield_absorbed: f32,
-    pub hull_damage: f32,
-    pub rapid_fire: bool,
-    /// One of the two fleets is the receiver's.
+    /// 1 for the first round of the fight.
+    pub round: u32,
+    /// The players' fleets, with what they fired this round.
+    pub fleets: BattleSide,
+    /// The hostile groups, with what they fired.
+    pub hostiles: BattleSide,
+    /// A fleet of the receiver's is in the fight.
     #[serde(default)]
     pub mine: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShipDestroyedEvent {
-    pub ship_id: u64,
-    #[serde(rename = "ship_class")]
-    pub ship_class: ShipClass,
-    pub owner_fleet_id: u64,
-    pub is_npc: bool,
-    pub sector: Hex,
-    /// Empire that owned the ship; `None` for an NPC.
+/// One side of a round: who stands after it, and what the side fired.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BattleSide {
+    /// Every fleet or group of the side that entered the round, by id, as
+    /// it stands after it.
+    pub groups: Vec<BattleGroup>,
+    /// Units of the side still standing after the round, in all its groups.
+    pub standing: u32,
+    /// The side's fire, one line for each pair of firing and target unit
+    /// that exchanged a shot, in catalogue order.
+    pub volleys: Vec<Volley>,
+    /// Shots the side fired, their attack summed, what the other side's
+    /// shields took of it, what reached its hulls, and the units of the
+    /// other side it destroyed.
+    pub shots: u64,
+    pub power: u64,
+    pub absorbed: u64,
+    pub hull_damage: u64,
+    pub destroyed: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BattleGroup {
+    pub fleet_id: u64,
+    /// Empire owning the fleet; `None` for a hostile group.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub owner: Option<String>,
-    /// The ship was the receiver's.
+    /// What a hostile group is ("3x cruiser pack"); empty for a player's fleet.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub label: String,
+    /// The fleet is the receiver's.
     #[serde(default)]
     pub mine: bool,
+    /// By unit, in catalogue order. A unit wiped out this round is listed
+    /// once more with a count of 0.
+    pub units: Vec<BattleUnits>,
+}
+
+/// The units of one kind in a fleet or group after a round.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BattleUnits {
+    /// A ship class or a defence: the wire carries just its name.
+    pub unit: ShipyardItem,
+    pub count: u32,
+    pub damaged: u32,
+    pub at_risk: u32,
+    pub hull: u64,
+    pub hull_max: u64,
+    /// Destroyed this round.
+    pub lost: u32,
+}
+
+/// What the units of one kind fired at the units of another in a round.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Volley {
+    pub from: ShipyardItem,
+    pub at: ShipyardItem,
+    /// Every shot, rapid fire included. Of them `bounced` did nothing to a
+    /// shield they were too weak for, and `wasted` went at a unit already
+    /// destroyed in this round.
+    pub shots: u32,
+    pub bounced: u32,
+    pub wasted: u32,
+    /// Attack the targets' shields took, and what reached their hulls.
+    pub absorbed: u64,
+    pub hull_damage: u64,
+    /// Targets destroyed.
+    pub destroyed: u32,
+}
+
+/// How a fight ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BattleOutcome {
+    /// No hostile unit is left and a fleet still stands.
+    HostilesDestroyed,
+    /// No ship of any fleet is left and a hostile still stands.
+    FleetsDestroyed,
+    /// The last units of both sides fell in the same round.
+    BothDestroyed,
+    /// Every fleet left the sector; the hostiles are whole again.
+    Withdrawn,
+    /// `STANDOFF_ROUNDS` rounds took no hull from either side: nobody can
+    /// hurt anybody. The fleets stay; the hostiles are whole again.
+    Standoff,
+}
+
+/// What one fleet or group lost over a whole fight.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BattleLosses {
+    pub fleet_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub label: String,
+    #[serde(default)]
+    pub mine: bool,
+    /// Units destroyed, by kind, in catalogue order; empty when it lost none.
+    pub lost: Vec<UnitCount>,
+    /// Nothing of it is left.
+    pub destroyed: bool,
+}
+
+/// So many units of one kind, ship or defence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnitCount {
+    pub unit: ShipyardItem,
+    pub count: u32,
+}
+
+/// Ships a fleet lost outside a fight: those that broke up in an emergency
+/// jump. A fight's losses are in `BattleRound` and `CombatEnded`, a raid's
+/// in `RaidResolved`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShipsLostEvent {
+    pub fleet_id: u64,
+    pub sector: Hex,
+    /// Empire that owned the ships.
+    pub owner: String,
+    /// The ships were the receiver's.
+    #[serde(default)]
+    pub mine: bool,
+    pub ships: Vec<ShipCount>,
 }
 
 /// Every ship of a fleet is gone. For an NPC fleet killed by players,
@@ -2304,12 +2533,19 @@ pub struct CombatStartedEvent {
     pub mine: bool,
 }
 
-/// `owners` lists the empires that fought. `salvage` is the pile the victory
-/// left in the sector (absent on defeat); it despawns at `salvage_despawn_tick`.
+/// A fight is over. `owners` lists the empires that fought. `salvage` is the
+/// pile the hostiles' destruction left in the sector (absent when they were
+/// not destroyed); it despawns at `salvage_despawn_tick`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CombatEndedEvent {
     pub sector: Hex,
+    /// `outcome` is `HostilesDestroyed`.
     pub player_victory: bool,
+    pub outcome: BattleOutcome,
+    /// Rounds fought.
+    pub rounds: u32,
+    /// What every fleet and group that fought lost, fleets first.
+    pub losses: Vec<BattleLosses>,
     pub owners: Vec<String>,
     #[serde(default)]
     pub mine: bool,

@@ -27,8 +27,8 @@ use iac_shared::hex::{Hex, HexDirection, hex_ring, hex_spiral};
 use iac_shared::pace::{Pace, preset_named};
 use iac_shared::protocol::*;
 use iac_shared::scaling::{
-    BuildingLevels, BuildingType, DefenceKind, MAX_BUILDING_LEVEL, RatioLabel, ResearchLevels, ResearchType, ShipyardItem,
-    research_max_level,
+    Arms, BuildingLevels, BuildingType, DefenceKind, MAX_BUILDING_LEVEL, RatioLabel, Refit, ResearchLevels,
+    ResearchType, ShipyardItem, research_max_level, ship_figures,
 };
 use iac_shared::world::HubService;
 
@@ -92,15 +92,21 @@ fn res(metal: f64, crystal: f64, deuterium: f64) -> Resources {
     Resources { metal, crystal, deuterium }
 }
 
-fn ship(id: u64, class: ShipClass, hull: f32, shield: f32, weapon: f32) -> ShipState {
-    ShipState {
-        id,
+/// `count` ships of `class` at the class's own figures, of which `damaged`
+/// lack `hull_lost` between them and `at_risk` may explode.
+fn ships(class: ShipClass, count: u32, damaged: u32, at_risk: u32, hull_lost: u64) -> ShipGroupState {
+    let figures = ship_figures(class, Arms::BASE);
+    let hull_max = u64::from(figures.hull) * u64::from(count);
+    ShipGroupState {
         ship_class: class,
-        hull,
-        hull_max: 100.0,
-        shield,
-        shield_max: 50.0,
-        weapon_power: weapon,
+        count,
+        damaged,
+        at_risk,
+        hull: hull_max - hull_lost,
+        hull_max,
+        unit_attack: figures.attack,
+        unit_shield: figures.shield,
+        unit_hull: figures.hull,
     }
 }
 
@@ -109,10 +115,26 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<StandingOr
         id,
         location: loc,
         state,
-        ships: vec![
-            ship(id * 10 + 1, ShipClass::LightFighter, 80.5, 25.0, 4.0),
-            ship(id * 10 + 2, ShipClass::SmallCargo, 100.0, 0.0, 0.0),
-        ],
+        ships: vec![ships(ShipClass::SmallCargo, 2, 0, 0, 0), ships(ShipClass::LightFighter, 412, 4, 2, 640)],
+        ship_count: 414,
+        hull: 164_960,
+        hull_max: 165_600,
+        attack: 20_610,
+        shield: 4_140,
+        refit: Refit { weapons: 0, shielding: 0, armour: 0 },
+        refit_due: true,
+        repair: Some(RepairQuote {
+            ships: 4,
+            hull: 640,
+            home: DockRepair { price: 0.0, payment: res(0.0, 0.0, 0.0), ships: 4, hull: 640, refusal: None },
+            outpost: Some(DockRepair {
+                price: 720.0,
+                payment: res(180.0, 0.0, 0.0),
+                ships: 1,
+                hull: 160,
+                refusal: None,
+            }),
+        }),
         cargo: res(12.5, 3.0, 0.0),
         cargo_capacity: 220.0,
         fuel: 271.5,
@@ -134,6 +156,109 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<StandingOr
     }
 }
 
+fn battle_units(unit: ShipClass, count: u32, damaged: u32, at_risk: u32, hull_lost: u64, lost: u32) -> BattleUnits {
+    let standing = ships(unit, count, damaged, at_risk, hull_lost);
+    BattleUnits {
+        unit: ShipyardItem::Ship(unit),
+        count,
+        damaged,
+        at_risk,
+        hull: standing.hull,
+        hull_max: standing.hull_max,
+        lost,
+    }
+}
+
+/// Sixty Cruisers against four hundred Light Fighters: rapid fire at work.
+fn sample_round() -> BattleRoundEvent {
+    let (cruiser, fighter) = (ShipyardItem::Ship(ShipClass::Cruiser), ShipyardItem::Ship(ShipClass::LightFighter));
+    BattleRoundEvent {
+        sector: h(-5, 7),
+        round: 3,
+        fleets: BattleSide {
+            groups: vec![BattleGroup {
+                fleet_id: 3,
+                owner: Some("Admiral".into()),
+                label: String::new(),
+                mine: true,
+                units: vec![battle_units(ShipClass::Cruiser, 57, 21, 4, 9_480, 2)],
+            }],
+            standing: 57,
+            volleys: vec![Volley {
+                from: cruiser,
+                at: fighter,
+                shots: 344,
+                bounced: 0,
+                wasted: 61,
+                absorbed: 2_830,
+                hull_damage: 104_110,
+                destroyed: 229,
+            }],
+            shots: 344,
+            power: 137_600,
+            absorbed: 2_830,
+            hull_damage: 104_110,
+            destroyed: 229,
+        },
+        hostiles: BattleSide {
+            groups: vec![
+                BattleGroup {
+                    fleet_id: 4_294_967_400,
+                    owner: None,
+                    label: "400x light fighter swarm".into(),
+                    mine: false,
+                    units: vec![battle_units(ShipClass::LightFighter, 83, 30, 22, 5_120, 229)],
+                },
+                BattleGroup {
+                    fleet_id: 4_294_967_401,
+                    owner: None,
+                    label: "2x espionage probe picket".into(),
+                    mine: false,
+                    units: vec![battle_units(ShipClass::EspionageProbe, 0, 0, 0, 0, 2)],
+                },
+            ],
+            standing: 83,
+            volleys: vec![Volley {
+                from: fighter,
+                at: cruiser,
+                shots: 312,
+                bounced: 0,
+                wasted: 3,
+                absorbed: 13_900,
+                hull_damage: 1_550,
+                destroyed: 2,
+            }],
+            shots: 312,
+            power: 15_600,
+            absorbed: 13_900,
+            hull_damage: 1_550,
+            destroyed: 2,
+        },
+        mine: true,
+    }
+}
+
+fn sample_losses() -> Vec<BattleLosses> {
+    vec![
+        BattleLosses {
+            fleet_id: 3,
+            owner: Some("Admiral".into()),
+            label: String::new(),
+            mine: true,
+            lost: vec![UnitCount { unit: ShipyardItem::Ship(ShipClass::Cruiser), count: 3 }],
+            destroyed: false,
+        },
+        BattleLosses {
+            fleet_id: 4_294_967_400,
+            owner: None,
+            label: "400x light fighter swarm".into(),
+            mine: false,
+            lost: vec![UnitCount { unit: ShipyardItem::Ship(ShipClass::LightFighter), count: 400 }],
+            destroyed: true,
+        },
+    ]
+}
+
 fn sample_outpost() -> OutpostState {
     OutpostState {
         location: h(10, -2),
@@ -149,6 +274,7 @@ fn sample_outpost() -> OutpostState {
         yield_lost: vec![],
         grade: 3.0,
         platform_power: 40.0,
+        ships_power: 132.0,
         defence_power: 172.0,
         raid_power: PowerRange { least: 38.3, most: 55.1 },
         raid_arrival_tick: Some(4990),
@@ -178,6 +304,7 @@ fn breached_outpost() -> OutpostState {
         protected: res(1200.0, 781.25, 0.0),
         production: res(0.0, 0.0, 0.0),
         platform_power: 0.0,
+        ships_power: 0.0,
         defence_power: 0.0,
         raid_arrival_tick: None,
         next_level: None,
@@ -246,15 +373,14 @@ fn rich_sector() -> SectorState {
         hostiles: Some(vec![
             NpcFleetInfo {
                 id: 9001,
-                ships: vec![
-                    NpcShipInfo { ship_class: ShipClass::Cruiser, count: 3 },
-                    NpcShipInfo { ship_class: ShipClass::Battlecruiser, count: 1 },
-                ],
+                ships: vec![ships(ShipClass::Cruiser, 3, 1, 1, 1_900), ships(ShipClass::Battlecruiser, 1, 0, 0, 0)],
+                ship_count: 4,
                 behavior: NpcBehavior::Aggressive,
             },
             NpcFleetInfo {
                 id: 9002,
-                ships: vec![NpcShipInfo { ship_class: ShipClass::LightFighter, count: 2 }],
+                ships: vec![ships(ShipClass::LightFighter, 2, 0, 0, 0)],
+                ship_count: 2,
                 behavior: NpcBehavior::Passive,
             },
         ]),
@@ -468,7 +594,8 @@ fn sample_homeworld() -> HomeworldState {
             start_tick: 90,
             end_tick: 600,
         }),
-        docked_ships: vec![ship(501, ShipClass::Cruiser, 100.0, 50.0, 18.0)],
+        docked_ships: vec![ships(ShipClass::LightFighter, 40, 0, 0, 0), ships(ShipClass::Cruiser, 6, 0, 0, 0)],
+        docked_ship_count: 46,
         defences: vec![
             DefenceState { kind: DefenceKind::RocketLauncher, count: 12, restoring: 2, power: 112.4 },
             DefenceState { kind: DefenceKind::SmallShieldDome, count: 1, restoring: 0, power: 421.1 },
@@ -513,6 +640,7 @@ fn idle_homeworld() -> HomeworldState {
         research_active: None,
         research_pending: vec![],
         docked_ships: vec![],
+        docked_ship_count: 0,
         defences: vec![],
         home_defence_power: 0.0,
         docked_power: 0.0,
@@ -536,6 +664,7 @@ fn sample_player() -> PlayerState {
         name: "Admiral".into(),
         resources: res(1200.5, 600.0, 150.25),
         homeworld: h(4, -2),
+        ship_count: 828,
         exchange: sold_meter(),
     }
 }
@@ -623,8 +752,8 @@ fn server_message_name(m: &ServerMessage) -> &'static str {
 
 fn event_kind_name(k: &EventKind) -> &'static str {
     match k {
-        EventKind::CombatRound(_) => "combat_round",
-        EventKind::ShipDestroyed(_) => "ship_destroyed",
+        EventKind::BattleRound(_) => "battle_round",
+        EventKind::ShipsLost(_) => "ships_lost",
         EventKind::FleetDestroyed(_) => "fleet_destroyed",
         EventKind::ResourceHarvested(_) => "resource_harvested",
         EventKind::SectorEntered(_) => "sector_entered",
@@ -745,7 +874,19 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("", Command::Stop { fleet_id: 6 }),
         ("", Command::Scan { fleet_id: 7 }),
         ("", Command::ExploreSite { fleet_id: 8 }),
-        ("", Command::Split { fleet_id: 9, ship_ids: vec![101, 102] }),
+        ("", Command::Split {
+            fleet_id: 9,
+            ships: vec![
+                ShipCount { ship_class: ShipClass::SmallCargo, count: 1 },
+                ShipCount { ship_class: ShipClass::LightFighter, count: 120 },
+            ],
+            damaged_first: false,
+        }),
+        ("damaged_first", Command::Split {
+            fleet_id: 9,
+            ships: vec![ShipCount { ship_class: ShipClass::Cruiser, count: 3 }],
+            damaged_first: true,
+        }),
         ("", Command::Merge { fleet_id: 9, other_fleet_id: 10 }),
         ("", Command::Exchange { fleet_id: 3, give: ResourceKind::Metal, want: ResourceKind::Deuterium, amount: Some(632.5) }),
         ("whole_hold", Command::Exchange { fleet_id: 3, give: ResourceKind::Crystal, want: ResourceKind::Metal, amount: None }),
@@ -886,6 +1027,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 sector_updates: Some(vec![rich_sector(), bare_sector()]),
                 homeworld_update: Some(sample_homeworld()),
                 outpost: None,
+                battles: vec![BattleState { sector: h(-5, 7), rounds: 3, last_round: None, losses: sample_losses() }],
                 events: Some(vec![
                     GameEvent {
                         tick: 4821,
@@ -917,6 +1059,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 sector_updates: None,
                 homeworld_update: None,
                 outpost: None,
+                battles: vec![],
                 events: None,
             }),
         ),
@@ -929,6 +1072,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 sector_updates: Some(vec![]),
                 homeworld_update: Some(idle_homeworld()),
                 outpost: None,
+                battles: vec![],
                 events: Some(vec![]),
             }),
         ),
@@ -950,6 +1094,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 })]),
                 homeworld_update: None,
                 outpost: Some(breached_outpost()),
+                battles: vec![],
                 events: Some(vec![GameEvent {
                     tick: 5000,
                     kind: EventKind::RaidResolved(RaidResolvedEvent {
@@ -999,6 +1144,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     ),
                     ..sample_outpost()
                 }),
+                battles: vec![],
                 events: None,
             }),
         ),
@@ -1006,7 +1152,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             "".into(),
             ServerMessage::FullState(GameState {
                 tick: 4820,
-                player: sample_player(),
+                player: PlayerState { ship_count: 888, ..sample_player() },
                 fleets: vec![
                     sample_fleet(1, h(3, -2), FleetStatus::Moving, Some(StandingOrders {
                         preset: PolicyPreset::SalvageAndSites,
@@ -1021,7 +1167,14 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     })),
                     sample_fleet(2, h(4, -2), FleetStatus::Exploring, None),
                     FleetState {
-                        ships: vec![],
+                        ships: vec![ships(ShipClass::Cruiser, 60, 0, 0, 0)],
+                        ship_count: 60,
+                        hull: 162_000,
+                        hull_max: 162_000,
+                        attack: 24_000,
+                        shield: 3_000,
+                        refit_due: false,
+                        repair: None,
                         cooldown_remaining: 0,
                         ..sample_fleet(3, h(-5, 7), FleetStatus::InCombat, None)
                     },
@@ -1029,6 +1182,12 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 homeworld: sample_homeworld(),
                 outpost: None,
                 known_sectors: vec![rich_sector(), bare_sector(), anomaly_sector(), stale_pins_sector()],
+                battles: vec![BattleState {
+                    sector: h(-5, 7),
+                    rounds: 3,
+                    last_round: Some(sample_round()),
+                    losses: sample_losses(),
+                }],
                 world: WorldInfo::new(Pace::new(10.0).unwrap(), 2, 1),
             }),
         ),
@@ -1057,6 +1216,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                         ..outpost_sector(OutpostBrief { owner: "Rival".into(), level: 0, breached: false, mine: false })
                     },
                 ],
+                battles: vec![],
                 world: WorldInfo::new(Pace::new(10.0).unwrap(), 4, 3),
             }),
         ),
@@ -1069,12 +1229,14 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     name: "New".into(),
                     resources: res(0.0, 0.0, 0.0),
                     homeworld: h(3, 0),
+                    ship_count: 0,
                     exchange: ExchangeMeter { pressure: 0.0, span: 0.0, fee: 0.75, window_ticks: 5238, clear_in: Some(0) },
                 },
                 fleets: vec![],
                 homeworld: idle_homeworld(),
                 outpost: None,
                 known_sectors: vec![],
+                battles: vec![],
                 world: WorldInfo::new(Pace::new(42.0).unwrap(), 2, 1),
             }),
         ),
@@ -1085,6 +1247,9 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 kind: EventKind::CombatEnded(CombatEndedEvent {
                     sector: h(2, 2),
                     player_victory: true,
+                    outcome: BattleOutcome::HostilesDestroyed,
+                    rounds: 4,
+                    losses: sample_losses(),
                     owners: vec!["Admiral".into()],
                     mine: true,
                     salvage: Some(res(60.0, 15.0, 9.0)),
@@ -1255,28 +1420,13 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
 
 fn event_kinds() -> Vec<(&'static str, EventKind)> {
     vec![
-        ("", EventKind::CombatRound(CombatRoundEvent {
+        ("", EventKind::BattleRound(sample_round())),
+        ("", EventKind::ShipsLost(ShipsLostEvent {
+            fleet_id: 4,
             sector: h(5, -5),
-            attacker_fleet_id: 1,
-            attacker_owner: Some("Admiral".into()),
-            attacker_ship_id: 11,
-            target_fleet_id: 9001,
-            target_owner: None,
-            target_ship_id: 22,
-            damage: 18.5,
-            shield_absorbed: 10.0,
-            hull_damage: 8.5,
-            rapid_fire: true,
+            owner: "Admiral".into(),
             mine: true,
-        })),
-        ("", EventKind::ShipDestroyed(ShipDestroyedEvent {
-            ship_id: 22,
-            ship_class: ShipClass::Cruiser,
-            owner_fleet_id: 9001,
-            is_npc: true,
-            sector: h(5, -5),
-            owner: None,
-            mine: false,
+            ships: vec![ShipCount { ship_class: ShipClass::LightFighter, count: 3 }],
         })),
         ("", EventKind::FleetDestroyed(FleetDestroyedEvent {
             fleet_id: 9001,
@@ -1313,8 +1463,22 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
         ("", EventKind::CombatEnded(CombatEndedEvent {
             sector: h(5, -5),
             player_victory: false,
+            outcome: BattleOutcome::FleetsDestroyed,
+            rounds: 7,
+            losses: sample_losses(),
             owners: vec!["Admiral".into(), "Rival".into()],
             mine: false,
+            salvage: None,
+            salvage_despawn_tick: None,
+        })),
+        ("standoff", EventKind::CombatEnded(CombatEndedEvent {
+            sector: h(5, -5),
+            player_victory: false,
+            outcome: BattleOutcome::Standoff,
+            rounds: 1,
+            losses: vec![],
+            owners: vec!["Admiral".into()],
+            mine: true,
             salvage: None,
             salvage_despawn_tick: None,
         })),
@@ -1600,7 +1764,9 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
             "fleet_without_cooldown",
             "ServerMessage",
             json!({"type": "tick_update", "tick": 9, "fleets": [{
-                "id": 1, "location": {"q": 0, "r": 0}, "state": "Idle", "ships": [],
+                "id": 1, "location": {"q": 0, "r": 0}, "state": "Idle", "ships": [], "ship_count": 0,
+                "hull": 0, "hull_max": 0, "attack": 0, "shield": 0,
+                "refit": {"weapons": 0, "shielding": 0, "armour": 0},
                 "cargo": {"metal": 0.0, "crystal": 0.0, "deuterium": 0.0},
                 "cargo_capacity": 20.0, "fuel": 1.0, "fuel_max": 2.0, "jump_ticks": 2, "scan_range": 1, "hops_home": 0
             }]}),
@@ -1660,7 +1826,7 @@ fn lenient_cases() -> Vec<(&'static str, &'static str, Value)> {
             "ServerMessage",
             json!({"type": "tick_update", "tick": 9, "fleets": [], "player": {
                 "id": 1, "name": "x", "resources": {"metal": 1.0, "crystal": 2.0, "deuterium": 3.0},
-                "homeworld": {"q": 3, "r": 0}
+                "homeworld": {"q": 3, "r": 0}, "ship_count": 4
             }}),
         ),
     ]

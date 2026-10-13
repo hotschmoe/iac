@@ -1,10 +1,38 @@
 {
   "kind": "CombatEnded",
+  "losses": [
+    {
+      "destroyed": false,
+      "fleet_id": 3,
+      "lost": [
+        {
+          "count": 3,
+          "unit": "Cruiser"
+        }
+      ],
+      "mine": true,
+      "owner": "Admiral"
+    },
+    {
+      "destroyed": true,
+      "fleet_id": 4294967400,
+      "label": "400x light fighter swarm",
+      "lost": [
+        {
+          "count": 400,
+          "unit": "LightFighter"
+        }
+      ],
+      "mine": false
+    }
+  ],
   "mine": true,
+  "outcome": "hostiles_destroyed",
   "owners": [
     "Admiral"
   ],
   "player_victory": true,
+  "rounds": 4,
   "salvage": {
     "crystal": 15.0,
     "deuterium": 9.0,

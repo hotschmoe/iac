@@ -23,7 +23,7 @@ use iac_shared::protocol::{
 };
 use iac_shared::scaling;
 use iac_shared::world::{HubService, NpcBehaviorType, WorldGen};
-use iac_sim::engine::{FleetStatus, IncomingRaid, NpcFleet, RaidState, Ship, MAX_NPC_SHIPS};
+use iac_sim::engine::{FleetStatus, IncomingRaid, RaidState};
 use iac_sim::{GameEngine, Snapshot};
 
 use ResourceKind::{Crystal, Deuterium, Metal};
@@ -43,9 +43,9 @@ fn set_mines(e: &mut Empire, metal: u8, crystal: u8, deuterium: u8) {
 
 /// The hold these scenarios are written around: four Light Fighters carry
 /// 200 units between them before the pace's factor.
-const WING: [(ShipClass, usize); 1] = [(ShipClass::LightFighter, 4)];
+const WING: [(ShipClass, u32); 1] = [(ShipClass::LightFighter, 4)];
 
-fn wings(count: usize) -> [(ShipClass, usize); 1] {
+fn wings(count: u32) -> [(ShipClass, u32); 1] {
     WING.map(|(class, ships)| (class, ships * count))
 }
 
@@ -59,7 +59,7 @@ fn stow(e: &mut Empire, cargo: Resources) {
 }
 
 /// An empire with mines at the given levels and `haulers` wings carrying `cargo` at the hub.
-fn trader(pace: &str, mines: (u8, u8, u8), haulers: usize, cargo: Resources) -> Empire {
+fn trader(pace: &str, mines: (u8, u8, u8), haulers: u32, cargo: Resources) -> Empire {
     let mut e = Empire::join(world(pace), "Trader");
     set_mines(&mut e, mines.0, mines.1, mines.2);
     let fid = e.fid;
@@ -118,7 +118,7 @@ fn a_wing_flies_its_metal_to_the_hub_and_gets_the_quoted_deuterium() {
     let home = e.engine.players[&pid].homeworld;
     let first = lane_path(&e.engine, home, HUB, 12).expect("a lane to the hub")[0];
     muster(&mut e.engine, fid, &WING, first);
-    deploy(&mut e.engine, fid, first, Some(5000.0));
+    deploy(&mut e.engine, fid, first, Some(MIGHTY));
     let hold = e.fleet().cargo_capacity;
     let each = f64::from(ShipClass::LightFighter.base_stats().cargo);
     assert_eq!(hold, 4.0 * each * 10f64.sqrt(), "a hold is OGame's cargo figure times the pace's factor");
@@ -409,39 +409,15 @@ fn the_hub_is_empty_space_and_no_hostile_group_enters_it() {
         "nothing to fight at the hub",
     );
 
-    let fighter = ShipClass::LightFighter.base_stats();
     let posts: Vec<Hex> = hex_ring(HUB, 1).collect();
-    let patrol = |id: u64, at: Hex| {
-        let mut ships = [Ship::default(); MAX_NPC_SHIPS];
-        ships[0] = Ship {
-            id,
-            ship_class: ShipClass::LightFighter,
-            hull: fighter.hull,
-            hull_max: fighter.hull,
-            shield: fighter.shield,
-            shield_max: fighter.shield,
-            weapon_power: fighter.weapon,
-        };
-        NpcFleet {
-            id,
-            location: at,
-            ships,
-            ship_count: 1,
-            behavior: NpcBehaviorType::Patrol,
-            home_sector: at,
-            patrol_timer: 0,
-            in_combat: false,
-            bounty: Resources::default(),
-            power: scaling::ship_power(ShipClass::LightFighter),
-            label: "light fighter patrol".to_string(),
-        }
-    };
     let mut moved = 0;
     for _ in 0..40 {
+        for (i, &at) in posts.iter().enumerate() {
+            horde(&mut e.engine, 900_000 + i as u64, at, &[(ShipClass::LightFighter, 1)], 1.0);
+        }
         edit(&mut e.engine, |s| {
-            for (i, &at) in posts.iter().enumerate() {
-                let id = 900_000 + i as u64;
-                s.npc_fleets.insert(id, patrol(id, at));
+            for patrol in s.npc_fleets.values_mut().filter(|npc| npc.id >= 900_000) {
+                patrol.behavior = NpcBehaviorType::Patrol;
             }
         });
         e.run(1);
@@ -458,7 +434,7 @@ fn the_hub_is_empty_space_and_no_hostile_group_enters_it() {
 }
 
 /// An empire with `haulers` wings standing at its home dock.
-fn carrier(pace: &str, mines: (u8, u8, u8), haulers: usize) -> Empire {
+fn carrier(pace: &str, mines: (u8, u8, u8), haulers: u32) -> Empire {
     let mut e = Empire::join(world(pace), "Carrier");
     set_mines(&mut e, mines.0, mines.1, mines.2);
     let (pid, fid) = (e.pid, e.fid);
@@ -491,7 +467,7 @@ fn a_full_stockpile_is_carried_to_the_hub_traded_and_brought_home() {
     let mut e = carrier("season", (10, 9, 8), 4);
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
-    deploy(&mut e.engine, fid, home, Some(5000.0));
+    empower(&mut e.engine, pid, fid);
     edit(&mut e.engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
         (fleet.fuel, fleet.fuel_max) = (1e8, 1e8);
@@ -785,7 +761,7 @@ fn ships_lost_to_a_raid_at_the_dock_leave_their_share_of_the_hold_in_the_stockpi
 
     for e in [&roomy, &full] {
         let fleet = e.fleet();
-        assert_eq!(fleet.ships.len(), 24);
+        assert_eq!(fleet.ship_count, 24);
         assert!(fleet.cargo.total() <= fleet.cargo_capacity, "{} aboard a hold of {}", fleet.cargo.total(), fleet.cargo_capacity);
         assert!(fleet.cargo.total() > 0.9 * fleet.cargo_capacity, "the six holds left stay loaded");
     }
@@ -843,9 +819,8 @@ fn a_laden_fleet_split_at_the_dock_keeps_both_halves_laden() {
         e.engine.fleets.values().find(|f| f.owner_id == pid && f.id != fid).map(|f| f.id).expect("the detachment")
     };
 
-    let one_wing = |e: &Empire| e.fleet().ships[..4].iter().map(|ship| ship.id).collect::<Vec<u64>>();
-    let one = one_wing(&e);
-    e.order(Command::Split { fleet_id: fid, ship_ids: one }).expect("split at the dock");
+    let one_wing = || Command::Split { fleet_id: fid, ships: counts(&WING), damaged_first: false };
+    e.order(one_wing()).expect("split at the dock");
     let wing = other(&e);
     e.run(5);
     let (main, part) = (&e.engine.fleets[&fid], &e.engine.fleets[&wing]);
@@ -858,8 +833,7 @@ fn a_laden_fleet_split_at_the_dock_keeps_both_halves_laden() {
     assert!((merged.cargo.metal - hold).abs() < 0.01 && merged.laden, "the fleet that absorbs keeps its state");
 
     e.order(Command::Unload { fleet_id: fid }).expect("unload");
-    let one = one_wing(&e);
-    e.order(Command::Split { fleet_id: fid, ship_ids: one }).expect("split again");
+    e.order(one_wing()).expect("split again");
     let wing = other(&e);
     e.order(put_aboard(wing, Metal, None)).expect("load the detachment only");
     e.order(Command::Merge { fleet_id: fid, other_fleet_id: wing }).expect("fold it into the unladen fleet");

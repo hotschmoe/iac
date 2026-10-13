@@ -187,6 +187,7 @@ fn game() -> Json {
         NPC_POWER_BASE, NPC_POWER_GROWTH, NPC_MAX_SHIPS, NPC_STAT_MULT_MAX, NPC_CRUISER_RING, NPC_BATTLECRUISER_RING,
         MAX_THREAT, RAPID_FIRE_UNARMED, RAPID_FIRE_UNARMED_DEATHSTAR,
         WRECK_VALUE_K, WRECK_VALUE_EXPONENT, LOOT_SPLIT,
+        REPAIR_COST_SHARE_HOME, REPAIR_COST_SHARE_OUTPOST,
         ORE_RING_GROWTH, ORE_RING_FIRST, ORE_RING_LAST, ORE_REGEN_BASE_HOURS, ORE_REGEN_HOURS_PER_RING,
         DERELICT_SPAWN_PCT, DERELICT_RESPAWN_TICKS, DERELICT_VALUE_BASE, DERELICT_VALUE_GROWTH, DERELICT_VALUE_RING,
         AMBUSH_GUARD_SHARE,
@@ -272,8 +273,8 @@ fn game() -> Json {
         })
         .collect();
 
-    let unit = ShipStats { hull: 1.0, shield: 1.0, weapon: 1.0, speed: 0, cargo: 0, fuel: 0 };
-    let stats = |tech: ResearchType, level: u8| apply_research_to_stats(unit, &researched(tech, level));
+    let arms = |tech: ResearchType, level: u8| Refit::of(&researched(tech, level)).arms();
+    let share = |per_mille: u16| f64::from(per_mille) / 1000.0;
     let (b_top, r_top) = (MAX_BUILDING_LEVEL, MAX_RESEARCH_LEVEL);
     let p1 = Pace::PERSISTENT;
     let by_level = map! {
@@ -289,9 +290,9 @@ fn game() -> Json {
         "harvest_yield": at_levels(r_top, harvest_yield),
         "recall_damage_reduction": at_levels(r_top, recall_damage_reduction),
         "sensor_range": at_levels(r_top, sensor_range),
-        "hull_modifier": at_levels(r_top, |l| stats(ResearchType::ArmourTechnology, l).hull),
-        "shield_modifier": at_levels(r_top, |l| stats(ResearchType::ShieldingTechnology, l).shield),
-        "weapon_modifier": at_levels(r_top, |l| stats(ResearchType::WeaponsTechnology, l).weapon),
+        "hull_modifier": at_levels(r_top, |l| share(arms(ResearchType::ArmourTechnology, l).hull)),
+        "shield_modifier": at_levels(r_top, |l| share(arms(ResearchType::ShieldingTechnology, l).shield)),
+        "weapon_modifier": at_levels(r_top, |l| share(arms(ResearchType::WeaponsTechnology, l).attack)),
         "building_slots": at_levels(r_top, |l| building_slots(&researched(ResearchType::ComputerTechnology, l))),
         "outpost_platform": at_levels(OUTPOST_MAX_LEVEL, platform),
     };

@@ -1,7 +1,7 @@
 [
-{"canonical":{"fleet_id":2,"kind":"Alert","level":"Info","message":"s96","player_id":95,"sector":{"q":97,"r":-1},"tick":69,"type":"event"},"input":{"fleet_id":2,"kind":"Alert","level":"Info","message":"s96","player_id":95,"sector":{"q":97,"r":-1},"tick":69,"type":"event"}},
-{"canonical":{"fleet_id":2,"kind":"Alert","level":"Warning","message":"s96","player_id":95,"sector":{"q":97,"r":-1},"tick":69,"type":"event"},"input":{"fleet_id":2,"kind":"Alert","level":"Warning","message":"s96","player_id":95,"sector":{"q":97,"r":-1},"tick":69,"type":"event"}},
-{"canonical":{"fleet_id":2,"kind":"Alert","level":"Critical","message":"s96","player_id":95,"sector":{"q":97,"r":-1},"tick":69,"type":"event"},"input":{"fleet_id":2,"kind":"Alert","level":"Critical","message":"s96","player_id":95,"sector":{"q":97,"r":-1},"tick":69,"type":"event"}},
-{"canonical":{"kind":"Alert","level":"Critical","message":"s96","tick":69,"type":"event"},"input":{"kind":"Alert","level":"Critical","message":"s96","tick":69,"type":"event"}},
-{"canonical":{"kind":"Alert","level":"Critical","message":"s96","tick":69,"type":"event"},"input":{"fleet_id":null,"kind":"Alert","level":"Critical","message":"s96","player_id":null,"sector":null,"tick":69,"type":"event"}}
+{"canonical":{"fleet_id":68,"kind":"Alert","level":"Info","message":"s65","player_id":64,"sector":{"q":66,"r":-67},"tick":96,"type":"event"},"input":{"fleet_id":68,"kind":"Alert","level":"Info","message":"s65","player_id":64,"sector":{"q":66,"r":-67},"tick":96,"type":"event"}},
+{"canonical":{"fleet_id":68,"kind":"Alert","level":"Warning","message":"s65","player_id":64,"sector":{"q":66,"r":-67},"tick":96,"type":"event"},"input":{"fleet_id":68,"kind":"Alert","level":"Warning","message":"s65","player_id":64,"sector":{"q":66,"r":-67},"tick":96,"type":"event"}},
+{"canonical":{"fleet_id":68,"kind":"Alert","level":"Critical","message":"s65","player_id":64,"sector":{"q":66,"r":-67},"tick":96,"type":"event"},"input":{"fleet_id":68,"kind":"Alert","level":"Critical","message":"s65","player_id":64,"sector":{"q":66,"r":-67},"tick":96,"type":"event"}},
+{"canonical":{"kind":"Alert","level":"Critical","message":"s65","tick":96,"type":"event"},"input":{"kind":"Alert","level":"Critical","message":"s65","tick":96,"type":"event"}},
+{"canonical":{"kind":"Alert","level":"Critical","message":"s65","tick":96,"type":"event"},"input":{"fleet_id":null,"kind":"Alert","level":"Critical","message":"s65","player_id":null,"sector":null,"tick":96,"type":"event"}}
 ]

@@ -79,9 +79,9 @@ fn stow(e: &mut Empire, fid: u64, cargo: Resources) {
 }
 
 /// Small Cargos enough to hold `load` at this world's pace.
-fn haulers_for(engine: &GameEngine, load: f64) -> usize {
+fn haulers_for(engine: &GameEngine, load: f64) -> u32 {
     let hold = f64::from(ShipClass::SmallCargo.base_stats().cargo);
-    (load / (hold * engine.pace().cargo_mult())).ceil() as usize
+    (load / (hold * engine.pace().cargo_mult())).ceil() as u32
 }
 
 /// Stand the empire's fleet on `at` as Small Cargos carrying `cargo`.
@@ -93,12 +93,12 @@ fn haul(e: &mut Empire, at: Hex, cargo: Resources) {
 }
 
 /// Ships with the tanks they are built with, full.
-fn crew(e: &mut Empire, fid: u64, classes: &[(ShipClass, usize)], at: Hex) {
+fn crew(e: &mut Empire, fid: u64, classes: &[(ShipClass, u32)], at: Hex) {
     muster(&mut e.engine, fid, classes, at);
     edit(&mut e.engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
         let none = scaling::ResearchLevels::default();
-        let tank: f64 = fleet.ships[..fleet.ship_count].iter().map(|s| scaling::ship_tank(s.ship_class, &none)).sum();
+        let tank: f64 = fleet.ships.counts().map(|(class, count)| f64::from(count) * scaling::ship_tank(class, &none)).sum();
         fleet.fuel_max = tank;
         fleet.fuel = tank;
     });
@@ -767,16 +767,95 @@ fn an_outpost_scores_its_finished_levels_and_nothing_it_holds() {
 }
 
 #[test]
+fn the_outposts_dock_mends_ships_from_its_store_at_a_tenth_of_their_cost_and_does_not_refit_them() {
+    use ShipClass::Cruiser;
+    let (mut e, at) = settle("season", 9, any_ore);
+    let (pid, fid) = (e.pid, e.fid);
+    let stock = |e: &mut Empire, store: Resources| edit(&mut e.engine, |s| s.outposts.get_mut(&pid).unwrap().store = store);
+    let wound = |e: &mut Empire, damaged: &[u32]| {
+        edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().ships = squadron(Cruiser, 1, damaged));
+    };
+    let mended = |e: &Empire, mark: usize| -> Vec<String> { said(e, mark).into_iter().filter(|m| m.contains("was mended")).collect() };
+
+    // A Cruiser costs 20,000 metal, 7,000 crystal and 2,000 deuterium:
+    // 34,500 at par, so a whole hull of 2,700 is 3,450 here. One Cruiser has
+    // lost nine tenths of its hull and one a half.
+    wound(&mut e, &[270, 1350]);
+    stock(&mut e, Resources::default());
+    let mark = e.mark();
+    e.run(1);
+    assert_eq!(mended(&e, mark), Vec::<String>::new(), "an empty store mends nothing");
+    let quote = e.fleet().repair.expect("the fleet is damaged");
+    let dock = quote.outpost.clone().expect("the empire has an outpost");
+    assert_eq!((quote.ships, quote.hull, dock.price), (2, 2430 + 1350, 3105.0 + 1725.0));
+    assert_eq!((dock.ships, dock.hull, dock.refusal), (0, 0, None), "and the state says so: {:?}", dock.payment);
+    assert_eq!((quote.home.price, quote.home.ships, quote.home.hull), (0.0, 2, 3780), "the home dock would mend both for nothing");
+
+    stock(&mut e, res(3200.0, 0.0, 0.0));
+    let mark = e.mark();
+    e.run(1);
+    assert_eq!(
+        mended(&e, mark),
+        [format!(
+            "fleet {fid} was mended at your outpost: 1 ship(s) made whole, 2430 hull restored, for 3105 metal; \
+             1 more wait for the dock's stock to cover them"
+        )],
+        "the most damaged first, and no ship in part",
+    );
+    assert_eq!(e.engine.fleets[&fid].ships, squadron(Cruiser, 2, &[1350]));
+    let left = outpost(&e).store;
+    assert!((left.metal - 95.0).abs() < 1.0 && left.crystal < 1.0, "the store paid 3,105 metal: {left:?}");
+
+    stock(&mut e, res(95.0, 2000.0, 0.0));
+    let mark = e.mark();
+    e.run(1);
+    let told = mended(&e, mark);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("1 ship(s) made whole, 1350 hull restored, for ") && told[0].ends_with(" metal and 1087 crystal"), "{}", told[0]);
+    let left = outpost(&e).store;
+    assert!(
+        left.metal < 1.0 && (left.crystal - (2000.0 - (1725.0 - 95.0) / 1.5)).abs() < 1.0,
+        "metal first, then crystal at its weight of 1.5: {left:?}",
+    );
+    assert_eq!((e.fleet().hull, e.fleet().repair), (e.fleet().hull_max, None));
+
+    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().research.weapons_technology = 3);
+    e.run(2);
+    let stood = e.fleet();
+    assert_eq!((stood.refit.weapons, stood.refit_due, stood.ships[0].unit_attack), (0, true, 400), "the outpost has no yard: it does not refit");
+
+    wound(&mut e, &[270]);
+    stock(&mut e, res(50_000.0, 0.0, 0.0));
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).expect("orders");
+    let under_orders = e.fleet().repair.unwrap().outpost.unwrap();
+    assert_eq!(
+        (under_orders.ships, under_orders.refusal.as_deref()),
+        (0, Some("a fleet under standing orders does not use the outpost")),
+    );
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Manual, None).expect("orders lifted");
+
+    edit(&mut e.engine, |s| s.outposts.get_mut(&pid).unwrap().breached = true);
+    let mark = e.mark();
+    e.run(1);
+    assert_eq!(mended(&e, mark), Vec::<String>::new(), "a breached outpost mends nothing");
+    let breached = e.fleet().repair.unwrap().outpost.unwrap();
+    assert_eq!(
+        (breached.ships, breached.price, breached.refusal),
+        (0, 3105.0, Some(format!("the outpost at {at} is breached and mends nothing until it is repaired"))),
+    );
+}
+
+#[test]
 fn a_fleet_at_the_outpost_is_docked_and_needs_a_slot_to_leave() {
     let (mut e, at) = settle("season", 9, |_| true);
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
     muster(&mut e.engine, fid, &[(ShipClass::EspionageProbe, 5)], home);
     stow(&mut e, fid, Resources::default());
-    let ships: Vec<u64> = e.fleet().ships.iter().map(|s| s.id).collect();
     let mut wings = vec![fid];
-    for ship in &ships[1..] {
-        e.order(Command::Split { fleet_id: fid, ship_ids: vec![*ship] }).expect("split at home");
+    for _ in 1..5 {
+        let one = counts(&[(ShipClass::EspionageProbe, 1)]);
+        e.order(Command::Split { fleet_id: fid, ships: one, damaged_first: false }).expect("split at home");
         let newest = e.engine.fleets.values().filter(|f| f.owner_id == pid).map(|f| f.id).max().unwrap();
         wings.push(newest);
     }
@@ -1260,7 +1339,7 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
 
 /// An idle empire with an outpost stood for it as `sim-run --outpost` stands one, its fleet
 /// mustered there as `garrison` when there is one.
-fn stand(world: &mut Headless, ring: u16, level: u8, garrison: &[(ShipClass, usize)]) -> u64 {
+fn stand(world: &mut Headless, ring: u16, level: u8, garrison: &[(ShipClass, u32)]) -> u64 {
     let label = format!("Keeper-{}", world.players());
     let pid = world.add_player(Box::new(IdlePlayer { label }), "idle").expect("a seat");
     let fid = world.engine.fleets.values().find(|f| f.owner_id == pid).unwrap().id;
@@ -1273,7 +1352,7 @@ fn stand(world: &mut Headless, ring: u16, level: u8, garrison: &[(ShipClass, usi
 }
 
 /// A ring, a level, and the ships standing there.
-type Post = (u16, u8, &'static [(ShipClass, usize)]);
+type Post = (u16, u8, &'static [(ShipClass, u32)]);
 
 #[test]
 fn a_season_week_of_raids_takes_nothing_from_an_outpost_defended_as_its_ring_asks() {

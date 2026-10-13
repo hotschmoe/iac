@@ -18,11 +18,12 @@ use serde_json::{Value, json};
 
 use iac_shared::Resources;
 use iac_shared::constants::{
-    Density, Drive, EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, LANE_SEARCH_HOPS, OUTPOST_MAX_RING,
-    OUTPOST_MIN_RING, POLICY_CARGO_RETURN_PCT_MAX, POLICY_CARGO_RETURN_PCT_MIN, POLICY_ENGAGE_RATIO_X10_MAX,
-    POLICY_ENGAGE_RATIO_X10_MIN, POLICY_FUEL_UNBOUNDED_PCT, POLICY_MIN_FUEL_PCT_MAX, POLICY_RANGE_MAX,
-    POLICY_RANGE_MIN, RAID_LOST_SHIP_FRACTION, REFINE_LOSS, ResourceKind, SCAN_BASE_RANGE, SCAN_COOLDOWN,
-    SCAN_PROBE_RANGE, ShipClass, TerrainType, Zone,
+    Density, Drive, EXPLODE_BELOW_PCT, EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, LANE_SEARCH_HOPS,
+    MAX_FLEET_SHIPS, OUTPOST_MAX_RING, OUTPOST_MIN_RING, POLICY_CARGO_RETURN_PCT_MAX,
+    POLICY_CARGO_RETURN_PCT_MIN, POLICY_ENGAGE_RATIO_X10_MAX, POLICY_ENGAGE_RATIO_X10_MIN,
+    POLICY_FUEL_UNBOUNDED_PCT, POLICY_HULL_READY, POLICY_MIN_FUEL_PCT_MAX, POLICY_RANGE_MAX, POLICY_RANGE_MIN,
+    RAID_LOST_SHIP_FRACTION, REFINE_LOSS, ResourceKind, SCAN_BASE_RANGE, SCAN_COOLDOWN, SCAN_PROBE_RANGE,
+    ShipClass, TerrainType, Zone,
 };
 use iac_shared::protocol::{
     BOT_NAME_PREFIX, ClientMessage, EffectKind, ErrorCode, ExchangeMeter, MAX_ODDS_SECTORS, NAME_MAX_LEN,
@@ -72,6 +73,12 @@ impl From<u8> for Cell {
 
 impl From<u16> for Cell {
     fn from(n: u16) -> Cell {
+        Cell::Int(n.into())
+    }
+}
+
+impl From<u32> for Cell {
+    fn from(n: u32) -> Cell {
         Cell::Int(n.into())
     }
 }
@@ -151,6 +158,7 @@ pub fn extras(model: &Model) -> Extras {
         column(model, "power", DefenceKind::power),
         column(model, "label", EffectKind::label),
         column(model, "label", RatioLabel::label),
+        column(model, "outcome", RatioLabel::outcome),
         column(model, "label", PolicyPreset::label),
         column(model, "label", SiteRisk::label),
         column(model, "label", SignalKind::label),
@@ -187,6 +195,9 @@ pub fn extras(model: &Model) -> Extras {
         FUEL_DEUT_PER_UNIT,
         REFINE_LOSS,
         RAID_LOST_SHIP_FRACTION,
+        MAX_FLEET_SHIPS,
+        EXPLODE_BELOW_PCT,
+        POLICY_HULL_READY,
     ];
     let rust_defaults = BTreeMap::from([
         rust_default::<Resources>(),

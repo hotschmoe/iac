@@ -168,9 +168,8 @@ pub fn score_of(engine: &GameEngine, player: &Player) -> Score {
         .fleets
         .values()
         .filter(|f| f.owner_id == player.id)
-        .flat_map(|f| f.ships[0..f.ship_count].iter())
-        .filter(|s| s.hull > 0.0)
-        .map(|s| scaling::resource_weight(&s.ship_class.build_cost()))
+        .flat_map(|f| f.ships.counts())
+        .map(|(class, count)| count as f32 * scaling::resource_weight(&class.build_cost()))
         .sum();
     let satellites = player.satellites as f32 * scaling::resource_weight(&ShipClass::SolarSatellite.build_cost());
     let defence: f32 = DefenceKind::ALL

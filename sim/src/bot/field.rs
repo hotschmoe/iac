@@ -19,11 +19,13 @@
 // The pilot knows only the chart: it never enters a sector it has not seen
 // (it scans first), it treats a cleared lair it cannot watch as occupied,
 // and it reads off each sector's chart mark whether a visit still pays.
-// Hull damage is never repaired, so it fights only with shields up and at
-// odds that cost it a few percent of its hull at most. The odds are the
-// server's: before its orders the admiral asks (`odds`) how each fleet it
-// may move would fare in every sector where that decides something, and it
-// stays out of any sector it has no answer for.
+// Hull lost stays lost until the home dock mends it, so it fights only at
+// odds that cost it little, and takes a fleet whose hull has fallen below
+// `HULL_READY` home before it does anything else. The odds are the
+// server's, and they count the damage a fleet carries: before its orders
+// the admiral asks (`odds`) how each fleet it may move would fare in every
+// sector where that decides something, and it stays out of any sector it
+// has no answer for.
 //
 // Fuel is paid in deuterium the moment a fleet docks, ahead of anything
 // waiting in a queue. A pilot therefore leaves only when the stockpile has a
@@ -33,27 +35,26 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use iac_shared::constants::{
-    EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL,
+    EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, MAX_FLEET_SHIPS,
     POLICY_DEFAULT_FUEL_BUDGET_PCT, SCAN_COOLDOWN, ShipClass,
 };
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     Command, FleetState, FleetStatus, GameState, HarvestResource, MAX_ODDS_SECTORS, NpcBehavior, PolicyParams,
-    PolicyPreset, PolicyUpdate, SectorState, SiteBrief, SiteRisk, ThreatBasis,
+    PolicyPreset, PolicyUpdate, SectorState, ShipCount, SiteBrief, SiteRisk, ThreatBasis,
 };
 use iac_shared::scaling;
 use serde::{Deserialize, Serialize};
 
 use super::home::Hull;
 use super::Personality;
-use crate::engine::MAX_SHIPS_PER_FLEET;
 use crate::script::Order;
 
-/// Odds ratio (`SectorOdds::ratio`) at which a pilot accepts a fight: a sure
-/// win that keeps about 97 percent of the hull. OGame's ships carry a
-/// shield a fifth of their weapon, so a fight that costs no hull at all
-/// takes a fleet many times its enemy, and a pilot who waited for one would
-/// not fight.
+/// Odds ratio (`SectorOdds::ratio`) at which a pilot accepts a fight: won
+/// every time the odds played it, keeping about five sixths of the fleet's
+/// worth. In OGame's round a shot takes a hull or nothing, so a fight that
+/// costs no ship takes a fleet many times its enemy, and a pilot who waited
+/// for one would not fight.
 const SAFE_ODDS: f32 = 2.0;
 /// How far around a fleet its pilot asks the server for odds. A guarded
 /// sector farther off stays closed to it until it is nearer.
@@ -64,12 +65,13 @@ const DOCTRINE_RATIO_X10: u8 = 15;
 /// The ratio a wing of at least `CAREFUL_WING_SHIPS` ships flies at when its
 /// doctrine or its hulls take it into fights: the pilot's own.
 const CAREFUL_RATIO_X10: u8 = 20;
-const CAREFUL_WING_SHIPS: usize = 4;
+const CAREFUL_WING_SHIPS: u32 = 4;
 /// Doctrines are leashed by odds and fuel, not by distance.
 const DOCTRINE_RANGE: u8 = 30;
 /// Fuel budget of the wings that haul, as a percent of deuterium income.
 const HAUL_FUEL_BUDGET_PCT: u8 = 50;
-const SHIELDS_UP: f32 = 0.95;
+/// Share of its full hull below which a pilot takes a fleet home to be mended.
+const HULL_READY: f32 = 0.85;
 const RETURN_LOAD: f64 = 0.85;
 /// Share of the tank kept spare on top of the way home.
 const FUEL_MARGIN: f64 = 0.10;
@@ -129,7 +131,7 @@ impl Wing {
     fn orders(preset: PolicyPreset, fleet: &FleetState) -> PolicyUpdate {
         let armed = fleet.ships.iter().any(|s| Hull::of(s.ship_class) == Hull::Warship);
         let fights = armed || preset == PolicyPreset::Prospect;
-        let careful = if fights && fleet.ships.len() >= CAREFUL_WING_SHIPS { CAREFUL_RATIO_X10 } else { DOCTRINE_RATIO_X10 };
+        let careful = if fights && fleet.ship_count >= CAREFUL_WING_SHIPS { CAREFUL_RATIO_X10 } else { DOCTRINE_RATIO_X10 };
         let (engage_ratio_x10, fuel_budget_pct) = match preset {
             PolicyPreset::PatrolHome => ((SAFE_ODDS * 10.0) as u8, POLICY_DEFAULT_FUEL_BUDGET_PCT),
             PolicyPreset::MineAndReturn | PolicyPreset::SalvageAndSites => (careful, HAUL_FUEL_BUDGET_PCT),
@@ -237,9 +239,8 @@ impl Unit<'_> {
         matches!(self.fleet.state, FleetStatus::Idle | FleetStatus::Docked) && self.fleet.cooldown_remaining == 0
     }
 
-    fn shields_up(&self) -> bool {
-        let (now, full) = self.fleet.ships.iter().fold((0.0, 0.0), |(now, full), s| (now + s.shield, full + s.shield_max));
-        now >= SHIELDS_UP * full
+    fn mauled(&self) -> bool {
+        (self.fleet.hull as f32) < HULL_READY * self.fleet.hull_max as f32
     }
 }
 
@@ -252,12 +253,12 @@ fn units(state: &GameState, personality: Personality) -> Vec<Unit<'_>> {
         .fleets
         .iter()
         .filter_map(|fleet| {
-            let mut count = [0usize; Wing::ALL.len()];
+            let mut count = [0u32; Wing::ALL.len()];
             for ship in &fleet.ships {
-                count[Wing::of(personality, ship.ship_class) as usize] += 1;
+                count[Wing::of(personality, ship.ship_class) as usize] += ship.count;
             }
             let wing = Wing::ALL.into_iter().max_by_key(|&w| count[w as usize])?;
-            (wing != Wing::Garrison).then_some(Unit { fleet, wing, pure: count[wing as usize] == fleet.ships.len() })
+            (wing != Wing::Garrison).then_some(Unit { fleet, wing, pure: count[wing as usize] == fleet.ship_count })
         })
         .collect()
 }
@@ -417,26 +418,26 @@ impl<'a> Admiral<'a> {
             if self.state.fleets.len() >= MAX_FLEETS_TOTAL {
                 break;
             }
-            let strays: Vec<u64> = unit
+            let strays: Vec<ShipCount> = unit
                 .fleet
                 .ships
                 .iter()
                 .filter(|s| Wing::of(self.brief.personality, s.ship_class) != unit.wing)
-                .map(|s| s.id)
+                .map(|s| ShipCount { ship_class: s.ship_class, count: s.count })
                 .collect();
             self.busy.insert(unit.fleet.id);
-            self.command(Command::Split { fleet_id: unit.fleet.id, ship_ids: strays });
+            self.command(Command::Split { fleet_id: unit.fleet.id, ships: strays, damaged_first: false });
         }
         for wing in Wing::FIELD {
             let mut same: Vec<Unit> = docked.iter().copied().filter(|u| u.pure && u.wing == wing).collect();
             same.sort_by_key(|u| (u.fleet.policy.is_none(), u.fleet.id));
             let Some((keep, rest)) = same.split_first() else { continue };
-            let mut size = keep.fleet.ships.len();
+            let mut size = keep.fleet.ship_count;
             for other in rest {
-                if size + other.fleet.ships.len() > MAX_SHIPS_PER_FLEET {
+                if size + other.fleet.ship_count > MAX_FLEET_SHIPS {
                     continue;
                 }
-                size += other.fleet.ships.len();
+                size += other.fleet.ship_count;
                 self.busy.extend([keep.fleet.id, other.fleet.id]);
                 self.command(Command::Merge { fleet_id: keep.fleet.id, other_fleet_id: other.fleet.id });
             }
@@ -449,9 +450,9 @@ impl<'a> Admiral<'a> {
         self.organize();
         for wing in Wing::FIELD {
             let fleets: Vec<Unit> = self.units.iter().copied().filter(|u| u.wing == wing).collect();
-            let mut sizes: Vec<usize> = fleets.iter().map(|u| u.fleet.ships.len()).collect();
+            let mut sizes: Vec<u32> = fleets.iter().map(|u| u.fleet.ship_count).collect();
             sizes.sort_unstable();
-            let regroup = !closing && sizes.len() > 1 && sizes[0] + sizes[1] <= MAX_SHIPS_PER_FLEET;
+            let regroup = !closing && sizes.len() > 1 && sizes[0] + sizes[1] <= MAX_FLEET_SHIPS;
             for unit in fleets {
                 if self.busy.contains(&unit.fleet.id) {
                     continue;
@@ -521,7 +522,7 @@ impl<'a> Admiral<'a> {
             if !self.can_return(unit) {
                 return WAIT;
             }
-        } else if !has_work(self.brief, unit.wing) {
+        } else if !has_work(self.brief, unit.wing) || unit.mauled() {
             return self.head_home(unit);
         } else {
             let hold_full = fleet.cargo_capacity > 0.0 && load >= RETURN_LOAD * fleet.cargo_capacity;
@@ -543,15 +544,9 @@ impl<'a> Admiral<'a> {
         fleet.fuel >= f64::from(hops + home_hops + 1) * fleet.jump_fuel + FUEL_MARGIN * fleet.fuel_max
     }
 
-    /// Jump to `target`, unless a fight waits there and the shields are not
-    /// back up yet. None when the fleet holds.
-    fn jump(&mut self, unit: Unit, target: Hex) -> Option<u64> {
-        let fight = self.chart.get(target).is_some_and(guarded);
-        if fight && !unit.shields_up() {
-            return None;
-        }
+    fn jump(&mut self, unit: Unit, target: Hex) -> u64 {
         self.command(Command::Move { fleet_id: unit.fleet.id, target });
-        Some(2)
+        2
     }
 
     /// Take the next hop of the fleet's remembered route, if it still holds.
@@ -568,13 +563,13 @@ impl<'a> Admiral<'a> {
             self.routes.remove(&fleet.id);
             return None;
         }
-        let Some(wait) = self.jump(unit, target?) else { return Some(REST) };
+        let wait = self.jump(unit, target?);
         self.routes.get_mut(&fleet.id)?.next += 1;
         Some(wait)
     }
 
     fn set_out(&mut self, unit: Unit, path: Vec<Hex>, homeward: bool) -> u64 {
-        let Some(wait) = self.jump(unit, path[0]) else { return REST };
+        let wait = self.jump(unit, path[0]);
         self.routes.insert(unit.fleet.id, Route { path, next: 1, homeward });
         wait
     }
@@ -599,7 +594,7 @@ impl<'a> Admiral<'a> {
             .chart
             .get(fleet.location)
             .and_then(|here| here.connections.iter().copied().min_by_key(|n| Hex::distance(n, &home)));
-        nearer.and_then(|target| self.jump(unit, target)).unwrap_or(WAIT)
+        nearer.map_or(WAIT, |target| self.jump(unit, target))
     }
 
     fn worth_a_visit(&self, unit: Unit, sector: &SectorState, hops: u32) -> bool {
@@ -667,9 +662,6 @@ impl<'a> Admiral<'a> {
         if let Some(group) = here.hostiles.as_ref().and_then(|list| list.first())
             && beats(odds, fleet, here)
         {
-            if !unit.shields_up() {
-                return REST;
-            }
             self.command(Command::Attack { fleet_id: fleet.id, target_fleet_id: group.id });
             return 2;
         }

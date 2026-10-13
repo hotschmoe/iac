@@ -253,8 +253,9 @@ mod tests {
     use iac_shared::hex::Hex;
     use iac_shared::pace::Pace;
     use iac_shared::protocol::{AuthRequest, Command, ErrorCode, GameEvent, HarvestResource};
-    use iac_shared::scaling::{BuildingType, ResearchType};
+    use iac_shared::scaling::{BuildingType, Refit, ResearchType};
     use iac_sim::commands::command_error_message;
+    use iac_sim::engine::Ships;
     use iac_sim::host::Tokens;
     use iac_sim::views::{self, event_for};
     use iac_sim::GameEngine;
@@ -332,7 +333,7 @@ mod tests {
         assert_eq!(before["fleets"][0]["id"], fid);
 
         // Combat leaves a wiped-out fleet with no ships.
-        t.engine().fleets.get_mut(&fid).unwrap().ship_count = 0;
+        t.engine().fleets.get_mut(&fid).unwrap().ships = Ships::default();
         let during = t.update();
         assert_eq!(during["fleets"], serde_json::json!([]), "dead fleet must not be listed: {during}");
 
@@ -397,14 +398,12 @@ mod tests {
             e.players.get_mut(&pid).unwrap().buildings.metal_mine = 3;
             e.players.get_mut(&pid).unwrap().buildings.deuterium_synthesizer = 2;
             // The starting fighters plus one cargo ship.
-            let fleet = e.fleets.get_mut(&fid).unwrap();
-            fleet.ships[fleet.ship_count].ship_class = ShipClass::SmallCargo;
-            fleet.ship_count += 1;
+            e.fleets.get_mut(&fid).unwrap().ships.add(ShipClass::SmallCargo, 1);
         }
         let expected_cap: f64 = {
             let e = t.engine();
-            e.fleets[&fid].ships[..e.fleets[&fid].ship_count].iter()
-                .map(|s| f64::from(s.ship_class.base_stats().cargo)).sum()
+            e.fleets[&fid].ships.counts()
+                .map(|(class, count)| f64::from(count) * f64::from(class.base_stats().cargo)).sum()
         };
         assert!(expected_cap > 5000.0, "the cargo ship must be counted: {expected_cap}");
 
@@ -507,12 +506,9 @@ mod tests {
     }
 
     fn fight_events(engine: &mut GameEngine, pid: u64, fid: u64, at: Hex) -> Vec<GameEvent> {
-        engine.fleets.get_mut(&fid).unwrap().location = at;
-        for ship in &mut engine.fleets.get_mut(&fid).unwrap().ships[..] {
-            ship.weapon_power = 5000.0;
-            ship.hull_max = 1e6;
-            ship.hull = 1e6;
-        }
+        let fleet = engine.fleets.get_mut(&fid).unwrap();
+        fleet.location = at;
+        fleet.refit = Refit { weapons: 250, shielding: 250, armour: 250 };
         engine.handle_attack(pid, fid, iac_sim::engine::template_npc_id(at)).unwrap();
         let mut events = engine.drain_events();
         for _ in 0..5 {
@@ -526,7 +522,7 @@ mod tests {
         use iac_shared::protocol::EventKind as K;
         matches!(
             e.kind,
-            K::CombatRound(_) | K::CombatStarted(_) | K::CombatEnded(_) | K::ShipDestroyed(_) | K::FleetDestroyed(_)
+            K::BattleRound(_) | K::CombatStarted(_) | K::CombatEnded(_) | K::FleetDestroyed(_)
         )
     }
 
@@ -552,7 +548,7 @@ mod tests {
         engine.fleets.get_mut(&fc).unwrap().location = at;
         engine.players.get_mut(&d).unwrap().homeworld = at;
         let events = fight_events(&mut engine, a, fa, at);
-        assert!(events.iter().any(|e| matches!(e.kind, K::CombatRound(_))), "a fight happened");
+        assert!(events.iter().any(|e| matches!(e.kind, K::BattleRound(_))), "a fight happened");
         engine.fleets.get_mut(&fa).unwrap().location = engine.players[&a].homeworld;
 
         let seen = |p: u64| -> Vec<GameEvent> {
@@ -564,10 +560,18 @@ mod tests {
         assert!(alpha.iter().any(is_combat_detail));
         for e in alpha.iter().filter(|e| is_combat_detail(e)) {
             match &e.kind {
-                K::CombatRound(r) => assert!(r.mine && (r.attacker_owner.as_deref() == Some("Alpha") || r.target_owner.as_deref() == Some("Alpha"))),
+                K::BattleRound(r) => {
+                    let whose: Vec<(Option<&str>, bool)> = r.fleets.groups.iter().map(|g| (g.owner.as_deref(), g.mine)).collect();
+                    assert!(r.mine && whose == [(Some("Alpha"), true), (Some("Charlie"), false)], "{whose:?}");
+                    assert!(r.hostiles.groups.iter().all(|g| !g.mine && g.owner.is_none() && !g.label.is_empty()));
+                }
                 K::CombatStarted(s) => assert!(s.mine && s.owner == "Alpha"),
-                K::CombatEnded(s) => assert!(s.mine),
-                K::ShipDestroyed(s) => assert!(!s.mine && s.owner.is_none(), "the destroyed ship was an NPC's"),
+                K::CombatEnded(s) => {
+                    assert!(s.mine);
+                    let whose: Vec<(Option<&str>, bool, bool)> =
+                        s.losses.iter().map(|l| (l.owner.as_deref(), l.mine, l.destroyed)).collect();
+                    assert_eq!(whose, [(Some("Alpha"), true, false), (Some("Charlie"), false, false), (None, false, true)]);
+                }
                 K::FleetDestroyed(s) => assert!(!s.mine && s.owner.is_none()),
                 _ => unreachable!(),
             }
@@ -585,10 +589,9 @@ mod tests {
         let delta = seen(d);
         assert!(delta.iter().any(is_combat_detail), "homeworld presence is enough to see the fight");
         assert!(delta.iter().filter(|e| is_combat_detail(e)).all(|e| match &e.kind {
-            K::CombatRound(r) => !r.mine,
+            K::BattleRound(r) => !r.mine && r.fleets.groups.iter().all(|g| !g.mine),
             K::CombatStarted(s) => !s.mine,
-            K::CombatEnded(s) => !s.mine,
-            K::ShipDestroyed(s) => !s.mine,
+            K::CombatEnded(s) => !s.mine && s.losses.iter().all(|l| !l.mine),
             K::FleetDestroyed(s) => !s.mine,
             _ => unreachable!(),
         }), "witnessed fights are never flagged mine");
@@ -609,10 +612,12 @@ mod tests {
                 })
             })
             .unwrap();
-        engine.fleets.get_mut(&fa).unwrap().location = at;
-        for ship in &mut engine.fleets.get_mut(&fa).unwrap().ships[..] {
-            ship.hull = 0.5;
-            ship.shield = 0.0;
+        // Two Espionage Probes, which have no weapon, each a hit from breaking up.
+        let fleet = engine.fleets.get_mut(&fa).unwrap();
+        fleet.location = at;
+        fleet.ships = Ships::default();
+        for _ in 0..2 {
+            fleet.ships.add_holding(ShipClass::EspionageProbe, 1, 100);
         }
         engine.handle_attack(a, fa, iac_sim::engine::template_npc_id(at)).unwrap();
         let mut events = engine.drain_events();
@@ -735,7 +740,10 @@ mod tests {
         let in_all = t.host.engine().home_defense_power(pid) as f64;
         assert!((defence - in_all).abs() < 1e-3);
         let satellites = hw["satellite_power"].as_f64().unwrap();
-        assert!((satellites - 3.0 * (1.1 + 20.1)).abs() < 1e-3, "three Solar Satellites stand in the defence: {satellites}");
+        assert!(
+            (satellites - 3.0 * (1.0 + 20.1)).abs() < 1e-3,
+            "three Solar Satellites stand in the defence, and a weapon of 1 is still 1 a level up, cut off as the round cuts it: {satellites}"
+        );
         assert!(defence > 5.0 * launcher + satellites, "defences and satellites count toward home defence: {defence}");
         assert!(hw["next_raid_estimate_power"].as_f64().unwrap() > 50.0);
         assert_eq!(hw["catalog"]["defences"][0]["count"], 5);

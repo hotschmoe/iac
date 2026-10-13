@@ -1665,6 +1665,7 @@
     },
     "defences": [],
     "docked_power": 0.0,
+    "docked_ship_count": 0,
     "docked_ships": [],
     "energy": {
       "fraction": 1.0,
@@ -1730,7 +1731,8 @@
       "crystal": 0.0,
       "deuterium": 0.0,
       "metal": 0.0
-    }
+    },
+    "ship_count": 0
   },
   "tick": 0,
   "type": "full_state",

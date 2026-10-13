@@ -15,12 +15,11 @@ use iac_shared::protocol::{
     AlertEvent, AlertLevel, ClientMessage, Command, ErrorCode, EventKind, HarvestResource, PolicyParams, PolicyPreset,
     PolicyUpdate, ServerMessage, ThreatBasis, MAX_ODDS_SECTORS,
 };
-use iac_shared::scaling::{ratio_label, RatioLabel};
+use iac_shared::scaling::{ratio_label, ship_tank, RatioLabel, ResearchLevels};
 use iac_shared::world::{self, NpcBehaviorType};
-use iac_sim::engine::{fleet_force, template_npc_id, Fleet, FleetStatus, NpcFleet, Ship, MAX_NPC_SHIPS};
+use iac_sim::engine::{template_npc_id, FleetStatus, Ships};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use iac_sim::odds::{self, Force};
 use iac_sim::snapshot::ExploreCredit;
 use iac_sim::GameEngine;
 
@@ -59,23 +58,33 @@ fn splitting_and_merging_conserve_ships_fuel_and_cargo() {
     let (mut e, rival, rival_fleet) = with_rival("Fleeter");
     let (pid, fid) = (e.pid, e.fid);
     edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().cargo = Resources { metal: 30.0, ..Resources::default() });
-    let ships: Vec<u64> = e.fleet().ships.iter().map(|s| s.id).collect();
+    assert_eq!(e.fleet().ship_count, 2);
     let fuel_before = fuel_of(&e, fid);
+    let split = |ships: &[(ShipClass, u32)]| Command::Split { fleet_id: fid, ships: counts(ships), damaged_first: false };
 
-    assert_eq!(e.order(Command::Split { fleet_id: fid, ship_ids: vec![] }), Err(ErrorCode::InvalidTarget));
-    assert_eq!(e.order(Command::Split { fleet_id: fid, ship_ids: ships.clone() }), Err(ErrorCode::InvalidTarget), "one ship must stay");
-    assert_eq!(e.order(Command::Split { fleet_id: fid, ship_ids: vec![999_999] }), Err(ErrorCode::InvalidTarget));
-    let outcome = e.engine.execute(rival, Command::Split { fleet_id: fid, ship_ids: vec![ships[0]] });
+    assert_eq!(e.refusal(split(&[])).1, "split needs at least one class and a count of its ships to take");
+    assert_eq!(
+        e.refusal(split(&[(ShipClass::LightFighter, 2)])),
+        (ErrorCode::InvalidTarget, format!("the split would take all 2 ships of fleet {fid}; at least one ship must stay behind")),
+    );
+    assert_eq!(e.refusal(split(&[(ShipClass::LightFighter, 3)])).1, format!("fleet {fid} has 2 Light Fighter, not the 3 the split names"));
+    assert_eq!(e.refusal(split(&[(ShipClass::Cruiser, 1)])).1, format!("fleet {fid} has 0 Cruiser, not the 1 the split names"));
+    assert_eq!(e.refusal(split(&[(ShipClass::LightFighter, 0)])).1, "split names Light Fighter with a count of 0");
+    assert_eq!(
+        e.refusal(split(&[(ShipClass::LightFighter, 1), (ShipClass::LightFighter, 1)])).1,
+        "split names Light Fighter twice; give each class one count",
+    );
+    let outcome = e.engine.execute(rival, split(&[(ShipClass::LightFighter, 1)]));
     assert_eq!(outcome.error.map(|(code, _)| code), Some(ErrorCode::FleetNotFound));
     assert_eq!(e.order(Command::Merge { fleet_id: fid, other_fleet_id: fid }), Err(ErrorCode::InvalidTarget));
     assert_eq!(e.order(Command::Merge { fleet_id: fid, other_fleet_id: rival_fleet }), Err(ErrorCode::FleetNotFound));
 
-    e.order(Command::Split { fleet_id: fid, ship_ids: vec![ships[1]] }).expect("split one ship off");
+    e.order(split(&[(ShipClass::LightFighter, 1)])).expect("split one ship off");
     let own: Vec<_> = e.state().fleets;
     assert_eq!(own.len(), 2);
     let child = own.iter().find(|f| f.id != fid).unwrap().id;
     let (a, b) = (e.engine.fleets[&fid].clone(), e.engine.fleets[&child].clone());
-    assert_eq!((a.ship_count, b.ship_count), (1, 1));
+    assert_eq!((a.ships.total(), b.ships.total()), (1, 1));
     assert!((a.fuel + b.fuel - fuel_before).abs() < 0.01, "fuel is conserved");
     assert!((a.cargo.metal + b.cargo.metal - 30.0).abs() < 0.01, "cargo is conserved");
     assert!(a.fuel <= a.fuel_max && b.fuel <= b.fuel_max);
@@ -96,7 +105,7 @@ fn splitting_and_merging_conserve_ships_fuel_and_cargo() {
     e.order(Command::Merge { fleet_id: fid, other_fleet_id: child }).expect("merge at home");
     assert_eq!(e.state().fleets.len(), 1);
     let merged = e.fleet();
-    assert_eq!(merged.ships.len(), 2);
+    assert_eq!((merged.ship_count, merged.ships.len(), merged.ships[0].count), (2, 1, 2));
     assert!((merged.fuel - fuel).abs() < 0.01 && (merged.cargo.metal - carried).abs() < 0.01);
 }
 
@@ -304,19 +313,12 @@ fn odds_cover_any_sector_and_say_what_the_preview_of_a_jump_says() {
     assert!(ask(&mut e, pid, rival_fleet, vec![far]).error.is_some());
 }
 
-fn tuned_prospector(engage_ratio_x10: u8) -> (Empire, u64) {
+/// A lone Light Fighter at home under `prospect`, with the two rings around
+/// its homeworld charted, so that its first outing is into unscouted space.
+fn charted_prospector(engage_ratio_x10: u8) -> (Empire, u64) {
     let mut e = Empire::join(world("test"), "Dialled");
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
-    let frontier: Vec<Hex> = (-4i16..=4)
-        .flat_map(|q| (-4i16..=4).map(move |r| Hex { q: home.q + q, r: home.r + r }))
-        .filter(|h| (3..=4).contains(&Hex::distance(h, &home)))
-        .collect();
-    let waiting: Vec<Force> = frontier.iter().map(|&h| e.engine.known_opposition(pid, h).1).collect();
-    let best_odds = |fleet: &Fleet| {
-        let ours = fleet_force(fleet);
-        waiting.iter().map(|theirs| odds::outlook(&ours, theirs).ratio()).fold(0.0f32, f32::max)
-    };
     edit(&mut e.engine, |s| {
         for dr in -2i16..=2 {
             for dq in -2i16..=2 {
@@ -327,15 +329,7 @@ fn tuned_prospector(engage_ratio_x10: u8) -> (Empire, u64) {
                 }
             }
         }
-        let fleet = s.fleets.get_mut(&fid).unwrap();
-        let (mut lo, mut hi) = (0.0f32, 1e6f32);
-        for _ in 0..60 {
-            let mid = (lo + hi) / 2.0;
-            for ship in &mut fleet.ships[..fleet.ship_count] {
-                ship.weapon_power = mid;
-            }
-            if best_odds(fleet) < 1.6 { lo = mid } else { hi = mid }
-        }
+        s.fleets.get_mut(&fid).unwrap().ships = Ships::of(&[(ShipClass::LightFighter, 1)]);
     });
     let params = PolicyParams { max_range: 4, engage_ratio_x10, ..PolicyParams::default() };
     e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
@@ -345,7 +339,7 @@ fn tuned_prospector(engage_ratio_x10: u8) -> (Empire, u64) {
 #[test]
 fn a_doctrine_enters_unscouted_sectors_only_at_the_engage_ratio_the_player_set() {
     let outings = |engage_ratio_x10: u8| {
-        let (mut e, _) = tuned_prospector(engage_ratio_x10);
+        let (mut e, _) = charted_prospector(engage_ratio_x10);
         e.run(300);
         let moves = e.since(0, |k| match k {
             EventKind::PolicyAction(p) if p.action == "move" => Some(p.reason.clone()),
@@ -357,11 +351,33 @@ fn a_doctrine_enters_unscouted_sectors_only_at_the_engage_ratio_the_player_set()
         });
         (moves.len(), holds)
     };
-    let (moves, _) = outings(12);
-    assert!(moves > 0, "1.6x clears the 1.2x bar");
-    let (moves, holds) = outings(20);
-    assert_eq!(moves, 0, "1.6x does not clear 2.0x");
-    assert!(holds.iter().any(|h| h.contains("the doctrine needs 2.0x")), "{holds:?}");
+    // What a lone Light Fighter rates past the charted ring is the world's
+    // to say. The ratio is a bar: the highest setting it still sets out at
+    // is found by halving, and one tenth above it the fleet stays, and says
+    // of every sector it names that it rates below the bar.
+    assert_eq!(outings(100).0, 0, "a lone Light Fighter rates 10x nowhere past the charted ring");
+    assert!(outings(1).0 > 0, "and 0.1x anywhere");
+    let (mut goes, mut stays) = (1u8, 100u8);
+    while stays - goes > 1 {
+        let mid = goes + (stays - goes) / 2;
+        if outings(mid).0 > 0 { goes = mid } else { stays = mid }
+    }
+    assert!((3..98).contains(&goes), "a bar with room on both sides: {goes} tenths");
+    let need = f32::from(stays) / 10.0;
+    let (moves, holds) = outings(stays);
+    assert_eq!(moves, 0);
+    assert!(!holds.is_empty(), "the refusal is reported");
+    for hold in &holds {
+        let rated: f32 = hold
+            .split_once("your fleet rates ")
+            .and_then(|(_, rating)| rating.split_once('x'))
+            .and_then(|(ratio, _)| ratio.parse().ok())
+            .unwrap_or_else(|| panic!("the ratio the fleet rates at: {hold}"));
+        assert!(rated < need + 0.005, "{rated}x was refused at a bar of {need:.1}x: {hold}");
+        assert!(hold.contains(&format!("the doctrine needs {need:.1}x")), "{hold}");
+    }
+    let (moves, holds) = outings(goes);
+    assert!(moves > 0, "one tenth lower it sets out: {holds:?}");
 }
 
 #[test]
@@ -371,10 +387,9 @@ fn an_autopilot_will_not_take_a_hop_that_strands_it_and_turns_for_home() {
     let hop = hop_fuel(&e);
     let params = PolicyParams { min_fuel_pct: 0, max_range: 4, ..PolicyParams::default() };
     edit(&mut e.engine, |s| {
-        s.fleets.get_mut(&fid).unwrap().fuel = hop * 2.5;
-        for ship in &mut s.fleets.get_mut(&fid).unwrap().ships {
-            ship.weapon_power = 5000.0;
-        }
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.fuel = hop * 2.5;
+        fleet.refit = MIGHTY;
     });
     e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
     let mark = e.mark();
@@ -511,7 +526,7 @@ fn a_fleet_heading_home_takes_the_mildest_lane_and_says_so() {
     let mark = e.mark();
     e.run_until(600, |e| e.engine.fleets.get(&fid).is_none_or(|f| f.location == home));
 
-    assert_eq!(e.engine.fleets[&fid].ship_count, 2, "it came home whole");
+    assert_eq!(e.engine.fleets[&fid].ships.total(), 2, "it came home whole");
     let jumps = policy_reasons(&e, mark, "move");
     assert!(jumps[0].contains("no lane home meets the doctrine's 1.5x, taking the mildest"), "{jumps:?}");
     assert!(jumps.iter().all(|why| !why.contains("DEADLY")), "{jumps:?}");
@@ -546,31 +561,30 @@ fn a_fleet_that_loses_a_ship_in_a_fight_shows_the_tank_and_range_of_the_ships_it
     let home = e.engine.players[&pid].homeworld;
     let at = lone_fighter_sector(&e.engine, NpcBehaviorType::Passive);
     deploy(&mut e.engine, fid, at, None);
+    // Two Small Cargos, whose guns scratch a fighter and no more, one of
+    // them a hit from breaking up.
     edit(&mut e.engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
-        for ship in &mut fleet.ships[..fleet.ship_count] {
-            ship.weapon_power = 0.0;
-            ship.shield = 0.0;
-        }
-        fleet.ships[0].hull = 0.01;
-        fleet.ships[1].hull = 1e6;
+        fleet.ships = squadron(ShipClass::SmallCargo, 1, &[1]);
+        fleet.fuel_max = 2.0 * ship_tank(ShipClass::SmallCargo, &ResearchLevels::default());
+        fleet.fuel = fleet.fuel_max;
     });
     let whole = e.fleet();
-    assert_eq!(whole.ships.len(), 2);
+    assert_eq!((whole.ship_count, whole.ships[0].damaged, whole.ships[0].at_risk), (2, 1, 1));
     assert_eq!(whole.fuel, whole.fuel_max, "it set out with a full tank");
     let hops_home = whole.home_fuel / whole.jump_fuel;
     assert!((f64::from(whole.hops_home) - hops_home).abs() < 1e-3, "hops_home is that count");
 
     e.order(Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) }).expect("attack");
-    e.run_until(200, |e| e.engine.fleets[&fid].ship_count == 1);
-    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().ships[0].weapon_power = 5000.0);
+    e.run_until(200, |e| e.engine.fleets[&fid].ships.total() == 1);
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().refit.weapons = MIGHTY.weapons);
     e.run_until(20, |e| e.engine.active_combats.is_empty());
 
     let mauled = e.fleet();
-    assert_eq!(mauled.ships.len(), 1);
+    assert_eq!(mauled.ship_count, 1);
     assert!(
         (mauled.fuel_max - whole.fuel_max / 2.0).abs() < 0.01,
-        "one scout of two is left but the tank reads {} of the {} two carried",
+        "one cargo ship of two is left but the tank reads {} of the {} two carried",
         mauled.fuel_max,
         whole.fuel_max,
     );
@@ -652,23 +666,18 @@ fn same(a: Resources, b: Resources) -> bool {
     (a.metal - b.metal).abs() < 0.05 && (a.crystal - b.crystal).abs() < 0.05 && (a.deuterium - b.deuterium).abs() < 0.05
 }
 
-/// The starting fleet at a lone passive scout, unarmed, its hold nine tenths
-/// full, and each ship with the hull given.
-fn laden_and_outgunned(e: &mut Empire, hulls: [f32; 2]) -> (Hex, f64, Resources) {
+/// Two Small Cargos at a lone passive fighter they can only scratch, their
+/// hold nine tenths full: `whole` of them whole, the rest a hit from
+/// breaking up.
+fn laden_and_outgunned(e: &mut Empire, whole: u32) -> (Hex, f64, Resources) {
     let fid = e.fid;
     let at = lone_fighter_sector(&e.engine, NpcBehaviorType::Passive);
     deploy(&mut e.engine, fid, at, None);
+    let brittle = vec![1; 2 - whole as usize];
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().ships = squadron(ShipClass::SmallCargo, whole, &brittle));
     let hold = e.fleet().cargo_capacity;
     let cargo = Resources { metal: hold * 0.5, crystal: hold * 0.25, deuterium: hold * 0.15 };
-    edit(&mut e.engine, |s| {
-        let fleet = s.fleets.get_mut(&fid).unwrap();
-        for (ship, hull) in fleet.ships.iter_mut().zip(hulls) {
-            ship.weapon_power = 0.0;
-            ship.shield = 0.0;
-            ship.hull = hull;
-        }
-        fleet.cargo = cargo;
-    });
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().cargo = cargo);
     (at, hold, cargo)
 }
 
@@ -676,11 +685,11 @@ fn laden_and_outgunned(e: &mut Empire, hulls: [f32; 2]) -> (Hex, f64, Resources)
 fn a_fleet_that_loses_a_ship_in_a_fight_leaves_what_it_can_no_longer_carry_as_wreckage() {
     let mut e = Empire::join(world("test"), "Spilled");
     let fid = e.fid;
-    let (at, hold, cargo) = laden_and_outgunned(&mut e, [0.01, 1e6]);
+    let (at, hold, cargo) = laden_and_outgunned(&mut e, 1);
 
     let mark = e.mark();
     e.order(Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) }).expect("attack");
-    e.run_until(200, |e| e.engine.fleets[&fid].ship_count == 1);
+    e.run_until(200, |e| e.engine.fleets[&fid].ships.total() == 1);
 
     let mauled = e.fleet();
     assert!((mauled.cargo_capacity - hold / 2.0).abs() < 0.01, "one hold of two is left");
@@ -703,7 +712,7 @@ fn a_fleet_that_loses_a_ship_in_a_fight_leaves_what_it_can_no_longer_carry_as_wr
     );
 
     let mark = e.mark();
-    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().ships[0].weapon_power = 5000.0);
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().refit.weapons = MIGHTY.weapons);
     e.run_until(20, |e| e.engine.active_combats.is_empty());
     let (pile, _) = pile_of(&e.log[mark..]);
     assert_eq!(pile, wreckage(&e, at), "the victory reports the pile that lies there");
@@ -719,11 +728,11 @@ fn a_fleet_that_loses_a_ship_in_a_fight_leaves_what_it_can_no_longer_carry_as_wr
 fn a_destroyed_fleet_leaves_its_cargo_where_it_fell_for_whoever_collects() {
     let (mut e, rival, rival_fleet) = with_rival("Wrecked");
     let fid = e.fid;
-    let (at, _, cargo) = laden_and_outgunned(&mut e, [0.01, 0.01]);
+    let (at, _, cargo) = laden_and_outgunned(&mut e, 0);
 
     let mark = e.mark();
     e.order(Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(at) }).expect("attack");
-    e.run_until(200, |e| e.engine.fleets.get(&fid).is_none_or(|f| f.ship_count == 0));
+    e.run_until(200, |e| e.engine.fleets.get(&fid).is_none_or(|f| f.ships.is_empty()));
     e.run(2);
     assert!(!e.engine.fleets.contains_key(&fid));
 
@@ -732,7 +741,7 @@ fn a_destroyed_fleet_leaves_its_cargo_where_it_fell_for_whoever_collects() {
     assert!(told.iter().any(|m| m.contains("FLEET LOST")), "{told:?}");
     assert!(told.iter().any(|m| m.contains("drifts as wreckage") && m.contains(&at.to_string())), "{told:?}");
 
-    deploy(&mut e.engine, rival_fleet, at, None);
+    muster(&mut e.engine, rival_fleet, &[(ShipClass::SmallCargo, 2)], at);
     let collect = e.engine.execute(rival, Command::CollectSalvage { fleet_id: rival_fleet });
     assert!(collect.error.is_none(), "{:?}", collect.error);
     assert!(same(e.engine.fleets[&rival_fleet].cargo, cargo), "the finder has it: {:?}", e.engine.fleets[&rival_fleet].cargo);
@@ -751,11 +760,7 @@ fn a_recall_that_breaks_ships_leaves_their_share_of_the_cargo_where_it_jumped_fr
     e.set_stockpile(Resources::default());
     edit(&mut e.engine, |s| {
         let fleet = s.fleets.get_mut(&fid).unwrap();
-        for ship in &mut fleet.ships[1..20] {
-            ship.hull = 0.001;
-        }
-        fleet.ships[0].hull = 1e6;
-        fleet.ships[0].hull_max = 1e6;
+        fleet.ships = squadron(ShipClass::LightFighter, 1, &[1; 19]);
         fleet.fuel = 1e12;
         fleet.fuel_max = 1e12;
         fleet.cargo = cargo;
@@ -763,15 +768,17 @@ fn a_recall_that_breaks_ships_leaves_their_share_of_the_cargo_where_it_jumped_fr
 
     let mark = e.mark();
     e.order(Command::Recall { fleet_id: fid }).expect("recall");
-    let broke = e
-        .since(mark, |k| match k {
-            EventKind::ShipDestroyed(d) => Some(d.sector),
-            _ => None,
-        })
-        .len();
+    let lost = e.since(mark, |k| match k {
+        EventKind::ShipsLost(lost) if lost.mine && lost.sector == far => Some(lost.ships.clone()),
+        _ => None,
+    });
+    let [lost] = lost.as_slice() else { panic!("one report of the ships that broke up: {lost:?}") };
+    assert!(matches!(lost.as_slice(), [one] if one.ship_class == ShipClass::LightFighter), "{lost:?}");
+    let broke = lost[0].count as usize;
     let back = e.fleet();
-    assert!(broke > 0 && back.ships.len() == 20 - broke, "{broke} ships broke up, {} came home", back.ships.len());
+    assert!(broke > 0 && back.ship_count as usize == 20 - broke, "{broke} ships broke up, {} came home", back.ship_count);
     assert_eq!(back.location, home);
+    assert!(back.repair.is_none() && back.hull == back.hull_max, "the home dock mended the ships the jump harmed");
 
     let left_behind = wreckage(&e, far);
     assert!(same(left_behind, cargo.scale(broke as f64 / 20.0)), "{broke} holds of 20 stayed behind: {left_behind:?}");
@@ -878,7 +885,7 @@ fn a_fight_that_catches_a_boarding_tells_its_owner_and_frees_the_fleet() {
         .flat_map(|q| (-30i16..30).map(move |r| Hex { q, r }))
         .find(|&h| e.engine.derelict_site_at(h).is_some() && e.engine.world_gen.generate_sector(h).npc_template.is_none())
         .expect("a derelict with no hostile group over it");
-    deploy(&mut e.engine, fid, site, Some(1.0e6));
+    deploy(&mut e.engine, fid, site, Some(MIGHTY));
 
     let legal = |engine: &GameEngine, from: Hex| -> Vec<Hex> {
         engine.world_gen.connected_neighbors(from).slice().iter().copied()
@@ -903,34 +910,14 @@ fn a_fight_that_catches_a_boarding_tells_its_owner_and_frees_the_fleet() {
     let (from, timer, move_tick) = approach.expect("a neighbor whose one patrol step lands on the derelict before the boarding pays");
 
     let npc_id = 900_000;
-    let scout = ShipClass::LightFighter.base_stats();
+    horde(&mut e.engine, npc_id, from, &[(ShipClass::LightFighter, 1)], 1.0);
     edit(&mut e.engine, |s| {
         for npc in s.npc_fleets.values_mut() {
             npc.patrol_timer = 1_000;
         }
-        let mut ships = [Ship::default(); MAX_NPC_SHIPS];
-        ships[0] = Ship {
-            id: npc_id,
-            ship_class: ShipClass::LightFighter,
-            hull: scout.hull,
-            hull_max: scout.hull,
-            shield: scout.shield,
-            shield_max: scout.shield,
-            weapon_power: scout.weapon,
-        };
-        s.npc_fleets.insert(npc_id, NpcFleet {
-            id: npc_id,
-            location: from,
-            ships,
-            ship_count: 1,
-            behavior: NpcBehaviorType::Patrol,
-            home_sector: from,
-            patrol_timer: timer,
-            in_combat: false,
-            bounty: Resources::default(),
-            power: 1.0,
-            label: "scout patrol".to_string(),
-        });
+        let patrol = s.npc_fleets.get_mut(&npc_id).unwrap();
+        patrol.behavior = NpcBehaviorType::Patrol;
+        patrol.patrol_timer = timer;
     });
 
     let mark = e.mark();
@@ -994,20 +981,22 @@ fn a_recall_tells_its_owner_what_the_jump_cost_in_fuel_in_hull_and_in_a_jump_aba
     let mark = e.mark();
     e.order(Command::Recall { fleet_id: fid }).expect("recall");
     let back = e.fleet();
-    assert_eq!((back.location, back.ships.len()), (home, 20), "a whole hull loses at most four fifths of itself: none broke up");
-    let hurt: Vec<f32> = back.ships.iter().filter(|s| s.hull < s.hull_max).map(|s| s.hull_max - s.hull).collect();
-    assert!(hurt.len() > 2 && hurt.len() < 20, "half the ships are damaged at this range, give or take: {}", hurt.len());
+    assert_eq!((back.location, back.ship_count), (home, 20), "a whole hull loses at most four fifths of itself: none broke up");
     let told = alerts_since(&e, mark);
-    assert_eq!(told.len(), 1, "one event for the jump: {told:?}");
-    assert_eq!(
-        told[0].message,
-        format!(
-            "fleet {fid} made the emergency jump home from {far} for 20000 fuel: {} of its 20 ships took {:.0} hull damage, which is not repaired",
-            hurt.len(),
-            hurt.iter().sum::<f32>(),
-        ),
-    );
+    assert_eq!(told.len(), 2, "one event for the jump and one for the dock: {told:?}");
+    let jump = format!("fleet {fid} made the emergency jump home from {far} for 20000 fuel: ");
+    let harm = told[0].message.strip_prefix(&jump).unwrap_or_else(|| panic!("{}", told[0].message));
+    let figures: Vec<u64> = harm.split(' ').filter_map(|word| word.parse().ok()).collect();
+    let [hurt, 20, hull] = figures[..] else { panic!("the ships harmed, of how many, and the hull they lost: {harm}") };
+    assert_eq!(harm, format!("{hurt} of its 20 ships took {hull} hull damage"));
+    assert!(hurt > 2 && hurt < 20, "half the ships are damaged at this range, give or take: {hurt}");
+    assert!((hurt * 80..=hurt * 320).contains(&hull), "each lost 20 to 80 percent of a Light Fighter's 400 hull: {hull}");
     assert!(matches!(told[0].level, AlertLevel::Warning) && told[0].sector == Some(far), "{:?}", told[0]);
+    assert_eq!(
+        told[1].message,
+        format!("fleet {fid} was mended at the home dock: {hurt} ship(s) made whole, {hull} hull restored, for nothing"),
+    );
+    assert!(back.hull == back.hull_max && back.repair.is_none(), "home mends at once and for nothing");
 
     let mut e = Empire::join(world("persistent"), "Drilled");
     let (pid, fid) = (e.pid, e.fid);
@@ -1102,9 +1091,8 @@ fn reports(e: &Empire, mark: usize) -> Vec<(String, String)> {
     })
 }
 
-fn shields(e: &Empire) -> f32 {
-    let ships = e.fleet().ships;
-    ships.iter().map(|s| s.shield).sum::<f32>() / ships.iter().map(|s| s.shield_max).sum::<f32>()
+fn mended(e: &Empire, mark: usize) -> Vec<String> {
+    alerts_since(e, mark).into_iter().map(|a| a.message).filter(|m| m.contains("was mended at")).collect()
 }
 
 #[test]
@@ -1115,27 +1103,30 @@ fn a_ship_from_the_yard_or_a_fleet_merged_in_leaves_the_docked_fleet_fit_for_its
         let player = s.players.get_mut(&pid).unwrap();
         player.buildings.shipyard = 1;
         player.research.combustion_drive = 1;
+        player.research.weapons_technology = 3;
     });
     e.set_stockpile(ShipClass::LightFighter.build_cost());
     e.order(Command::BuildShip { ship_class: ShipClass::LightFighter, count: 1 }).expect("a fighter ordered");
-    e.run_until(400, |e| e.fleet().ships.len() == 3);
-    assert_eq!(shields(&e), 1.0, "the ship the yard delivers joins the docked fleet with its shields up: {:?}", e.fleet().ships);
+    e.run_until(400, |e| e.fleet().ship_count == 3);
+    let docked = e.fleet();
+    assert_eq!((docked.refit.weapons, docked.refit_due), (3, false), "research reaches a docked fleet at once, and the yard's ship with it");
+    assert_eq!((docked.ships[0].unit_attack, docked.attack), (65, 195), "a Light Fighter's 50 with three levels of Weapons Technology");
+    assert_eq!((docked.hull, docked.repair.is_none()), (docked.hull_max, true), "the ship the yard delivers is whole");
 
-    let newest = e.fleet().ships[2].id;
-    e.order(Command::Split { fleet_id: fid, ship_ids: vec![newest] }).expect("split it off");
+    e.order(Command::Split { fleet_id: fid, ships: counts(&[(ShipClass::LightFighter, 1)]), damaged_first: false }).expect("split one off");
     let other = e.state().fleets.iter().find(|f| f.id != fid).expect("the new fleet").id;
     e.order(Command::Merge { fleet_id: fid, other_fleet_id: other }).expect("and merge it back");
-    assert_eq!((e.fleet().ships.len(), shields(&e)), (3, 1.0), "a merge brings ships in as they are");
+    assert_eq!((e.fleet().ship_count, e.fleet().refit.weapons), (3, 3), "a merge at home leaves the fleet at its owner's levels");
 
     let mark = e.mark();
     e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).expect("orders");
     e.run_until(30, |e| !reports(e, mark).is_empty());
     let first = reports(&e, mark).remove(0);
-    assert!(!first.1.contains("shields"), "its first report under orders is not a wait for shields: {first:?}");
+    assert!(!first.1.contains("mended"), "its first report under orders is not a wait for the dock: {first:?}");
 }
 
 #[test]
-fn a_patrol_holds_for_its_shields_after_it_has_fought_the_convoy_over_its_own_dock_and_not_before() {
+fn a_patrol_that_fought_the_convoy_over_its_own_dock_is_mended_there_and_never_waits_for_it() {
     let mut e = (1u64..400)
         .find_map(|seed| {
             let e = Empire::join(GameEngine::new(seed, Pace::parse("blitz").expect("known pace")), "Warden");
@@ -1146,12 +1137,9 @@ fn a_patrol_holds_for_its_shields_after_it_has_fought_the_convoy_over_its_own_do
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
     muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 3)], home);
-    assert_eq!(shields(&e), 1.0);
+    assert_eq!(e.fleet().hull, e.fleet().hull_max);
 
     let mark = e.mark();
-    // Three Light Fighters rate about 1.75 against the one over a home: a
-    // sure win in which the convoy fires once, and OGame's shields are a
-    // fifth of its weapons.
     let params = PolicyParams { max_range: 1, engage_ratio_x10: 15, ..PolicyParams::default() };
     e.engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, Some(params)).expect("patrol orders");
     e.run_until(10, |e| !reports(e, mark).is_empty());
@@ -1165,28 +1153,37 @@ fn a_patrol_holds_for_its_shields_after_it_has_fought_the_convoy_over_its_own_do
     };
     e.run_until(300, |e| !ended(e).is_empty());
     assert_eq!(ended(&e), [(home, true)], "three fighters beat the convoy, in the home sector");
-    let worn = shields(&e);
-    assert!(worn < 0.95, "and the convoy shot back: shields at {:.0}%", worn * 100.0);
+    let hull_lost: u64 = e
+        .since(mark, |k| match k {
+            EventKind::BattleRound(round) => Some(round.hostiles.hull_damage),
+            _ => None,
+        })
+        .into_iter()
+        .sum();
+    assert!(hull_lost > 0, "both sides fire at once, so the convoy shot back");
 
-    e.run_until(20, |e| reports(e, mark).iter().any(|(action, _)| action == "hold"));
-    let held = reports(&e, mark).into_iter().find(|(action, _)| action == "hold").expect("a hold").1;
-    assert!(held.starts_with("shields recharging ("), "the hold is for the shields the fight cost: {held}");
-    e.run_until(200, |e| shields(e) >= 0.95);
-    let mark = e.mark();
-    e.run_until(70, |e| !reports(e, mark).is_empty());
-    let next = reports(&e, mark).remove(0);
-    assert!(!next.1.contains("shields"), "with the shields back the patrol goes on with its beat: {next:?}");
+    e.run(2);
+    let told = mended(&e, mark);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(
+        told[0].starts_with(&format!("fleet {fid} was mended at the home dock: "))
+            && told[0].ends_with(&format!(" {hull_lost} hull restored, for nothing")),
+        "the fight was over the dock, which mends at once and for nothing: {}",
+        told[0],
+    );
+    assert_eq!((e.fleet().hull, e.fleet().repair.is_none()), (e.fleet().hull_max, true));
+    assert!(reports(&e, mark).iter().all(|(_, why)| !why.contains("mended")), "so the patrol never waited for it: {:?}", reports(&e, mark));
 }
 
 #[test]
 fn a_jump_takes_the_ticks_the_fleet_reports() {
     use ShipClass as S;
-    type Ships = &'static [(ShipClass, usize)];
-    let fighters: Ships = &[(S::LightFighter, 2)];
-    let with_a_heavy: Ships = &[(S::LightFighter, 1), (S::HeavyFighter, 1)];
+    type Classes = &'static [(ShipClass, u32)];
+    let fighters: Classes = &[(S::LightFighter, 2)];
+    let with_a_heavy: Classes = &[(S::LightFighter, 1), (S::HeavyFighter, 1)];
     // The drives as (Combustion, Impulse, Hyperspace). A fleet jumps at the
     // speed of its slowest ship: max(1, ceil(sqrt(50,000 / speed))) ticks.
-    let cases: [(Ships, (u8, u8, u8), u16); 13] = [
+    let cases: [(Classes, (u8, u8, u8), u16); 13] = [
         (fighters, (0, 0, 0), 2),
         (fighters, (9, 0, 0), 2),
         (with_a_heavy, (0, 0, 0), 3),
@@ -1339,11 +1336,7 @@ fn dry_prospector(hops: usize, fuel: f64, deuterium: f64, refine: bool) -> (Empi
     let (mut e, chain) = outpost("Thirsty", hops);
     let (pid, fid) = (e.pid, e.fid);
     adrift(&mut e, chain[hops - 1], fuel, deuterium);
-    edit(&mut e.engine, |s| {
-        for ship in &mut s.fleets.get_mut(&fid).unwrap().ships {
-            ship.weapon_power = 5000.0;
-        }
-    });
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().refit = MIGHTY);
     let mark = e.mark();
     let params = PolicyParams { min_fuel_pct: 0, max_range: 4, refine, ..PolicyParams::default() };
     e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
@@ -1428,7 +1421,7 @@ fn refining_is_refused_in_a_fight_and_while_a_jump_charges_and_goes_on_beside_a_
     e.order(Command::Refine { fleet_id: fid }).expect("arrived, it refines");
 
     let lair = lone_fighter_sector(&e.engine, NpcBehaviorType::Passive);
-    deploy(&mut e.engine, fid, lair, Some(5000.0));
+    deploy(&mut e.engine, fid, lair, Some(MIGHTY));
     adrift(&mut e, lair, 60.0, 1.0);
     e.order(Command::Attack { fleet_id: fid, target_fleet_id: template_npc_id(lair) }).expect("attack");
     assert_eq!(e.engine.fleets[&fid].state, FleetStatus::InCombat);
@@ -1461,4 +1454,170 @@ fn refining_is_refused_in_a_fight_and_while_a_jump_charges_and_goes_on_beside_a_
     e.order(Command::Refine { fleet_id: fid }).expect("a boarding fleet refines");
     let fleet = &e.engine.fleets[&fid];
     assert_eq!((fleet.state, fleet.action_cooldown), (FleetStatus::Exploring, timer), "and the boarding goes on");
+}
+
+fn newest_fleet(e: &Empire) -> u64 {
+    e.engine.fleets.values().filter(|f| f.owner_id == e.pid).map(|f| f.id).max().expect("a fleet")
+}
+
+#[test]
+fn split_takes_the_whole_ships_first_or_the_wounded_first_and_a_merge_brings_every_hull_back() {
+    use ShipClass::{Cruiser, LightFighter};
+    let (mut e, _) = outpost("Surgeon", 1);
+    let fid = e.fid;
+    edit(&mut e.engine, |s| {
+        let mut ships = squadron(LightFighter, 7, &[100, 200, 300]);
+        ships.absorb(squadron(Cruiser, 2, &[]));
+        s.fleets.get_mut(&fid).unwrap().ships = ships;
+    });
+    let told = e.fleet();
+    let fighters = told.ships.iter().find(|g| g.ship_class == LightFighter).unwrap();
+    assert_eq!((told.ship_count, told.ships.len(), told.hull, told.hull_max), (12, 2, 3400 + 5400, 4000 + 5400));
+    assert_eq!(
+        (fighters.count, fighters.damaged, fighters.at_risk, fighters.hull, fighters.hull_max),
+        (10, 3, 2, 3400, 4000),
+        "three are damaged, and the two at or under 70 percent of their 400 hull may explode when next hit",
+    );
+
+    let split = |fleet_id: u64, ships: &[(ShipClass, u32)], damaged_first: bool| Command::Split {
+        fleet_id,
+        ships: counts(ships),
+        damaged_first,
+    };
+    e.order(split(fid, &[(LightFighter, 8), (Cruiser, 1)], false)).expect("eight fighters and a cruiser");
+    let sound = newest_fleet(&e);
+    let mut taken = squadron(LightFighter, 7, &[300]);
+    taken.absorb(squadron(Cruiser, 1, &[]));
+    assert_eq!(e.engine.fleets[&sound].ships, taken, "the whole go first, and then the least damaged");
+    let mut kept = squadron(LightFighter, 0, &[100, 200]);
+    kept.absorb(squadron(Cruiser, 1, &[]));
+    assert_eq!(e.engine.fleets[&fid].ships, kept);
+
+    e.order(split(sound, &[(LightFighter, 3)], true)).expect("the wounded and two more");
+    let limping = newest_fleet(&e);
+    assert_eq!(e.engine.fleets[&limping].ships, squadron(LightFighter, 2, &[300]), "the damaged go first when asked");
+    assert!(!e.engine.fleets[&sound].ships.has_damage());
+    let quote = |id: u64| e.state().fleets.into_iter().find(|f| f.id == id).unwrap().repair;
+    assert_eq!(quote(sound), None, "a fleet with no damage is quoted no repair");
+    assert_eq!(quote(limping).map(|q| (q.ships, q.hull, q.home.ships, q.home.price)), Some((1, 100, 1, 0.0)));
+
+    e.order(Command::Merge { fleet_id: fid, other_fleet_id: sound }).expect("merge the sound wing back");
+    e.order(Command::Merge { fleet_id: fid, other_fleet_id: limping }).expect("and the wounded");
+    let mut whole = squadron(LightFighter, 7, &[100, 200, 300]);
+    whole.absorb(squadron(Cruiser, 2, &[]));
+    assert_eq!(e.engine.fleets[&fid].ships, whole, "every ship is back with the hull it had");
+    assert_eq!(e.state().fleets.len(), 1);
+}
+
+#[test]
+fn research_reaches_a_fleet_when_it_docks_at_home_and_a_merged_fleet_fights_at_the_lower_levels_until_then() {
+    use ShipClass::LightFighter;
+    let mut e = Empire::join(world("test"), "Refitter");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let out = outward_chain(&e.engine, home, 1)[0];
+    muster(&mut e.engine, fid, &[(LightFighter, 4)], home);
+    let split = |fleet_id: u64, count: u32| Command::Split { fleet_id, ships: counts(&[(LightFighter, count)]), damaged_first: false };
+    e.order(split(fid, 2)).expect("two stay at the dock");
+    let stay = newest_fleet(&e);
+    e.travel_fleet(fid, out);
+
+    edit(&mut e.engine, |s| {
+        let research = &mut s.players.get_mut(&pid).unwrap().research;
+        (research.weapons_technology, research.armour_technology) = (2, 1);
+    });
+    e.run(2);
+    let state_of = |e: &Empire, id: u64| e.state().fleets.into_iter().find(|f| f.id == id).unwrap();
+    let levels = |e: &Empire, id: u64| {
+        let f = state_of(e, id);
+        (f.refit.weapons, f.refit.shielding, f.refit.armour, f.refit_due)
+    };
+    let figures = |e: &Empire, id: u64| {
+        let f = state_of(e, id);
+        (f.ships[0].unit_attack, f.ships[0].unit_shield, f.ships[0].unit_hull, f.attack, f.hull_max)
+    };
+    assert_eq!(levels(&e, fid), (0, 0, 0, true), "the fleet in the field fights with what it left the dock with");
+    assert_eq!(figures(&e, fid), (50, 10, 400, 100, 800));
+    assert_eq!(levels(&e, stay), (2, 0, 1, false), "research that finishes over a docked fleet reaches it at once");
+    assert_eq!(figures(&e, stay), (60, 10, 440, 120, 880), "a tenth a level, as OGame has it");
+
+    e.order(split(fid, 1)).expect("split in the field");
+    let half = newest_fleet(&e);
+    assert_eq!((levels(&e, half), levels(&e, fid)), ((0, 0, 0, true), (0, 0, 0, true)), "both halves keep the fleet's levels");
+
+    e.travel_fleet(stay, out);
+    assert_eq!(levels(&e, stay), (2, 0, 1, false), "the levels fly with the fleet");
+    edit(&mut e.engine, |s| {
+        let mut ships = Ships::of(&[(LightFighter, 1)]);
+        ships.add_holding(LightFighter, 220, 440);
+        s.fleets.get_mut(&stay).unwrap().ships = ships;
+    });
+    let mark = e.mark();
+    e.order(Command::Merge { fleet_id: fid, other_fleet_id: stay }).expect("merge in the field");
+    assert_eq!(levels(&e, fid), (0, 0, 0, true), "the merged fleet takes the lower of each level");
+    assert_eq!(e.engine.fleets[&fid].ships, squadron(LightFighter, 2, &[200]), "and a damaged ship keeps the half of its hull it had");
+    let told = alerts_since(&e, mark);
+    assert!(
+        told.iter().any(|a| a.message.contains(
+            "fighting at the lower of the two fleets' levels (Weapons 0, Shielding 0, Armour 0) until the home dock refits them"
+        )),
+        "{told:?}",
+    );
+
+    let mark = e.mark();
+    e.travel_fleet(fid, home);
+    e.run(1);
+    let told: Vec<String> = alerts_since(&e, mark).into_iter().map(|a| a.message).collect();
+    assert_eq!(
+        told,
+        [
+            format!("fleet {fid} was refitted at the home dock: Weapons 2, Shielding 0, Armour 1 (it flew with 0, 0, 0)"),
+            format!("fleet {fid} was mended at the home dock: 1 ship(s) made whole, 220 hull restored, for nothing"),
+        ],
+    );
+    assert_eq!(levels(&e, fid), (2, 0, 1, false));
+    assert_eq!(figures(&e, fid), (60, 10, 440, 180, 1320));
+    assert_eq!(state_of(&e, fid).hull, 1320);
+    assert_eq!(levels(&e, half), (0, 0, 0, true), "the half still out waits for its own docking");
+}
+
+#[test]
+fn damage_lasts_from_fight_to_fight_and_only_a_dock_mends_it() {
+    use ShipClass::LightFighter;
+    let (mut e, chain) = outpost("Veteran", 2);
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let at = chain[1];
+    muster(&mut e.engine, fid, &[(LightFighter, 12)], at);
+    let fight = |e: &mut Empire, id: u64| {
+        horde(&mut e.engine, id, at, &[(LightFighter, 6)], 0.8);
+        e.order(Command::Attack { fleet_id: fid, target_fleet_id: id }).expect("attack");
+        e.run_until(200, |e| e.engine.active_combats.is_empty());
+        e.fleet()
+    };
+
+    let first = fight(&mut e, 900_001);
+    assert!(first.ship_count >= 6, "twelve fighters beat six weaker ones: {} left", first.ship_count);
+    let group = first.ships[0];
+    assert!(group.damaged > 0 && first.hull < first.hull_max, "and come out of it damaged: {group:?}");
+    let quote = first.repair.clone().expect("a damaged fleet is told what mending it takes");
+    assert_eq!((quote.ships, quote.hull), (group.damaged, first.hull_max - first.hull));
+    assert_eq!((quote.home.price, quote.home.ships, quote.home.hull, quote.outpost), (0.0, quote.ships, quote.hull, None));
+
+    e.run(300);
+    let later = e.fleet();
+    assert_eq!((later.hull, later.ships[0].damaged), (first.hull, group.damaged), "nothing mends a hull in the field, and no shield is kept");
+
+    let second = fight(&mut e, 900_002);
+    assert!(second.hull < first.hull, "the second fight starts where the first left the fleet: {} then {}", first.hull, second.hull);
+
+    let mark = e.mark();
+    e.travel(home);
+    e.run(1);
+    let home_again = e.fleet();
+    assert_eq!((home_again.hull, home_again.repair), (home_again.hull_max, None), "the home dock makes every ship whole");
+    assert_eq!(home_again.ship_count, second.ship_count, "but brings none back");
+    let told: Vec<String> = alerts_since(&e, mark).into_iter().map(|a| a.message).filter(|m| m.contains("mended")).collect();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].ends_with(&format!("{} hull restored, for nothing", second.hull_max - second.hull)), "{}", told[0]);
 }

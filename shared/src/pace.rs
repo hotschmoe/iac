@@ -46,7 +46,7 @@ pub const TIMER_CLASSES: &[(&str, PaceClass)] = &[
     ("MOVE_BASE_COOLDOWN", PaceClass::RealTime),
     ("HARVEST_COOLDOWN", PaceClass::RealTime),
     ("SCAN_COOLDOWN", PaceClass::RealTime),
-    ("SHIELD_REGEN_IDLE_TICKS", PaceClass::RealTime),
+    ("REPAIR_TICKS", PaceClass::RealTime),
     ("STRANDED_RECOVERY_TICKS", PaceClass::RealTime),
     ("NPC_PATROL_INTERVAL", PaceClass::RealTime),
     ("SCAN_REVEAL_TICKS", PaceClass::RealTime),

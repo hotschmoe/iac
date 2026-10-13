@@ -297,9 +297,15 @@ fn calm_route(world: &WorldGen, home: Hex, wanted: impl Fn(Hex, &SectorTemplate)
 fn a_blitz_of_hands_on_bots_is_one_world_past_the_tick_where_the_two_parted() {
     let mut twin = Twin::new_game("blitz", &["all:hands-on", "miner:hands-on:3"]);
     let mut snapshot = Value::Null;
+    let (mut largest, mut hurt) = (0, 0);
     for _ in 0..10 {
         twin.stay_away(300);
         snapshot = twin.checkpoint();
+        let fleets = rows(&snapshot["fleets"]);
+        let ships = |fleet: &Value| rows(&fleet["ships"]).iter().map(|group| group["count"].as_u64().unwrap()).sum::<u64>();
+        let damaged = |fleet: &Value| rows(&fleet["ships"]).iter().any(|group| !rows(&group["damaged"]).is_empty());
+        largest = largest.max(fleets.iter().map(|fleet| ships(fleet)).max().unwrap_or(0));
+        hurt += usize::from(fleets.iter().any(|fleet| damaged(fleet)));
     }
     assert_eq!(snapshot["tick"], 3000);
     let [fought, explored, raided, heated] = deeds(&snapshot);
@@ -307,6 +313,11 @@ fn a_blitz_of_hands_on_bots_is_one_world_past_the_tick_where_the_two_parted() {
         fought >= 4 && explored >= 4 && raided >= 4 && heated >= 12,
         "the world was meant to be busy: {fought} empires with combat points, {explored} with exploration points, \
          {raided} homes raided, {heated} sectors heated by a kill"
+    );
+    assert!(
+        largest >= 8 && hurt >= 2,
+        "the fights were meant to be of fleets, and to leave damage a stored world carries: the largest fleet at a \
+         checkpoint was of {largest} ships, and {hurt} checkpoints of ten held a damaged ship"
     );
 }
 
@@ -327,6 +338,35 @@ fn a_season_day_of_sixteen_seats_is_one_world() {
         "the world was meant to be busy: {fought} empires with combat points, {explored} with exploration points, \
          {raided} homes raided, {heated} sectors heated by a kill"
     );
+}
+
+#[test]
+fn a_commanders_fight_is_the_same_rounds_on_both_targets() {
+    let mut twin = Twin::new_game("test", &[]);
+    let login = twin.log_in();
+    let fleet = login[1]["fleets"][0]["id"].as_u64().unwrap();
+    let home = hex_of(&login[1]["player"]["homeworld"]);
+    let (described, _) = twin.call(json!({"op": "describe"}), &[]);
+    let world = WorldGen::init(u64::from_str_radix(described["world"]["seed"].as_str().unwrap(), 16).unwrap());
+    let shoots = |at: Hex| world.generate_sector(at).npc_template.is_some_and(|npc| npc.behavior != NpcBehaviorType::Passive);
+    let beside = |at: Hex| world.connected_neighbors(at).slice().iter().copied().find(|&next| shoots(next));
+    let approach = calm_route(&world, home, |at, _| beside(at).is_some());
+    let lair = beside(*approach.last().unwrap()).unwrap();
+
+    for hop in approach {
+        twin.fly(fleet, hop);
+    }
+    twin.play_until(30, |f| f["type"] == "tick_update" && f["fleets"][0]["state"] == "Idle" && f["fleets"][0]["cooldown_remaining"] == 0);
+    twin.accepted(json!({"action": "move", "fleet_id": fleet, "target": {"q": lair.q, "r": lair.r}}));
+    let fought = twin.play_until(200, |f| !events(std::slice::from_ref(f), "CombatEnded").is_empty());
+
+    let rounds = events(&fought, "BattleRound");
+    let ended = events(&fought, "CombatEnded");
+    assert!(!rounds.is_empty(), "the group at {lair} shoots first: {fought:?}");
+    assert_eq!(ended[0]["rounds"].as_u64(), Some(rounds.len() as u64), "{}", ended[0]);
+    let shots: u64 = rounds.iter().map(|round| round["fleets"]["shots"].as_u64().unwrap() + round["hostiles"]["shots"].as_u64().unwrap()).sum();
+    assert!(shots >= 2 * rounds.len() as u64, "both sides fired in every round: {shots} shots in {} rounds", rounds.len());
+    twin.checkpoint();
 }
 
 #[test]

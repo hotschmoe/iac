@@ -1,295 +1,395 @@
-// Round-based combat resolution with RNG, target selection, damage calculation.
-// Ported from Zig combat.zig.
+// One round of a fight, as classic OGame fights it (docs/design/ogame.md,
+// section 7.1).
 //
-// Works with copied ship data to avoid borrow checker issues with
-// simultaneous mutable access to fleets.
+//   1. every unit's shield is full
+//   2. every unit of both sides fires, at once: a unit destroyed earlier in
+//      the round still fires
+//   3. a shot picks one unit of the other side, each as likely as another,
+//      one already destroyed this round included (that shot is wasted)
+//        the target has no shield left   the attack comes off its hull
+//        otherwise                       n = attack * 100 / full shield, cut off
+//          n is 0                        the shot bounces
+//          shield left < n hundredths    the shield breaks, the rest comes off the hull
+//          otherwise                     the shield loses n hundredths
+//        no shield left, and the hull at or under EXPLODE_BELOW_PCT hundredths
+//                                        it explodes with chance 1 - hull / full hull
+//        rapid fire r against the target the unit fires again with chance (r - 1) / r
+//   4. what exploded is gone when the round ends
+//
+// Whole numbers from end to end, with dice of its own, so a round is the same
+// bytes on every target. It knows nothing of fleets, owners or sectors: it is
+// handed two sides of troops and hands them back with what was fired.
 
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
+use std::sync::OnceLock;
 
-use iac_shared::constants::{ShipClass, DAMAGE_VARIANCE_MIN, DAMAGE_VARIANCE_MAX};
+use serde::{Deserialize, Serialize};
+
+use iac_shared::constants::EXPLODE_BELOW_PCT;
 use iac_shared::hex::Hex;
-use iac_shared::protocol::{
-    CombatRoundEvent, EventKind, FleetDestroyedEvent, GameEvent, ShipDestroyedEvent,
-};
-use iac_shared::Resources;
+use iac_shared::protocol::{BattleUnits, Volley};
+use iac_shared::scaling::{self, Arms, ShipyardItem, UnitFigures};
 
-use crate::engine::Ship;
+const KINDS: usize = ShipyardItem::COUNT;
 
-/// Copy of ship data for combat resolution (avoids borrow issues).
+/// Units of one kind: how many, and the hull of each that is not whole,
+/// ascending.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Squad {
+    pub unit: ShipyardItem,
+    pub count: u32,
+    pub damaged: Vec<u32>,
+}
+
+/// One fleet, group or battery in a fight: its squads in catalogue order,
+/// and what they fight with.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Troop {
+    pub arms: Arms,
+    pub squads: Vec<Squad>,
+}
+
+impl Troop {
+    pub fn units(&self) -> u32 {
+        self.squads.iter().map(|s| s.count).sum()
+    }
+}
+
+/// The dice of a round: SplitMix64, which is the same sequence wherever it runs.
+pub struct Dice(u64);
+
+impl Dice {
+    pub fn new(seed: u64) -> Dice {
+        Dice(seed)
+    }
+
+    /// The dice of round `round` of the fight in `sector` on `tick`. Nothing
+    /// of them is stored: a world stopped between two rounds fights the next
+    /// as it would have.
+    pub fn of_round(world_seed: u64, sector: Hex, tick: u64, round: u32) -> Dice {
+        Dice(
+            world_seed
+                ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                ^ u64::from(sector.to_key()).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+                ^ u64::from(round).wrapping_mul(0x1656_67B1_9E37_79F9),
+        )
+    }
+
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// A whole number below `n`, each as likely as another.
+    fn below(&mut self, n: u32) -> u32 {
+        (((self.next() >> 32) * u64::from(n)) >> 32) as u32
+    }
+}
+
+/// One side after a round, and what it fired.
+#[derive(Debug, Clone, Default)]
+pub struct SideReport {
+    /// Each troop as it stands, in the order given.
+    pub troops: Vec<Vec<Squad>>,
+    /// The same by kind, with what the round destroyed.
+    pub standing: Vec<Vec<BattleUnits>>,
+    pub volleys: Vec<Volley>,
+    pub shots: u64,
+    pub power: u64,
+    pub absorbed: u64,
+    pub hull_damage: u64,
+    pub destroyed: u32,
+}
+
+impl SideReport {
+    pub fn units(&self) -> u32 {
+        self.troops.iter().flatten().map(|s| s.count).sum()
+    }
+}
+
+pub struct RoundReport {
+    pub fleets: SideReport,
+    pub hostiles: SideReport,
+}
+
+impl RoundReport {
+    /// A unit of either side lost hull.
+    pub fn hull_lost(&self) -> bool {
+        self.fleets.hull_damage + self.hostiles.hull_damage > 0
+    }
+}
+
 #[derive(Clone, Copy)]
-pub struct CombatShip {
-    pub id: u64,
-    pub ship_class: ShipClass,
-    pub weapon_power: f32,
-    pub hull: f32,
-    pub hull_max: f32,
-    pub shield: f32,
-    pub shield_max: f32,
+struct Unit {
+    hull: u32,
+    line: u16,
+    /// Hundredths of its full shield still standing.
+    shield: u8,
+    dead: bool,
 }
 
-impl From<&Ship> for CombatShip {
-    fn from(s: &Ship) -> Self {
-        CombatShip {
-            id: s.id,
-            ship_class: s.ship_class,
-            weapon_power: s.weapon_power,
-            hull: s.hull,
-            hull_max: s.hull_max,
-            shield: s.shield,
-            shield_max: s.shield_max,
+/// The units of one squad of one troop: a run of the side's unit list.
+struct Line {
+    kind: usize,
+    figures: UnitFigures,
+    troop: usize,
+    start: usize,
+    len: usize,
+}
+
+struct Side {
+    lines: Vec<Line>,
+    units: Vec<Unit>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Fire {
+    shots: u32,
+    bounced: u32,
+    wasted: u32,
+    absorbed: u64,
+    hull_damage: u64,
+    destroyed: u32,
+}
+
+fn rapid_fire() -> &'static [[u16; KINDS]; KINDS] {
+    static TABLE: OnceLock<[[u16; KINDS]; KINDS]> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [[0u16; KINDS]; KINDS];
+        for (from, row) in table.iter_mut().enumerate() {
+            for (at, figure) in row.iter_mut().enumerate() {
+                if let (Some(unit), Some(target)) = (ShipyardItem::from_index(from), ShipyardItem::from_index(at)) {
+                    *figure = scaling::rapid_fire_of(unit, target);
+                }
+            }
+        }
+        table
+    })
+}
+
+fn muster(troops: &[Troop]) -> Side {
+    let mut side = Side { lines: Vec::new(), units: Vec::with_capacity(troops.iter().map(|t| t.units() as usize).sum()) };
+    for (troop, t) in troops.iter().enumerate() {
+        for squad in &t.squads {
+            let figures = scaling::unit_figures(squad.unit, t.arms);
+            let line = side.lines.len() as u16;
+            let start = side.units.len();
+            let whole = (squad.count as usize).saturating_sub(squad.damaged.len());
+            let fresh = Unit { hull: figures.hull, line, shield: 100, dead: false };
+            side.units.extend(std::iter::repeat_n(fresh, whole));
+            side.units.extend(squad.damaged.iter().map(|&hull| Unit { hull: hull.min(figures.hull), ..fresh }));
+            side.lines.push(Line { kind: squad.unit.index(), figures, troop, start, len: side.units.len() - start });
         }
     }
+    side
 }
 
-/// A single combat side (player fleet or NPC fleet).
-pub struct CombatSide {
-    pub fleet_id: u64,
-    pub is_npc: bool,
-    /// Owning empire's name; None for NPCs.
-    pub owner: Option<String>,
-    /// Wreckage this side leaves if it is destroyed by players.
-    pub salvage: Resources,
-    /// What an NPC group is called in messages; empty for players.
-    pub label: String,
-    pub ships: Vec<CombatShip>,
-}
-
-/// Result of resolving a single combat round.
-pub struct CombatRoundResult {
-    pub events: Vec<GameEvent>,
-    pub player_ships: Vec<Vec<CombatShip>>,  // updated ship states per player fleet
-    pub npc_ships: Vec<Vec<CombatShip>>,     // updated ship states per npc fleet
-    pub concluded: bool,
-    pub player_won: bool,
-}
-
-/// Resolve one combat round between player and NPC fleets.
-/// Takes copied ship data, returns updated ship data + events.
-///
-/// Fire order matches the Zig original: all player ships fire first
-/// (with rapid-fire chains), damage lands immediately, then surviving
-/// NPC ships return fire against the updated player state.
-pub fn resolve_combat_round(
-    player_sides: &[CombatSide],
-    npc_sides: &[CombatSide],
-    world_seed: u64,
-    sector: Hex,
-    tick: u64,
-    round: u32,
-) -> CombatRoundResult {
-    let seed = world_seed
-        ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        ^ u64::from(sector.to_key()).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
-        ^ u64::from(round).wrapping_mul(0x1656_67B1_9E37_79F9);
-    let mut rng = StdRng::seed_from_u64(seed);
-
-    let mut events: Vec<GameEvent> = Vec::new();
-
-    // Clone ship data so we can mutate freely
-    let mut player_ships: Vec<Vec<CombatShip>> = player_sides.iter()
-        .map(|s| s.ships.clone()).collect();
-    let mut npc_ships: Vec<Vec<CombatShip>> = npc_sides.iter()
-        .map(|s| s.ships.clone()).collect();
-
-    // Target index lists: (side_idx, ship_idx). Dead ships are skipped at
-    // selection time, so fire redistributes to survivors as ships die.
-    let npc_targets: Vec<(usize, usize)> = all_indices(&npc_ships);
-    let player_targets: Vec<(usize, usize)> = all_indices(&player_ships);
-
-    // Player ships fire at NPC ships, damage applied immediately.
-    // Indexing avoids holding borrows of the ship vecs across fire_ship's mutable access.
-    #[allow(clippy::needless_range_loop)]
-    for psi in 0..player_ships.len() {
-        for ai in 0..player_ships[psi].len() {
-            let attacker = player_ships[psi][ai];
-            if attacker.hull <= 0.0 { continue; }
-            let shot = Shot { sector, tick, attacker_side: &player_sides[psi], target_sides: npc_sides };
-            fire_ship(&attacker, &shot, &npc_targets, &mut npc_ships, &mut rng, &mut events);
+/// Every unit of `from` fires at `at`. Returns the fire of each line of
+/// `from` at each line of `at`, and the attack of every shot summed.
+fn fire(from: &Side, at: &mut Side, dice: &mut Dice) -> (Vec<Fire>, u64) {
+    let rapid = rapid_fire();
+    let across = at.lines.len();
+    let mut tally = vec![Fire::default(); from.lines.len() * across];
+    let mut power = 0u64;
+    let targets = at.units.len() as u32;
+    if targets == 0 {
+        return (tally, power);
+    }
+    for (firing, line) in from.lines.iter().enumerate() {
+        let attack = line.figures.attack;
+        if attack == 0 {
+            continue;
+        }
+        for _ in 0..line.len {
+            loop {
+                let target = &mut at.units[dice.below(targets) as usize];
+                let hit = &at.lines[usize::from(target.line)];
+                let fire = &mut tally[firing * across + usize::from(target.line)];
+                fire.shots += 1;
+                power += u64::from(attack);
+                if target.dead {
+                    fire.wasted += 1;
+                } else {
+                    let full = u64::from(hit.figures.shield);
+                    let mut through = u64::from(attack);
+                    let mut struck = true;
+                    if full > 0 && target.shield > 0 {
+                        let hundredths = u64::from(attack) * 100 / full;
+                        if hundredths == 0 {
+                            fire.bounced += 1;
+                            through = 0;
+                            struck = false;
+                        } else if u64::from(target.shield) < hundredths {
+                            let soaked = u64::from(target.shield) * full / 100;
+                            fire.absorbed += soaked;
+                            through -= soaked;
+                            target.shield = 0;
+                        } else {
+                            target.shield -= hundredths as u8;
+                            fire.absorbed += through;
+                            through = 0;
+                        }
+                    }
+                    let dealt = through.min(u64::from(target.hull)) as u32;
+                    target.hull -= dealt;
+                    fire.hull_damage += u64::from(dealt);
+                    let bare = full == 0 || target.shield == 0;
+                    let hull_max = u64::from(hit.figures.hull);
+                    if struck && bare && u64::from(target.hull) * 100 <= hull_max * u64::from(EXPLODE_BELOW_PCT) {
+                        let holds = u64::from(target.hull) * 100 / hull_max.max(1);
+                        if target.hull == 0 || u64::from(dice.below(100)) >= holds {
+                            target.dead = true;
+                            fire.destroyed += 1;
+                        }
+                    }
+                }
+                let again = rapid[line.kind][hit.kind];
+                if again == 0 || dice.below(u32::from(again)) == 0 {
+                    break;
+                }
+            }
         }
     }
-
-    // Surviving NPC ships return fire; NPCs killed above do not shoot.
-    // Indexing avoids holding borrows of the ship vecs across fire_ship's mutable access.
-    #[allow(clippy::needless_range_loop)]
-    for nsi in 0..npc_ships.len() {
-        for ai in 0..npc_ships[nsi].len() {
-            let attacker = npc_ships[nsi][ai];
-            if attacker.hull <= 0.0 { continue; }
-            let shot = Shot { sector, tick, attacker_side: &npc_sides[nsi], target_sides: player_sides };
-            fire_ship(&attacker, &shot, &player_targets, &mut player_ships, &mut rng, &mut events);
-        }
-    }
-
-    // Compact destroyed ships
-    for ships in player_ships.iter_mut() {
-        compact_ships(ships);
-    }
-    for ships in npc_ships.iter_mut() {
-        compact_ships(ships);
-    }
-
-    let any_player_alive = player_ships.iter().any(|s| !s.is_empty());
-    let any_npc_alive = npc_ships.iter().any(|s| !s.is_empty());
-    let concluded = !any_player_alive || !any_npc_alive;
-
-    if concluded && !any_npc_alive {
-        for side in npc_sides.iter() {
-            events.push(fleet_destroyed(tick, sector, side, side.salvage));
-        }
-    }
-    for (i, side) in player_sides.iter().enumerate() {
-        if !side.ships.is_empty() && player_ships[i].is_empty() {
-            events.push(fleet_destroyed(tick, sector, side, Resources::default()));
-        }
-    }
-
-    CombatRoundResult {
-        events,
-        player_ships,
-        npc_ships,
-        concluded,
-        player_won: concluded && any_player_alive,
-    }
+    (tally, power)
 }
 
-fn all_indices(ships: &[Vec<CombatShip>]) -> Vec<(usize, usize)> {
-    ships.iter().enumerate()
-        .flat_map(|(si, side)| (0..side.len()).map(move |ti| (si, ti)))
-        .collect()
+/// The hull of every unit of `line` that stands and is not whole, ascending,
+/// and how many stand in all.
+fn survivors(side: &Side, line: &Line) -> (u32, Vec<u32>) {
+    let mut left = 0u32;
+    let mut damaged: Vec<u32> = Vec::new();
+    for standing in side.units[line.start..line.start + line.len].iter().filter(|u| !u.dead) {
+        left += 1;
+        if standing.hull < line.figures.hull {
+            damaged.push(standing.hull);
+        }
+    }
+    damaged.sort_unstable();
+    (left, damaged)
 }
 
-/// Who fires at whom, and where: the context every shot event needs.
-struct Shot<'a> {
-    sector: Hex,
-    tick: u64,
-    attacker_side: &'a CombatSide,
-    target_sides: &'a [CombatSide],
-}
-
-/// Fire one ship, chaining extra shots while rapid-fire rolls succeed.
-fn fire_ship(
-    attacker: &CombatShip,
-    shot: &Shot,
-    targets: &[(usize, usize)],
-    target_ships: &mut [Vec<CombatShip>],
-    rng: &mut StdRng,
-    events: &mut Vec<GameEvent>,
-) {
-    loop {
-        let Some((si, ti)) = select_target(targets, target_ships, rng) else { return; };
-
-        let damage = roll_damage(attacker.weapon_power, rng);
-        let target = &mut target_ships[si][ti];
-        let result = apply_damage(target, damage);
-        let rapid = check_rapid_fire(attacker.ship_class, target.ship_class, rng);
-        let target_side = &shot.target_sides[si];
-
-        events.push(GameEvent {
-            tick: shot.tick,
-            kind: EventKind::CombatRound(CombatRoundEvent {
-                sector: shot.sector,
-                attacker_fleet_id: shot.attacker_side.fleet_id,
-                attacker_owner: shot.attacker_side.owner.clone(),
-                attacker_ship_id: attacker.id,
-                target_fleet_id: target_side.fleet_id,
-                target_owner: target_side.owner.clone(),
-                target_ship_id: target.id,
-                damage,
-                shield_absorbed: result.shield_absorbed,
-                hull_damage: result.hull_damage,
-                rapid_fire: rapid,
-                mine: false,
-            }),
+fn report(side: &Side, troops: usize, target: &Side, fired: &[Fire], power: u64) -> SideReport {
+    let mut out = SideReport {
+        troops: vec![Vec::new(); troops],
+        standing: vec![Vec::new(); troops],
+        power,
+        ..SideReport::default()
+    };
+    for line in &side.lines {
+        let Some(unit) = ShipyardItem::from_index(line.kind) else { continue };
+        let full = u64::from(line.figures.hull);
+        let (left, damaged) = survivors(side, line);
+        let at_risk = damaged.iter().filter(|&&hull| u64::from(hull) * 100 <= full * u64::from(EXPLODE_BELOW_PCT)).count();
+        let whole = u64::from(left) - damaged.len() as u64;
+        out.standing[line.troop].push(BattleUnits {
+            unit,
+            count: left,
+            damaged: damaged.len() as u32,
+            at_risk: at_risk as u32,
+            hull: whole * full + damaged.iter().map(|&hull| u64::from(hull)).sum::<u64>(),
+            hull_max: u64::from(left) * full,
+            lost: line.len as u32 - left,
         });
-
-        if target.hull <= 0.0 {
-            events.push(GameEvent {
-                tick: shot.tick,
-                kind: EventKind::ShipDestroyed(ShipDestroyedEvent {
-                    ship_id: target.id,
-                    ship_class: target.ship_class,
-                    owner_fleet_id: target_side.fleet_id,
-                    is_npc: target_side.is_npc,
-                    sector: shot.sector,
-                    owner: target_side.owner.clone(),
-                    mine: false,
-                }),
-            });
+        if left > 0 {
+            out.troops[line.troop].push(Squad { unit, count: left, damaged });
         }
+    }
+    let mut by_kind = vec![Fire::default(); KINDS * KINDS];
+    for (index, fire) in fired.iter().enumerate().filter(|(_, fire)| fire.shots > 0) {
+        let (from, at) = (&side.lines[index / target.lines.len()], &target.lines[index % target.lines.len()]);
+        let sum = &mut by_kind[from.kind * KINDS + at.kind];
+        sum.shots += fire.shots;
+        sum.bounced += fire.bounced;
+        sum.wasted += fire.wasted;
+        sum.absorbed += fire.absorbed;
+        sum.hull_damage += fire.hull_damage;
+        sum.destroyed += fire.destroyed;
+    }
+    for (index, fire) in by_kind.iter().enumerate().filter(|(_, fire)| fire.shots > 0) {
+        let (Some(from), Some(at)) = (ShipyardItem::from_index(index / KINDS), ShipyardItem::from_index(index % KINDS)) else {
+            continue;
+        };
+        out.volleys.push(Volley {
+            from,
+            at,
+            shots: fire.shots,
+            bounced: fire.bounced,
+            wasted: fire.wasted,
+            absorbed: fire.absorbed,
+            hull_damage: fire.hull_damage,
+            destroyed: fire.destroyed,
+        });
+        out.shots += u64::from(fire.shots);
+        out.absorbed += fire.absorbed;
+        out.hull_damage += fire.hull_damage;
+        out.destroyed += fire.destroyed;
+    }
+    out
+}
 
-        if !rapid { break; }
+/// Fight one round between `fleets` and `hostiles`, each in the order its
+/// units are to stand in: troops as given, squads in catalogue order, whole
+/// units and then the damaged as listed.
+pub fn round(fleets: &[Troop], hostiles: &[Troop], dice: &mut Dice) -> RoundReport {
+    let mut ours = muster(fleets);
+    let mut theirs = muster(hostiles);
+    let (our_fire, our_power) = fire(&ours, &mut theirs, dice);
+    let (their_fire, their_power) = fire(&theirs, &mut ours, dice);
+    RoundReport {
+        fleets: report(&ours, fleets.len(), &theirs, &our_fire, our_power),
+        hostiles: report(&theirs, hostiles.len(), &ours, &their_fire, their_power),
     }
 }
 
-fn fleet_destroyed(tick: u64, sector: Hex, side: &CombatSide, salvage: Resources) -> GameEvent {
-    GameEvent {
-        tick,
-        kind: EventKind::FleetDestroyed(FleetDestroyedEvent {
-            fleet_id: side.fleet_id,
-            is_npc: side.is_npc,
-            sector,
-            owner: side.owner.clone(),
-            mine: false,
-            salvage,
-            label: side.label.clone(),
-        }),
+/// Stand `side` as `muster` would stand what `report` says is left of it:
+/// the destroyed gone, every line's whole units and then its damaged ones
+/// from the least hull up, every shield full.
+fn rally(side: &mut Side) {
+    let mut next = Vec::with_capacity(side.units.len());
+    for index in 0..side.lines.len() {
+        let (left, damaged) = survivors(side, &side.lines[index]);
+        let line = &mut side.lines[index];
+        let fresh = Unit { hull: line.figures.hull, line: index as u16, shield: 100, dead: false };
+        line.start = next.len();
+        line.len = left as usize;
+        next.extend(std::iter::repeat_n(fresh, left as usize - damaged.len()));
+        next.extend(damaged.into_iter().map(|hull| Unit { hull, ..fresh }));
     }
+    side.units = next;
 }
 
-struct DamageResult {
-    shield_absorbed: f32,
-    hull_damage: f32,
-}
-
-/// Weighted random target selection (weight = hull_max), skipping dead ships.
-fn select_target(targets: &[(usize, usize)], all_ships: &[Vec<CombatShip>], rng: &mut StdRng) -> Option<(usize, usize)> {
-    let total_weight: f32 = targets.iter()
-        .map(|&(si, ti)| &all_ships[si][ti])
-        .filter(|s| s.hull > 0.0)
-        .map(|s| s.hull_max)
-        .sum();
-    if total_weight <= 0.0 { return None; }
-
-    let mut roll = rng.random_range(0.0..1.0) * total_weight;
-    for &(si, ti) in targets.iter() {
-        if all_ships[si][ti].hull <= 0.0 { continue; }
-        roll -= all_ships[si][ti].hull_max;
-        if roll <= 0.0 { return Some((si, ti)); }
+fn standing(side: &Side, troops: usize) -> Vec<Vec<Squad>> {
+    let mut out = vec![Vec::new(); troops];
+    for line in &side.lines {
+        let (left, damaged) = survivors(side, line);
+        if let (Some(unit), true) = (ShipyardItem::from_index(line.kind), left > 0) {
+            out[line.troop].push(Squad { unit, count: left, damaged });
+        }
     }
-
-    // Fallback: last alive
-    targets.iter().rev()
-        .find(|&&(si, ti)| all_ships[si][ti].hull > 0.0)
-        .copied()
+    out
 }
 
-fn apply_damage(target: &mut CombatShip, damage: f32) -> DamageResult {
-    let shield_absorbed = damage.min(target.shield);
-    target.shield -= shield_absorbed;
-
-    let passthrough = damage - shield_absorbed;
-    let hull_damage = passthrough.min(target.hull);
-    target.hull -= hull_damage;
-
-    DamageResult {
-        shield_absorbed,
-        hull_damage,
+/// The rounds `round` would fight one after another on the same dice, each
+/// from what the one before left standing, until a side is gone, a round
+/// takes no hull or `rounds` have been fought; what stands of every troop.
+/// It is `round` without the reports, for the odds, which play a fight many
+/// times and read only its end.
+pub fn fight(fleets: &[Troop], hostiles: &[Troop], dice: &mut Dice, rounds: u32) -> (Vec<Vec<Squad>>, Vec<Vec<Squad>>) {
+    let mut ours = muster(fleets);
+    let mut theirs = muster(hostiles);
+    for _ in 0..rounds {
+        if ours.units.is_empty() || theirs.units.is_empty() {
+            break;
+        }
+        let (our_fire, _) = fire(&ours, &mut theirs, dice);
+        let (their_fire, _) = fire(&theirs, &mut ours, dice);
+        rally(&mut ours);
+        rally(&mut theirs);
+        if our_fire.iter().chain(&their_fire).all(|fire| fire.hull_damage == 0) {
+            break;
+        }
     }
-}
-
-fn roll_damage(weapon_power: f32, rng: &mut StdRng) -> f32 {
-    let variance = DAMAGE_VARIANCE_MIN
-        + rng.random_range(0.0..1.0) * (DAMAGE_VARIANCE_MAX - DAMAGE_VARIANCE_MIN);
-    weapon_power * variance
-}
-
-fn check_rapid_fire(attacker_class: ShipClass, target_class: ShipClass, rng: &mut StdRng) -> bool {
-    let rf = iac_shared::scaling::rapid_fire_vs(attacker_class, target_class);
-    if rf == 0 { return false; }
-    rng.random_range(0.0..1.0) < (1.0 - 1.0 / rf as f32)
-}
-
-fn compact_ships(ships: &mut Vec<CombatShip>) {
-    ships.retain(|s| s.hull > 0.0);
+    (standing(&ours, fleets.len()), standing(&theirs, hostiles.len()))
 }
