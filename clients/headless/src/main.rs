@@ -55,7 +55,7 @@ async fn main() {
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = ConnectionConfig { host: cli.host, port: cli.port };
     let Login { connection: conn, auth_line, notice } =
-        match connection::login(&config, &cli.name, cli.token.as_deref(), true).await {
+        match connection::login(&config, &cli.name, cli.token.as_deref()).await {
             Ok(login) => login,
             Err(e) => {
                 if let Some(refused) = e.downcast_ref::<connection::LoginRefused>() {

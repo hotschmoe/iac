@@ -70,12 +70,11 @@ impl Connection {
         &self,
         player_name: &str,
         token: Option<&str>,
-        agent: bool,
     ) -> Result<(String, AuthResult), Box<dyn std::error::Error + Send + Sync>> {
         self.send_message(ClientMessage::Auth(AuthRequest {
             player_name: player_name.to_string(),
             token: token.map(str::to_string),
-            agent,
+            agent: true,
         }))
         .await?;
 
@@ -98,11 +97,6 @@ impl Connection {
         self.tx.send(Message::Text(json.into()))?;
         Ok(())
     }
-}
-
-/// Parse a raw WebSocket message into a ServerMessage.
-pub fn parse_server_message(text: &str) -> Result<ServerMessage, Box<dyn std::error::Error + Send + Sync>> {
-    serde_json::from_str(text).map_err(|e| e.into())
 }
 
 /// The server said no. `raw` is its auth_result line, which the headless
@@ -138,13 +132,12 @@ pub async fn login(
     config: &ConnectionConfig,
     name: &str,
     cli_token: Option<&str>,
-    agent: bool,
 ) -> Result<Login, Box<dyn std::error::Error + Send + Sync>> {
     let server = token_store::server_key(&config.host, config.port);
     let token = cli_token.map(str::to_string).or_else(|| token_store::load(&server, name));
 
     let connection = Connection::connect(config).await?;
-    let (auth_line, result) = connection.authenticate(name, token.as_deref(), agent).await?;
+    let (auth_line, result) = connection.authenticate(name, token.as_deref()).await?;
 
     if !result.success {
         let reason = login_error(&result, token.is_some(), cli_token.is_some());

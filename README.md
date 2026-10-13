@@ -4,7 +4,7 @@
 
 You are an admiral at a CRT console, commanding fleets across an infinite hex grid. Mine resources, build your homeworld, research technology, and push deeper into the wandering, where the map grows sparse, dead-ends can trap you, and Morning Light Mountain swarms hunt in the dark.
 
-Humans play in the browser, through the Flutter web client and its amber CRT look. LLM agents play the same game directly, as JSON over the wire protocol (a WebSocket, or the headless NDJSON pipe). Both are first-class citizens. A terminal client (ratatui) exists too; it is secondary, and is not necessarily kept up with what the web client and the protocol gain. Think OGame x The Infinite Black, with a 1 Hz tick loop hidden inside cooldowns so real-time play feels responsive to humans and tractable for LLMs.
+Humans play in the browser, through the Flutter web client and its amber CRT look. LLM agents play the same game directly, as JSON over the wire protocol (a WebSocket, or the headless NDJSON pipe). Both are first-class citizens. Think OGame x The Infinite Black, with a 1 Hz tick loop hidden inside cooldowns so real-time play feels responsive to humans and tractable for LLMs.
 
 ## Layout
 
@@ -16,7 +16,6 @@ Humans play in the browser, through the Flutter web client and its amber CRT loo
 | `solo/` | `iac-solo`: what one player and a browser tab add to it: a commander with no password, a clock it is told and the catch-up after an absence; compiled to WebAssembly and run in a browser worker (`solo/web/worker.js`) with the save, the same document a server keeps, in IndexedDB |
 | `clients/web/` | Flutter web client (amber CRT UI), the interface people play through: served by `iac-server`, or bundled with `iac-solo` as a static single-player build |
 | `clients/headless/` | `iac-headless`: the headless client agents and scripts play through, the game as an NDJSON pipe; its library is the WebSocket connection, the login and the token file |
-| `clients/tui/` | `iac-tui`: a ratatui terminal client over that library, which is secondary and may lag the web client; nothing depends on it |
 | `docs/` | Design docs, auth spec, data architecture, HTML mockups, Rust port plan and dev journal |
 | `tools/` | `playtest/` (live multi-agent sessions) and `check_sim_constants.py` (the formulas of the planning simulation, `docs/design/economy/sim.py`, against the game's; its numbers are not compared, they are generated from Rust) |
 | `SPEC.md` | Original technical specification (world model, combat, economy, networking) |
@@ -46,9 +45,6 @@ cargo run -p iac-server -- --pace blitz --world blitz.iac   # a one-hour world (
 cargo run -p iac-server -- --pace season --world season.iac --bot all:check-in --bot mixed:hands-on:2   # with built-in bots
 # serve the web client too (after `flutter build web --release` in clients/web):
 cargo run -p iac-server -- --host 0.0.0.0 --web-dir clients/web/build/web
-
-# Terminal 2, optional: the terminal client (secondary; it may lag the web client)
-cargo run -p iac-tui -- --name Admiral
 ```
 
 **The world file** (`--world <path>`, default `world.iac`) is the whole world
@@ -78,7 +74,7 @@ new `--world`). Nothing is migrated.
 
 The server serves `clients/web/build/web` automatically if it exists
 (override with `--web-dir`). WebSockets are accepted on any path (`/ws` for
-the web client, `/` for the TUI); `--host` sets the bind address.
+the web client, `/` for the headless client); `--host` sets the bind address.
 
 **Built-in bots** (`--bot <personality>:<attention>[:<count>]`, repeatable;
 personality `turtle`, `miner`, `raider`, `explorer`, `mixed`, attention
@@ -102,28 +98,6 @@ and no privileges. Its name starts with `BOT-` (`BOT-raider-3`), a prefix
 nobody else can register, so it is tagged wherever a player is named: on the
 map, in fleet lists, in events. Bots are not ranked with people: the
 leaderboard lists them apart (see `leaderboard` below).
-
-The terminal client is secondary: people play through the web client (see
-"Web client" below), and a newer feature may be missing here. Its basics: `w` windshield / `m` star map / `b` homeworld / `` ` `` command
-center, `?` for all keybinds. In the windshield: `1-6` move, `v` scan,
-`h` harvest, `a` attack, `s` salvage, `r` recall, `S` stop. `p` cycles the
-active fleet's standing orders; `P` steps their fuel budget (10, 20, 35, 50
-percent of deuterium income, then no bound). The fleet panel of the
-windshield lists the settings in force under the doctrine, and both keys keep
-the settings the fleet already has. `e` opens the
-exchange overlay for the active fleet: `g` and `w` pick what to give and
-want, Left/Right the share of the hold, and it shows the server's quote;
-Enter trades when the fleet is at the hub (marked `X` on the star map). `f`
-opens the fleet panel (split, merge); with the fleet at home it also loads
-the hold from the stockpile: `r` picks the resource, Left/Right the share of
-what fits, `l` loads and `u` unloads. With the fleet at your outpost the same
-keys load from the outpost's store and unload into it. `o` opens the outpost
-overlay: your outpost's level and job, store, yield, defence against the raid
-estimate, the raid on its way and the next level, with `U` to upgrade and `A`
-then `y` to abandon; with no outpost it is the founding survey of the sector
-the active fleet stands in, where `F` surveys (also from outside the
-overlay) and Enter founds. The star map marks your outpost `O` and another
-empire's `o`.
 
 ## Headless client / LLM agents
 
@@ -163,7 +137,7 @@ bits, hex). There is no separate register step:
   words, and nothing starting with `BOT-` in any case: that prefix marks
   the server's built-in bots), and a new name in a world whose 24 home seats are taken gets
   `WorldFull`. Failures arrive as `{"type":"auth_result","success":false,"code":"TokenRequired","message":"…"}`.
-- **Saved automatically**: the TUI and headless client store the token per
+- **Saved automatically**: the headless client stores the token per
   server and name in `~/.config/iac/tokens.json` (`$XDG_CONFIG_HOME/iac/`;
   mode 0600) and reuse it. `--token` overrides the saved one. A refused
   login prints the `auth_result` (with its `code`) on stdout, the reason on
@@ -940,8 +914,7 @@ Crates: `iac-shared` (`shared/`) (protocol, constants, scaling, hex math, worldg
 `iac-server` (network, the world's file, tick timer around `iac-sim`) · `iac-solo` (`solo/`) (the
 single-player host: a session, a clock fed by its caller and the catch-up after an
 absence, behind one function of bytes; three exports as WebAssembly, no
-bindings generator) · `iac-headless` (`clients/headless/`) (the NDJSON pipe agents use, and the connection, login and token file as a library) ·
-`iac-tui` (`clients/tui/`) (the secondary ratatui terminal client, over that library; no crate depends on it).
+bindings generator) · `iac-headless` (`clients/headless/`) (the NDJSON pipe agents use, and the connection, login and token file as a library).
 
 `iac-sim` talks to its host through three seams: `GameEngine::execute` (a protocol
 `Command` in, reply or refusal out), `views::{full_state, tick_update}` (what a player
