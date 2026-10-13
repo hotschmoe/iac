@@ -3,6 +3,183 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (the fleet and the fight are OGame's: what the agent decided)
+
+Slice 2 of `docs/design/ogame.md`, section 12, stage 1: everything that is
+not hand-written Dart. The owner chose the study's defaults, questions 6 and
+7 among them. What follows is what the study left open or what was done
+otherwise than it says. None of it was put to the owner. Each line ends with
+what undoes it. `SAVE_FORMAT` is 9 and `ECONOMY_VERSION` 10; nothing is
+migrated.
+
+**Where the work departs from the study.**
+
+- *A stand-off makes the group whole again.* The study (7.2) has both sides
+  stay "with what they had". In this slice a fight that ends without the
+  group destroyed ends as every such fight ends today: the group is gone
+  from the sector's live fleets and its template stands again, whole
+  (`GameEngine::end_combat`). The fleets stay where they are and nothing
+  starts the fight again but an arrival or an `attack`, as the study says.
+  It differs from the study only where a group lost ships before the round
+  nobody was hurt in. Pirates that keep their losses are slice 3 (7.5), and
+  that is what undoes it.
+- *The odds are held under the band their win record does not earn.* The
+  study (7.7) puts the share of worth kept on the ratio scale and nothing
+  more. Measured on the new round that was not enough for small fights: two
+  ships against two ended anywhere from a clean win to a lost fleet and
+  averaged into FAVOURABLE while winning 78 fights in 100. So `Outlook`
+  also carries how often the fleet won and how often it was destroyed, and
+  `scaling::outcome_ratio` holds the ratio just under FAVOURABLE when a
+  fight played was not won, just under EVEN when fewer than four in five
+  were (`EVEN_WINS` 0.8), and under RISKY when the fleet was destroyed in
+  every one. Undo: the `most` of `outcome_ratio` and its two parameters.
+- *Small fights are played more often.* `ODDS_RUNS` 8 is the least; two
+  sides of fewer than `ODDS_UNITS` are played `8 x 200 / units` times, at
+  most `ODDS_RUNS_MOST` 64, which is the same number of shots. Eight runs
+  of a two-ship fight could not tell a win in four from a win in five.
+  Undo: `ODDS_RUNS_MOST = ODDS_RUNS`.
+- *A class that is there stays there when the odds scale two sides down.*
+  One Deathstar among 4,000 fighters is still one Deathstar among 200. The
+  study does not say what scaling does to a class under half a unit. It
+  overstates a side that leans on a few heavy ships among very many light
+  ones. Undo: the `.max(1)` of `odds::scaled`.
+- *The outpost's dock mends whole ships only.* The study has a store that
+  cannot pay mend "what it can pay for, the most damaged ships first". It
+  is read as ships, not as hull: a ship the store does not cover is left as
+  it is, and so is every ship after it. A ship half mended would be one
+  more number to price and to explain. Undo: `engine::mending`.
+- *A fleet under standing orders is not mended at the outpost.* The
+  outpost is not used by standing orders anywhere else, and a doctrine that
+  stopped there to spend the store was not asked for. Undo: the third
+  refusal of `GameEngine::dock_mending`.
+
+**What the study left to the builder.**
+
+- *The dice.* SplitMix64 of its own in `combat.rs`, seeded from the world
+  seed, the tick, the sector and the round, and `below(n)` as the high half
+  of a 64-bit product. Nothing of it is stored. The engine's other dice
+  are not touched, so no draw outside a fight moved. Undo: `combat::Dice`.
+- *The shield breaks when what is left of it is less than n hundredths*,
+  as 7.1 words it, and a unit whose attack is 0 fires no shot (the Probe
+  and the Solar Satellite), so it is in no volley and wastes no dice.
+- *Pirates fight at their ring's multiplier on all three figures.* A group
+  carries `Arms` in thousandths (`Arms::of_grade`), and
+  `scaling::unit_figures` cuts every figure off to a whole number, as the
+  round needs. `power` everywhere is now computed from those whole figures:
+  a Solar Satellite at Weapons 1 is 21.1 and not 21.2, its attack of 1 being
+  still 1. Undo: `UnitFigures::power` would have to take fractions again,
+  and the round and the power would then disagree.
+- *A battle's unit is a `ShipyardItem`*, a ship or a defence, although no
+  defence fights yet: `BattleUnits.unit`, `Volley.from` and `at`, and
+  `UnitCount.unit` are typed so, so that slice 4 changes no wire type.
+- *Both sides destroyed in one round* (`BattleOutcome::BothDestroyed`)
+  leaves the wreckage and pays the kill, since the group was destroyed;
+  `player_victory` is false. Undo: `killed` in `end_combat`.
+- *Refit.* A fleet standing at home is refitted the tick research
+  completes, without an alert; a fleet arriving is told what it was
+  refitted to and what it flew with. A ship built joins a docked fleet,
+  which is at the current levels by that rule. A wreck recovered in the
+  field takes the levels of the fleet that took it. The outpost's dock does
+  not refit. Undo: `GameEngine::tend_at_home` and its call in
+  `process_homeworlds`.
+- *Repair takes no time and `REPAIR_TICKS` is an action cooldown.* At 0 it
+  does nothing; at another value a mended fleet takes no order for so many
+  ticks. The study names the constant and not what it delays.
+- *The home dock mends every tick a fleet stands there*, not only on
+  docking, so a ship recovered or a fleet merged at home is mended too.
+- *What a fleet under orders does about damage.* `POLICY_HULL_READY` 0.85
+  takes the place of `POLICY_SHIELDS_READY`: under it the fleet goes home
+  before anything else, and waits at the dock until it is mended, which at
+  the home dock is at once. The bots fly by the same figure
+  (`bot::field::HULL_READY`). Flight under fire is slice 3.
+- *`MAX_FLEET_SHIPS` 5,000* bounds a merge and the docked fleet new ships
+  join; ships past it form another fleet. `NPC_MAX_SHIPS` stays 32.
+- *The bots' bar is the number it was*, `SAFE_ODDS` 2.0, and means
+  something else: a fight won every time it was played that keeps about
+  five sixths of the fleet's worth, where it used to keep 97 percent of the
+  hull. The doctrines' default `engage_ratio_x10` 15 is FAVOURABLE as
+  before. Neither was tuned.
+
+**What the wire says that the study did not list.**
+
+- `battles` is in every `tick_update` as well as in the full state, so a
+  client that folds updates holds the fights without asking again
+  (`sim/tests/bots.rs` folds and compares). Undo: the field of
+  `TickUpdate` and the line of `script::apply`.
+- `ShipsLost`, for the ships a `recall` breaks up: they are lost outside
+  any round. `ShipDestroyed` and `CombatRound` are gone.
+- On a fleet: `ship_count`, `hull`, `hull_max`, `attack`, `shield` (sums a
+  client would otherwise add up), `refit`, `refit_due`, and `repair`, what
+  each dock would do now and why it would not. On a class row
+  (`ShipGroupState`): `at_risk`, and `unit_attack`, `unit_shield` and
+  `unit_hull` at the fleet's refit. On the homeworld `docked_ship_count`,
+  on a hostile group `ship_count`, on the outpost `ships_power`. The
+  generated columns gain `RatioLabel.outcome`, the sentence a label stands
+  for, and the constants `MAX_FLEET_SHIPS`, `EXPLODE_BELOW_PCT` and
+  `POLICY_HULL_READY`.
+- A split names a class once with a count (`ShipCount`, whose key on the
+  wire is `class`, as it was) and is refused with `InvalidTarget` and a
+  sentence that names the class at fault.
+
+**Measured, and what was decided from it.**
+
+- A round of 5,000 a side costs 0.3 to 0.4 ms natively and 0.4 to 0.55 ms
+  as WebAssembly in V8; 5,000 Deathstars against 5,000 Light Fighters, a
+  million shots, 6.7 and 9.2 ms. Nothing of section 7.8's remedies is
+  needed, and none was taken.
+- The odds for a pair not seen before cost 0.14 to 0.46 ms natively. Played
+  through `combat::round` they halved the speed of a blitz day of bots (427
+  ticks a second against master's 850): every round stood both sides up
+  again and built a report nobody read. `combat::fight` plays the same
+  rounds on the same dice without the reports and the day runs at 786; the
+  world is the same to the byte. There is still one model of the fight. Undo: `odds::outlook` back
+  on `combat::round`.
+
+**Bands and guards that moved, and why.** For each: the test is still worth
+having, it agrees with the design, and the code was not wrong; the number
+in the test was the old fight's.
+
+- `scenarios_world.rs`, the labels: SAFE is won 57 times in 60 or more and
+  keeps 0.84 of the hull or more; FAVOURABLE the same wins and 0.60 to
+  0.93; EVEN 42 wins or more and 0.33 to 0.92; DEADLY 27 wins or fewer and
+  at most 0.22. They were 98 percent of the hull for SAFE and so on down,
+  which no fight keeps where a ship at 70 percent may explode. The thirteen
+  pairings are new and none of them is RISKY, a label that is 10 to 51 wins
+  of 60 in the grid of 492 the journal sums up: too wide for a band.
+- `scenarios_world.rs`, the starting fleet: every lair of ring 5 won, 50 to
+  60 of 60 at ring 7, 25 to 55 at ring 8, at most 3 at rings 9 and 10. It
+  used to say every lair through ring 8. Two Light Fighters against two at
+  0.88 of their figures is two fights in three. `NPC_POWER_BASE` was not
+  changed for it: that is the owner's knob (question 8 of the study).
+- `stored_world.rs`: the moment it waits for was a fight, a raid warning, a
+  scan and a jump at once. Fights last two or three rounds now and the four
+  never met; it asks for fights at six stops and for the other three
+  together. Its pilots are given a yard so that raids come.
+- `hosts_agree.rs`: the commander flies into the nearest group that shoots
+  first, and both hosts must send the same rounds; six leaderboards for
+  five; about 64 seconds for 45.
+- `both_targets.rs`: a fourth world, a commander's fight; the blitz world
+  must also hold a fleet of eight ships or more and damage at two
+  checkpoints of ten. 95 seconds with the engine built, for 94.
+- `server/src/network.rs`: three Solar Satellites are 63.3 of power, not
+  63.6 (above).
+- `smoke.rs` and `single_player.rs` name format 8 as the one refused.
+- `fleet_logistics.rs`: the doctrine that waited for shields is gone with
+  the shields, and its test is one of a mauled fleet going home; the
+  prospector tuned to a ratio is found by halving, since which lair a ratio
+  opens moved.
+- `chart_golden.txt` is recorded again, as in every slice.
+
+**Not built, as the slice says.** Leaving a fight under fire, pursuit,
+pirates that heal, raids as battles, defences in a round. A caught fleet
+fights to the death: in a blitz day of bots the hands-on raider lost 146
+fleets, 9,212 ships, most of them cargo wings a patrol found in the outer
+ring, where on master it lost 100 ships in all. Forty-eight Small Cargos
+take 96 hundredths off a ring-15 Battlecruiser's shield in a round (two a
+shot) and it is full again the next, so they cannot hurt it at all, while
+under the old fight they wore it down and won. Slice 3's flight is the
+cure; nothing was changed in the bots for it.
+
 ## 2026-10-13 (the web client on OGame's catalogue: what the agent decided)
 
 Slice 1 of `docs/design/ogame.md`, section 12, stage 2: the hand-written Dart

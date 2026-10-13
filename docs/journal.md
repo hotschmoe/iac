@@ -7239,3 +7239,236 @@ One end-to-end run of stage 2 exited 255 after printing its OK, when the tool
 could not remove Chromium's profile directory; it left
 `/tmp/iac-solo-e2e-profileJNWIYU`, which nobody has removed. The run at the
 merge exited 0.
+
+## 2026-10-13: a fleet is counts and the fight is OGame's round (slice 2 of the OGame work, stage 1)
+
+Slice 2 of `docs/design/ogame.md`, section 12, as far as it goes without
+hand-written Dart: the engine, the wire, the bots, the runner, the headless
+tools and the documents. The web client is stage 2 and is not touched: it
+does not compile against the new `protocol.g.dart`. The branch
+(`worktree-agent-ace3232f861723403`, from master `39181d0`) is not merged.
+`SAVE_FORMAT` is 9 and `ECONOMY_VERSION` 10; `WORLDGEN_VERSION` stays 4.
+Nothing is migrated.
+
+**Built.**
+
+- A fleet is a count for each class and the hull of each ship that is not
+  whole, ascending (`engine::Ships`, `ShipGroup`). A pirate group is the
+  same. `Ship`, ship ids, a ship's shield and the 64-ship limit are gone;
+  `MAX_FLEET_SHIPS` is 5,000.
+- The round of section 7.1 (`sim/src/combat.rs`), one a tick: full shields,
+  simultaneous fire, a target by one random index, the bounce, the shield in
+  hundredths, the explosion roll at 70 percent with the shield down, rapid
+  fire. Whole numbers and dice of its own from end to end. Pirates fight by
+  it with their ring's multiplier. A fight in open space is still to the
+  death, `move` is still refused in one, and a round nobody lost hull in
+  ends it as a stand-off.
+- Damage lasts until a dock mends it: the home dock at once and for
+  nothing, the outpost's for a tenth of a ship's cost times the hull
+  restored, from its store, and not when breached.
+- The refit: a fleet fights at the Weapons, Shielding and Armour levels it
+  last docked at home with (`Fleet.refit`); splitting keeps them, merging
+  takes the lower of each, a recovered wreck takes the fleet's.
+- `split` by class and count, whole ships first or the damaged first;
+  `merge` joins counts and damaged lists.
+- The report: one `BattleRound` a round (both sides as they stand by class,
+  the volleys by class of firing unit and of target, the sums), a fuller
+  `CombatEnded` (outcome, rounds, what each fleet and group lost), and
+  `battles` in the full state and every tick update. A round of one class a
+  side is about 960 bytes on the wire, whatever the numbers.
+- The odds read off the real round (`sim/src/odds.rs`, `combat::fight`):
+  no second model. The sixteen points of `RATIO_MARGINS` were measured
+  again.
+- Everything else that touched a ship record, on counts: building into a
+  docked fleet, harvest power, cargo, fuel and tank, jump time, scan range,
+  recovered ships, a lost raid's quarter, score, the outpost, the hub,
+  standing orders, the away report, the bots, `sim-run`.
+- Raids are still one number against another, computed from the new fleet.
+  A repelled raid no longer halves shields.
+- `README.md`, `tools/playtest/RULES.md`, `play.py` and its fixture, a note
+  in `docs/design/economy/spec.md` where it describes the odds.
+
+**Not built, as the slice says.** Leaving a fight under fire, pursuit,
+pirates that heal, raids as battles, defences in a round.
+
+**Departures and decisions** are in `docs/design/decisions.md` under today's
+date, each with what undoes it. The ones that change what a player meets: a
+stand-off makes the group whole again; the odds are held under the band
+their win record does not earn; the outpost mends whole ships only and not
+for a fleet under standing orders.
+
+**Knobs**, all at the study's starting value where it gives one:
+`MAX_FLEET_SHIPS` 5,000, `EXPLODE_BELOW_PCT` 70, `STANDOFF_ROUNDS` 1,
+`ODDS_RUNS` 8, `ODDS_UNITS` 200, `ODDS_ROUNDS` 64, `REPAIR_COST_SHARE_HOME`
+0, `REPAIR_COST_SHARE_OUTPOST` 0.10, `REPAIR_TICKS` 0. This slice's own:
+`ODDS_RUNS_MOST` 64, `EVEN_WINS` 0.8, `POLICY_HULL_READY` 0.85 (and the
+bots' `HULL_READY`, the same). Left as they were: `RATIO_SAFE` 2.5,
+`RATIO_FAVOURABLE` 1.5, `RATIO_EVEN` 1.1, `RATIO_RISKY` 0.9, the bots'
+`SAFE_ODDS` 2.0, `POLICY_DEFAULT_ENGAGE_RATIO_X10` 15, `NPC_POWER_BASE` 40,
+`NPC_POWER_GROWTH` 1.22, `NPC_MAX_SHIPS` 32, the recall's five constants.
+
+**Measured before anything was tuned** (the dev machine, other sessions
+running; a probe crate in the scratch directory, release).
+
+| One round | shots | native | WebAssembly, V8 |
+|---|---|---|---|
+| 1,000 v 1,000 Light Fighters | 2,000 | 0.06 to 0.08 ms | 0.09 ms |
+| 5,000 v 5,000 Light Fighters | 10,000 | 0.27 to 0.31 ms | 0.38 ms |
+| 5,000 v 5,000, five classes | 11,282 | 0.33 ms | 0.40 ms |
+| 5,000 Cruisers v 5,000 Light Fighters | 34,903 | 0.43 ms | 0.55 ms |
+| 5,000 Deathstars v 5,000 Light Fighters | 989,568 | 6.7 ms | 9.2 ms |
+
+- 7 to 39 ns a shot natively. A whole fight of 5,000 a side is 11 or 12
+  rounds and 1.1 to 1.3 ms. 5,000 a side is afforded many times over and
+  none of section 7.8's remedies was taken.
+- The odds for a pair of sides not seen before: 0.14 to 0.46 ms natively,
+  0.18 to 0.54 ms as WebAssembly, the same for 2 a side as for 5,000. The
+  study guessed ten milliseconds.
+- The first version of the odds played `combat::round` and a blitz day of
+  sixteen bots ran at 427 ticks a second against master's 850. Profiled
+  (`perf`), the time was in standing the sides up again every round and in
+  reports nobody read. `combat::fight` plays the same rounds on the same
+  dice without them: 786 ticks a second, and the world's snapshot hash is
+  the same before and after (`89c4be639628a747`; the season week's too,
+  `661c56beabadd9f2`).
+- The single-player host's catch-up, the release `iac_solo.wasm` in Node,
+  a season world of eight bots with the commander's fleet under `prospect`:
+  a day away 4.70 s (master 4.48), a week more 148.8 s (master 136.8). The
+  save at the end is 1,323,290 bytes (master 1,584,339) and linear memory
+  8.7 MiB (master 13.9).
+- `both_targets`: four tests in 95 s with the engine built (master three
+  in 94 s). `hosts_agree`: 64 s (master 45), its commander now fighting.
+- `iac_solo.wasm`, release: 2,671,089 bytes; master 2,521,326; 149,763
+  more (5.9 percent).
+- What a fleet adds to a stored world: 5,000 ships of twelve classes 385
+  bytes whole and 22,117 with every ship damaged; 64 Light Fighters one
+  byte and 270.
+
+**What the labels mean on the new fight.** 492 pairings (five classes, 1 to
+200 ships, twelve rings from 1 to 22), sixty fights each, after the margins
+were measured again and the win record was put in:
+
+| label | pairings | won of 60 | hull kept |
+|---|---|---|---|
+| SAFE | 325 | 58 to 60 | 0.85 to 1.00 |
+| FAVOURABLE | 38 | 59 to 60 | 0.63 to 0.91 |
+| EVEN | 23 | 45 to 60 | 0.36 to 0.90 |
+| RISKY | 19 | 10 to 51 | 0.05 to 0.53 |
+| DEADLY | 87 | 0 to 25 | 0.00 to 0.19 |
+
+The estimate for a sector not yet seen and the sighting gave the same label
+in all 492. The two starting Light Fighters rate FAVOURABLE at ring 5 (60 of
+60, 0.88 of the hull kept), EVEN at ring 7 (58, 0.69), RISKY at ring 8 (42,
+0.39) and DEADLY from ring 9. On master they won every lair through ring 8.
+A third Light Fighter makes ring 8 FAVOURABLE (60 of 60) and a fourth SAFE.
+In the season week below every bot that flies holds 22.5 to 173.5 fleet
+points at the end of day 2, a Light Fighter being 4.5: an inner-ring group
+is beaten by the starting fleet through ring 7 and by what a second day
+affords at ring 8.
+
+**Balance runs** (`sim-run`, sixteen seats, every style once).
+
+- A season week (`--pace season --days 7`, snapshot `661c56beabadd9f2`,
+  3,372 ticks a second; master `62063fcd4a9b77d6`, 3,958): totals from 7,094
+  (mixed, check-in) to 10,595 (turtle, hands-on); master 5,862 to 11,257.
+  3,034 fights won in the world, 435 ships lost, 7 fleets lost with 74
+  ships between them, no stand-off, the largest fleet in a fight 63 ships;
+  1 raid lost and about 410 repelled. The four hands-on styles that fly end
+  5 to 21 percent under master (the miner 8,797 for 11,107): they fly more,
+  having no shields to wait for (refuel deuterium 139,000 to 281,000
+  against 78,000 to 124,000), and they lose ships in fights they win. The
+  check-in and hybrid styles end on either side of master's.
+- A blitz day (`--pace blitz --days 1`, snapshot `89c4be639628a747`, 786
+  ticks a second; master 850): totals from 6,935 to 24,551; master 9,456 to
+  25,157. The largest fleet in a fight was a turtle's 1,932 ships (39 rounds
+  in the day, 38 fights won); the largest of the styles that hunt was 128.
+  The hands-on raider
+  won 3,152 fights and lost 18,279 ships, 9,212 of them with 146 fleets
+  destroyed, where master's lost 100: cargo wings met by patrols of the
+  outer ring that they cannot hurt (48 Small Cargos take 96 hundredths off
+  a ring-15 Battlecruiser's shield in a round), and cannot leave. It still
+  ends 26 percent above the turtle. This is the one thing in the runs that
+  reads as wrong for play, and flight (slice 3) is what answers it; the bots
+  were not changed for it.
+
+**Tests.** `cargo test --workspace`: 173 passed, 0 failed (master 164; the
+nine more are three in `fleet_logistics.rs`, three in `scenarios_world.rs`
+and one each in `stored_world.rs`, `outposts.rs` and `both_targets.rs`).
+Moved onto the new fleet: every file of `sim/tests` but `determinism.rs`,
+`pace_scaling.rs`, `scenarios_raids.rs` and `bots.rs`, which pass as they
+were; `shared/tests/golden_fixtures.rs` and `wire/mod.rs`; the in-file tests
+of `server/src/network.rs`, `hosts_agree.rs`, `scenarios.rs`, `smoke.rs`;
+`solo/tests/both_targets.rs` and `single_player.rs`. New scenarios: a fight
+of hundreds a side read round by round; Cruisers firing six times a round
+among Light Fighters and Heavy Fighters once; a shot that bounces and a
+stand-off; damage carried from fight to fight and mended at home; the
+outpost's dock at its price; a refit that waits for the dock and the merge
+rule; split by count, whole first and damaged first; a fight of large
+fleets stopped between every two rounds and fought as if it had not been; a
+commander's fight compared between the server and the single-player host,
+and between the native engine and WebAssembly. The bands and guards that
+moved are in the decisions entry with the reason for each.
+
+**Run**, on the branch:
+
+- `cargo build --workspace --all-targets -j 4`: no warning.
+- `cargo test --workspace --no-fail-fast -j 4`: 173 passed, 0 failed. The
+  first run on the branch failed three (the save format in two refusal
+  tests, three Solar Satellites' power), all three the tests' numbers.
+- `cargo clippy --workspace --all-targets`: silent, after three warnings
+  were mended; one `#[allow(clippy::unnecessary_min_or_max)]` stands in
+  `GameEngine::mend_fleet`, where `REPAIR_TICKS` is 0.
+- `cargo build -p iac-solo --target wasm32-unknown-unknown --release`: built.
+- `UPDATE_FIXTURES=1 cargo test -p iac-shared` and `-p iac-sim --test
+  economy_numbers`, then `python3 tools/check_sim_constants.py`: agrees on
+  4,410 values. `python3 docs/design/economy/sim.py --tables`: clean. The
+  simulation models no fight and was not changed; `numbers.json` moved in
+  three rows (the research modifiers, now exact tenths).
+- `python3 -m unittest discover -s tools/playtest/tests`: 36 passed, on the
+  first full state of the session below as its fixture.
+- A real server (`--port 0 --pace test`, its world file in the scratch
+  directory) and `iac-headless`, 146 ticks: the yard and four Light
+  Fighters built into the docked fleet (`ship_count` 6, one row a class); a
+  split of 9 refused (`InvalidTarget`, "fleet 2 has 6 Light Fighter, not
+  the 9 the split names") and one naming a class twice; 2 split off by
+  count and flown next door; Armour Technology 1 researched, the docked
+  fleet at 440 hull a ship the next tick and the one in the field at 400
+  with `refit_due`; odds 5.20 SAFE on a convoy of two at ring 6; two
+  `BattleRound` events, 961 and 957 bytes, `CombatEnded` with
+  `hostiles_destroyed`, 2 rounds and both sides' losses; home with two
+  ships damaged and a repair quote, "fleet 2 was mended at the home dock: 2
+  ship(s) made whole, 67 hull restored, for nothing"; the two fleets merged
+  in the field, "fighting at the lower of the two fleets' levels (Weapons
+  0, Shielding 0, Armour 0) until the home dock refits them", and refitted
+  on docking. The server was stopped by its PID and wrote its file (format
+  9, economy 10). The first attempt sent `ship_class` in a split, which the
+  client refused in-band (`missing field class`): the key is `class`, as
+  `ShipCount` always had it.
+
+**Not verified.**
+
+- No person or agent played, and nothing in `tools/playtest` was run but
+  its offline tests. `play.py`'s new lines were read off the session's
+  frames by a script, not by a player.
+- The web client does not compile against the new `protocol.g.dart`:
+  `flutter analyze`, `flutter test`, the bundle and `tool/solo_e2e.dart`
+  are stage 2's.
+- The outpost's dock mending a fleet was played in `sim/tests/outposts.rs`
+  and not in the real session.
+- No fight of hundreds was played over a real socket: the session's fight
+  was four ships against two. The fights of hundreds are `iac-sim`'s tests
+  and the bot runs.
+- The round's three details that rest on one source (hundredths, the roll
+  only when the shield is down, a quiet round ends it) are built as the
+  study recommends and were not checked against another.
+- The catch-up was timed in Node, not in a browser, and at season pace
+  only. A blitz world's week away was slow on master and is slower by the
+  same tenth.
+- No knob was tuned: the bots' bar, the doctrines' default ratio,
+  `NPC_POWER_BASE` against a starting fleet that now gambles at ring 8,
+  repair prices, the fleet ceiling.
+
+**Kept out of the tree.** The fixture generator deleted the four fixtures
+of the two events that are gone (`CombatRound`, `ShipDestroyed`, hand-written
+and generated); copies from git are in `.archive/slice2/fixtures/` in the
+branch's worktree.
