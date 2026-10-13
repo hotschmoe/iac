@@ -214,7 +214,7 @@ async fn a_stopped_server_comes_back_with_the_scan_live_the_boarding_under_way_a
     let quiet = |at: Hex| world.generate_sector(at).npc_template.is_none();
     let orders = json!({
         "preset": "prospect",
-        "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 30, "engage_ratio_x10": 25, "fuel_budget_pct": 35},
+        "params": {"min_fuel_pct": 10, "cargo_return_pct": 85, "max_range": 30, "engage_ratio_x10": 25, "fuel_budget_pct": 35, "refine": false},
     });
 
     let (token, fleet, site, scanned, end_tick) = {

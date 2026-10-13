@@ -86,12 +86,15 @@ const helpLines = [
   '        settings, after the name, or alone to change the orders in force:  range=<hexes from home, $_rangeBounds>  engage=<least odds ratio, $_engageBounds>',
   '                  fuel=<% of deuterium income it may burn, $policyFuelUnboundedPct = no bound>  cargo=<% of the hold that sends it home, $_cargoBounds>',
   '                  reserve=<% of the tank kept spare, $_reserveBounds>     e.g. policy mine range=8 fuel=40',
+  '                  refine=<on|off: before it would turn home for fuel, refine the deuterium in its hold first>',
   'hub:    quote <give> <want> [amount|all]  ask the exchange what a trade would return, from anywhere   e.g. quote metal deut 400',
   '        trade <give> <want> [amount|all]  sell cargo from the hold, standing on the hub; no amount = all of it aboard',
   'hold:   load <metal|crystal|deut> [amount|all]  stockpile into the hold of the active fleet, idle at home with no standing orders;',
   '                  no amount = all that fits. The dock leaves a loaded hold alone until the fleet has been away',
   '        unload    put a hold loaded by hand back: what the stockpile has room for now, the rest as room opens',
   '        at your outpost load takes from its store and unload puts the whole hold into it, as far as it has room',
+  '        refine    turn the deuterium in the hold into fuel, anywhere, until the tank is full or the deuterium is gone:',
+  '                  $refineLossPct% less fuel than a dock gives for it, and not in a fight or while a jump charges',
   'outpost: survey [q r]  what an outpost would be worth in a sector (its ore only if it is on your chart), and why it cannot be founded now; none = where the fleet stands',
   '        found     the active fleet founds your outpost where it stands, in rings $outpostMinRing to $outpostMaxRing, paid from its hold',
   '        outpost upgrade  build the next level, paid from the outpost\'s own store     outpost abandon  give it up; nothing is refunded',
@@ -166,7 +169,8 @@ const _tradeUsage = '<metal|crystal|deut> <metal|crystal|deut> [amount|all]  (gi
 
 const _loadUsage = 'load: <metal|crystal|deut> [amount|all]  (the dock\'s stock into the hold of a fleet at home or at your outpost; no amount = all that fits)';
 
-const _foundUsage = 'found: takes no argument (the active fleet founds your outpost in the sector it stands in)';
+const _refineUsage = 'refine: takes no argument (the active fleet turns the deuterium in its hold into fuel, as far as its tank has room)';
+const _foundUsage ='found: takes no argument (the active fleet founds your outpost in the sector it stands in)';
 
 const _surveyUsage = 'survey: [q r]  (what an outpost would be worth in a sector, its ore only if it is on your chart; none = where the active fleet stands)';
 
@@ -394,6 +398,10 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
     case 'unload':
       return needFleet((id) => UnloadCommand(fleetId: id));
 
+    case 'refine':
+      if (args.isNotEmpty) return const ParsedError(_refineUsage);
+      return needFleet((id) => RefineCommand(fleetId: id));
+
     case 'found':
       if (args.isNotEmpty) return const ParsedError(_foundUsage);
       return needFleet((id) => FoundOutpostCommand(fleetId: id));
@@ -445,11 +453,12 @@ String policyCommand(PolicyPreset preset, [PolicyParams params = const PolicyPar
     if (params.fuelBudgetPct != usual.fuelBudgetPct) 'fuel=${params.fuelBudgetPct}',
     if (params.cargoReturnPct != usual.cargoReturnPct) 'cargo=${params.cargoReturnPct}',
     if (params.minFuelPct != usual.minFuelPct) 'reserve=${params.minFuelPct}',
+    if (params.refine != usual.refine) 'refine=${params.refine ? 'on' : 'off'}',
   ].join(' ');
 }
 
 const _policyUsage =
-    'policy: manual|prospect|mine|salvage|patrol  [range=$_rangeBounds] [engage=$_engageBounds] [fuel=0-$policyFuelUnboundedPct] [cargo=$_cargoBounds] [reserve=$_reserveBounds]';
+    'policy: manual|prospect|mine|salvage|patrol  [range=$_rangeBounds] [engage=$_engageBounds] [fuel=0-$policyFuelUnboundedPct] [cargo=$_cargoBounds] [reserve=$_reserveBounds] [refine=on|off]';
 
 /// Doctrine settings typed as `key=value` over [over], the settings the
 /// fleet's orders have when the line names no doctrine, or else over the
@@ -459,8 +468,15 @@ PolicyParams? _policyParams(List<String> settings, {PolicyParams? over}) {
   final preset = over ?? const PolicyParams();
   var (reserve, cargo, range) = (preset.minFuelPct, preset.cargoReturnPct, preset.maxRange);
   var (engage, fuel) = (preset.engageRatioX10, preset.fuelBudgetPct);
+  var refine = preset.refine;
   for (final setting in settings) {
     final cut = setting.indexOf('=');
+    if (setting.substring(0, cut) == 'refine') {
+      final on = const {'on': true, 'off': false}[setting.substring(cut + 1)];
+      if (on == null) return null;
+      refine = on;
+      continue;
+    }
     final value = num.tryParse(setting.substring(cut + 1));
     if (value == null || value < 0) return null;
     switch (setting.substring(0, cut)) {
@@ -492,5 +508,6 @@ PolicyParams? _policyParams(List<String> settings, {PolicyParams? over}) {
     maxRange: range,
     engageRatioX10: engage,
     fuelBudgetPct: fuel,
+    refine: refine,
   );
 }

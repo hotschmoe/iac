@@ -107,9 +107,9 @@ void main() {
       expect(kinds.length, 28);
     });
 
-    test('command fixtures cover all 27 commands', () {
+    test('command fixtures cover all 28 commands', () {
       final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 27);
+      expect(kinds.length, 28);
     });
 
     test('a state with an outpost carries it, its sector mark and the fuel to it', () {
@@ -199,6 +199,16 @@ void main() {
       expect((exact.fleetId, exact.resource, exact.amount), (3, ResourceKind.metal, 1200.5));
       expect((all.resource, all.amount), (ResourceKind.deuterium, null));
       expect((commands['unload'] as UnloadCommand).fleetId, 3);
+    });
+
+    test('a fleet says what refining the deuterium in its hold would make, and the mapper hands it on', () {
+      final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'tick_update');
+      final u = ServerMessage.fromJson(readJson(f)) as TickUpdate;
+      expect([for (final fleet in u.fleets) (fleet.refine?.deuterium, fleet.refine?.fuel)], [(null, null), (20.0, 212.5)]);
+      final mapped = StateMapper()..apply(u);
+      expect([for (final fleet in mapped.fleets) fleet.refine?.fuel], [null, 212.5]);
+      final commands = {for (final f in fixtureFiles('protocol/command')) baseName(f): Command.fromJson(readJson(f))};
+      expect((commands['refine'] as RefineCommand).fleetId, 3);
     });
 
     test('the ratio verdict bands match the server', () {

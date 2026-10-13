@@ -177,6 +177,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             laden: fleet.laden,
             at_outpost: engine.outposts.get(&player_id).is_some_and(|o| o.sector == fleet.location),
             outpost_fuel: engine.outpost_route_cost(fleet, bound_for),
+            refine: crate::engine::refining(fleet),
             policy: engine.policies.get(&fleet.id).map(|p| StandingOrders { preset: p.preset, params: p.params }),
         });
     }

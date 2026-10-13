@@ -804,6 +804,13 @@ class GameController extends ChangeNotifier {
     sendCommand(proto.UnloadCommand(fleetId: fleetId));
   }
 
+  /// Turn the deuterium in the hold of [fleetId] into fuel, as far as its
+  /// tank has room.
+  void refineHold(int fleetId) {
+    note('> refine F$fleetId', level: EventLevel.full);
+    sendCommand(proto.RefineCommand(fleetId: fleetId));
+  }
+
   final Map<(int, proto.Hex), Timer> _surveyTimers = {};
   final Map<(int, proto.Hex), int> _surveyAsked = {};
   final Set<(int, proto.Hex)> _surveyTyped = {};

@@ -53,7 +53,8 @@
           "engage_ratio_x10": 15,
           "fuel_budget_pct": 20,
           "max_range": 4,
-          "min_fuel_pct": 10
+          "min_fuel_pct": 10,
+          "refine": false
         },
         "preset": "patrol_home"
       },
@@ -85,7 +86,7 @@
       "at_outpost": false,
       "cargo": {
         "crystal": 3.0,
-        "deuterium": 0.0,
+        "deuterium": 20.0,
         "metal": 12.5
       },
       "cargo_blocked": false,
@@ -105,6 +106,10 @@
       },
       "power": 61.5,
       "range_hops": 4,
+      "refine": {
+        "deuterium": 20.0,
+        "fuel": 212.5
+      },
       "ships": [
         {
           "class": "Scout",

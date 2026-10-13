@@ -6247,6 +6247,138 @@ price a candidate sector's way home by straight distance, the scripted test
 world still moves a fleet at once, and the ratio gauge's captions wait for the
 OGame work.
 
+## 2026-10-13: fuel from the hold, the `refine` order
+
+The first step of the order of work the owner set with "defaults": item 10 of
+the OGame study's questions, section 8.5 of `docs/design/ogame.md`. Built in a
+worktree on master `d87f440`, for a reviewer to merge.
+
+**Read first.** Section 8.5 and the decision. In `sim/src/engine.rs`: the two
+docks (`refuel_fleet`, `refuel_at_outpost`), `load`, `unload` and `laden`,
+`fleet_is_free`, the stranded reserve, `handle_move`, `handle_harvest`, and how
+`commands.rs` words a refusal by asking the engine again. One thing learned on
+the way and left alone: the home dock fills the tank of a fleet that is
+charging a jump out of it, so the first jump from home is paid by the
+stockpile at the dock's rate and the fleet arrives one hop out with a full
+tank.
+
+**The rule as built.** `refine` turns deuterium in a fleet's hold into fuel
+until the tank is full or the deuterium is gone, at once. A unit of deuterium
+is `1 / FUEL_DEUT_PER_UNIT` = 12.5 fuel at a dock and `REFINE_LOSS` (0.15)
+less from the hold: 10.625, which is `scaling::refined_fuel_per_deuterium`.
+Refused in combat and while a jump charges (`OnCooldown`), with no deuterium
+aboard (`NoResources`) and with a full tank (`InvalidCommand`), each with the
+engine's sentence. Accepted while harvesting, boarding or on a cooldown, and
+those go on. Deuterium loaded at a dock is refined like any other. The owner
+is told by an `Alert` (info): "fleet 7 refined 4 deuterium into 42.5 fuel: the
+tank stands at 45.5 of 120, and the hold has no deuterium left". What the
+owner did not decide is in `decisions.md`, ten items.
+
+**Where it is.**
+
+- `shared/src/constants.rs`: `REFINE_LOSS`. `shared/src/scaling.rs`: the rate.
+- `sim/src/engine.rs`: `refining(&Fleet) -> Option<Refining>`, a free
+  function, is the one place a hold's deuterium becomes a tank's fuel; the
+  order, the refusal and the state all go through it. `GameEngine::refine_order`
+  words the refusal, `handle_refine` applies it. `commands.rs` routes it.
+- `shared/src/protocol.rs`: `Command::Refine { fleet_id }`, and
+  `FleetState.refine: Option<Refining>` (`deuterium`, `fuel`), what the order
+  would do now, absent when it would be refused. `sim/src/views.rs` fills it.
+- The web client: a Refine button under the hold in the windshield's fleet
+  status (`lib/views/windshield/parts.dart`), lit on `FleetState.refine` and
+  printing its figure; `refine` in the command bar; the loss in its words is
+  the generated `refineLoss`. `test/support/demo_world.dart` answers the order
+  by the engine's rule and in its sentences.
+- The TUI: `d` in the fleet panel, which prints the offer. Added before the
+  owner's word that the TUI is secondary; kept, and nothing more was done
+  there.
+- `tools/playtest/RULES.md` and the README: the command's row, a Refining
+  entry, a line under Fuel and stranding. `tools/playtest/play.py` prints the
+  offer in a fleet's row.
+
+**Versions.** `ECONOMY_VERSION` stays 7 and `SAVE_FORMAT` stays 5. Nothing a
+stored world would play next has moved, and the snapshot holds nothing new.
+The fixtures and `protocol.g.dart` were regenerated: one command, one field of
+`FleetState`, one struct, two constants. The synthetic fixtures renumber their
+sample values when a type is added, so 41 of them changed.
+
+**For the branch that makes `Resources` 64-bit.** The only arithmetic that
+mixes a `Resources` field with a tank is the body of `engine::refining` (and
+the two assignments in `handle_refine` that apply its result). It is written
+without a type name; `Refining` on the wire has two `f32` fields.
+
+**Tests.** Four scenarios in `sim/tests/fleet_logistics.rs`: a fleet two hops
+out with 3 fuel and 4 deuterium is refused its jump, refines to 45.5 fuel and
+flies home, the yield being 0.85 of the dock's; a tank 8.5 short takes 0.8
+deuterium of 10 and reads exactly full; deuterium loaded at home is refused
+there for a full tank and refined two hops out; and every refusal, with the
+order going on beside a harvest and a boarding. In the web client: the button
+on a state set by the test, the same against the scripted world by button and
+by typed command, and the fixture read through the mapper.
+
+**Run on this commit.**
+
+- `cargo build --workspace --all-targets -j 4`: no warning.
+- `cargo test --workspace --no-fail-fast -j 4`: 162 passed, 0 failed. Master
+  has 158; the four more are the scenarios above.
+- `cargo clippy --workspace --all-targets`: silent.
+- `python3 tools/check_sim_constants.py`: agrees on 2,390 values.
+- `python3 -m unittest discover -s tools/playtest/tests`: 36 pass.
+- `flutter analyze`: no issues.
+- `flutter test`, pinned to the big cores: the first run 483 passed and 1
+  failed, a test of this client that counts the commands and said 27; set to
+  28 and a fixture test added, the second run 485 passed.
+
+**How the checks were run.** The shell of this worktree refuses a command
+line that puts `nice` or `taskset` in front of `cargo test` or `flutter test`.
+So cargo ran with `-j 4` and without `nice`, and Flutter ran in a shell pinned
+first with `taskset -cp 0,1,6-11 $$` and lowered with `renice`.
+
+**Not verified on this commit.** No browser and no single-player bundle: the
+end-to-end run is recorded with the last entry of this work. No person or
+agent played. The TUI was built and not run.
+
+## 2026-10-13: standing orders may refine before they turn home
+
+A second commit on the `refine` order, separate so the reviewer can take the
+first without it. The brief said to stop if it was more than a small change.
+It is 66 lines added and 18 taken out of the engine and one field on the
+wire; the rest is the panel, the typed command, the rules and the tests.
+Built.
+
+**Read first.** How a doctrine's settings travel: `PolicyParams` in
+`shared/src/protocol.rs` (every field optional on the wire, by a struct-level
+serde default), clamped in `handle_policy_update`, kept in `FleetPolicy` and
+so in the snapshot, sent back as `FleetState.policy`. In the web client the
+orders panel builds a `PolicyParams` and sends the line a player would type,
+so the typed `policy` had to learn the setting first. Where a doctrine gives
+up for fuel: `policy_return_reason`, called by all four doctrines, and the
+outward check in `policy_move`.
+
+**Built.** `PolicyParams.refine`, false by default. `policy_return_reason`
+now says which threshold it is (`Homeward::Fuel` or `Cargo`) and the four
+doctrines call `policy_homeward`, which refines first when short of fuel and
+the switch is set, and otherwise turns home as before. `policy_move` does the
+same before it gives up an outward jump. Both go through `policy_refine` and
+`refine_hold`, which the order uses too, so `engine::refining` is still the
+one place the arithmetic is. The report: `PolicyAction` `refine`, "refined 4
+deuterium from the hold into 42.5 fuel: a jump to [x,y] would leave 9 fuel
+against 12 needed to return home". The orders' own report names the switch
+when it is set. Web client: a row in the orders panel, `refine=on|off` in
+`policy`. Rules and README: the settings table and the Refining entry.
+`play.py` names it in a fleet's orders. The TUI was not touched.
+
+**Versions.** `SAVE_FORMAT` 5 to 6, `ECONOMY_VERSION` stays 7; the reasoning
+and what it costs are in `decisions.md`, with five other choices.
+
+**Tests.** One scenario in `sim/tests/fleet_logistics.rs`, four cases: with
+the switch off a prospector turns home with its deuterium aboard; with it on
+it refines once and pushes on; two hops out with 3 fuel it refines and goes
+on working; and with 0.4 deuterium, which is not enough, it refines and then
+turns home with the engine's usual reason. In the web client the demo flow
+sets the switch through the panel, reads the engine's report of it, and
+clears it by typing.
+
 ## 2026-10-13: the flutter test flake: a C program loses a callee-saved double on this kernel
 
 Read `CLAUDE.md` (the Flutter paragraph blames the A520s and tells the run to
@@ -6349,6 +6481,63 @@ another `memcpy` and nothing would reach the SVE trap. Neither a newer kernel
 nor that parameter was tried: both are changes to the machine and the
 owner's. Twenty runs of the suite after either would say whether the flake is
 this fault.
+
+## 2026-10-13: `refine` and the standing orders' switch, checked on the merged tree
+
+Master (`5dc7a37`: the web client is the interface, the TUI secondary, the
+flake study) was merged into the branch after the two commits; the journal
+and the decisions log conflicted, both sides having appended, and keep both.
+
+**What the first full run after the switch found.** Three places compare a
+fleet's orders with a literal of exactly five settings and so did not know
+the sixth: `server/tests/scenarios.rs` (which waited 90 seconds for orders
+that never matched and said "the boarding never started"),
+`solo/tests/single_player.rs`, and three literals in
+`clients/web/tool/solo_e2e.dart`. Each got `refine: false`. They are in a
+commit after the merge, so the commit of the switch alone fails those two
+tests; taking the switch means taking that commit with it.
+
+**Run on the merged tree, with those fixes.**
+
+- `cargo build --workspace --all-targets -j 4`: no warning.
+- `cargo test --workspace --no-fail-fast -j 4`: 163 passed, 0 failed. Master
+  has 158; the five more are the four scenarios of the order and the one of
+  the switch. `fleet_logistics` 33, `hosts_agree` 2 in 45.13 s,
+  `both_targets` 3 in 106.91 s, server `scenarios` 9 in 66.46 s, `smoke` 9,
+  `single_player` 7, `golden_fixtures` 2, `chart_equivalence` 1. The run
+  before the fixes: 161 passed and the 2 named above failed.
+- `cargo clippy --workspace --all-targets`: silent.
+- `python3 tools/check_sim_constants.py`: agrees on 2,390 values.
+- `python3 -m unittest discover -s tools/playtest/tests`: 36 pass.
+- `flutter pub get --offline`, `flutter analyze`: no issues.
+- `flutter test`, three full runs in a shell pinned to CPUs 0, 1 and 6 to 11,
+  each under `timeout 300`. First: 485 passed. Second: 484 passed and 1
+  failed, `map_test.dart`'s route priced from the unrounded jump cost, on two
+  `RenderFlex` overflows in `lib/views/hud.dart`, one of 791 pixels and one
+  of 3,441; that file is not touched by this work, and `map_test.dart` alone
+  then passed, 15 of 15. Third: 485 passed. The brief gives master 480. Three of
+  the five more are this work's by name (two for the Refine button, one
+  fixture test); the other two were not traced, and the two new fixture
+  files, which the fixture tests read one by one, are the likely source. An
+  earlier full run, while
+  the switch's row still had a sentence under it, failed four: two of this
+  work's own (the settings literal, and the orders form no longer fitting a
+  900 pixel window, which is why the row has no sentence) and two in
+  `order_fit_test.dart` that passed in every run since.
+- `scripts/play.sh --single-player --no-serve`: built, 48M.
+- `dart run tool/solo_e2e.dart --port 8101`: `SOLO E2E OK in 191 s`.
+
+**How they were run.** As the entry of the first commit says: this shell
+refuses `nice`, `taskset` or `timeout -k` in front of a test command, so
+cargo ran with `-j 4` and no `nice`, and Flutter in a shell pinned with
+`taskset -cp` and lowered with `renice`, under a plain `timeout 300`.
+
+**Not verified.** No person or agent played, and `tools/playtest` was not
+run. The end-to-end run passed with the new field and the new row in the
+bundle, but it does not press Refine or set the switch: in a browser neither
+has been used. No world was played for days with the switch on, so what it
+does to a miner's deuterium income is reasoned and not measured. The TUI was
+built and not run.
 
 ## 2026-10-13: the headless client is a crate of its own
 
@@ -6470,3 +6659,45 @@ passed, 0 failed (the nine of `server/tests/scenarios.rs`, which drive the
 headless binary, among them).
 
 **Not verified.** `tools/playtest` was not run.
+
+## 2026-10-13: `refine` after the clients were split
+
+The coordinator's word, while the checks above ran: the headless client is
+its own crate and the TUI is to leave the tree. So the `d` key and the offer
+line written into the TUI's fleet panel with the first commit were taken out
+again by hand, and the README's sentence about them with them; `clients/tui`
+is byte for byte what master has, so its removal on master meets nothing of
+this branch. Master `6c22e2d` (the split) was then merged; the journal
+conflicted again and keeps both. The commit that takes the TUI out of the
+tree had not reached master when this was written.
+
+**Run on this tree.** `cargo build --workspace --all-targets -j 4`, no
+warning; `cargo test --workspace --no-fail-fast -j 4`: 163 passed, 0 failed;
+`cargo clippy --workspace --all-targets` silent;
+`tools/check_sim_constants.py` agrees on 2,390 values; the play tool's own 36
+tests pass. The merge changed nothing under `clients/web`, `fixtures`,
+`shared`, `sim`, `solo` or `server/src`, so the three Flutter runs, the
+bundle and the browser run of the entry before the split were not repeated.
+
+**Not verified.** As that entry lists. And the tree without the TUI: when
+master drops `clients/tui`, the workspace wants one more build and test run.
+
+## 2026-10-13: fuel from the hold is merged
+
+Merged into master with `--no-ff` and pushed, both commits: the `refine` order
+and the standing order's switch. `SAVE_FORMAT` is 6 (stored orders hold one
+more setting); `ECONOMY_VERSION` stays 7. Added at the merge: `CLAUDE.md`
+(the branch's `claude-md.patch`: a Refining entry under Key Concepts and the
+switch in the Standing orders entry). The branch's edits to the TUI had been
+taken out by the branch itself, so the TUI's leaving merged without a word.
+
+**Run on the merged tree**, which is the first with both `refine` and no TUI.
+`cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast`: 163 passed, 0 failed; `cargo clippy --workspace --all-targets`
+silent; `tools/check_sim_constants.py` agrees on 2,390 values; `flutter
+analyze` clean; `flutter test` under `timeout -k 20 300`, two runs: 485 passed
+each time; `scripts/play.sh --single-player --no-serve`; `tool/solo_e2e.dart`:
+`SOLO E2E OK in 196 s`.
+
+**Not verified.** No person or agent played; nothing presses Refine or sets
+the switch in a browser; no long run with the switch on.

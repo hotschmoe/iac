@@ -223,7 +223,8 @@ Single player (one browser tab, no server)
 - **Resources**: Metal, Crystal, Deuterium (passive homeworld production + active harvesting), capped by the Storage Vault
 - **Pace**: one per-world multiplier (`shared/src/pace.rs`) scales economy timers; every duration constant declares a `PaceClass`
 - **Combat**: Fleet-based, stochastic rounds per tick, OGame-style rapid-fire
-- **Standing orders**: Per-fleet policy presets run by the server (`policy_update`), each with a range, an engage ratio and a fuel budget (`fuel_budget_pct` of deuterium income); every act and hold carries its reason (`PolicyAction`). Rules as players read them: `tools/playtest/RULES.md`
+- **Refining**: `refine` turns the deuterium in a fleet's hold into fuel, on the spot and at once, until the tank is full or the deuterium is gone, at `REFINE_LOSS` (0.15, provisional and the owner's) less than a dock's `1 / FUEL_DEUT_PER_UNIT`. Refused in combat and while a jump charges, and nowhere else; deuterium loaded at a dock counts, so a cargo ship is a tanker. `engine::refining` is the one place a hold's deuterium becomes a tank's fuel: the order, its refusal, the standing orders' switch and `FleetState.refine` (what the order would do now, absent when it would be refused) all go through it. Bots do not refine
+- **Standing orders**: Per-fleet policy presets run by the server (`policy_update`), each with a range, an engage ratio and a fuel budget (`fuel_budget_pct` of deuterium income), and a switch, `refine`, off by default: a doctrine that would turn home for fuel refines the hold first and turns home only if that was not enough; every act and hold carries its reason (`PolicyAction`). Rules as players read them: `tools/playtest/RULES.md`
 - **Derelicts, raids, scanning**: see the "The game" section of README.md
 
 ### Key Files

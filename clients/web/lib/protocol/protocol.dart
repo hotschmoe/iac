@@ -38,6 +38,9 @@ double _f32(double x) => (Float32List(1)..[0] = x)[0];
 bool storageNearCap(num stock, num cap) =>
     cap > 0 && _f32(_f32(stock.toDouble()) / _f32(cap.toDouble())) >= storageNearCapRatio;
 
+/// What a `refine` order loses against a dock, as a whole percent.
+const refineLossPct = (refineLoss * 100 + 0.5) ~/ 1;
+
 /// The zones of the world. A ring's zone is cut as the engine's
 /// `Zone::from_distance` cuts it, at the radii Rust holds; the names are the
 /// client's.

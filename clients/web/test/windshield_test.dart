@@ -90,8 +90,11 @@ proto.ThreatInfo _threatOf(List<proto.NpcFleetInfo>? groups) {
   return proto.ThreatInfo(rating: rating, estPower: power, basis: proto.ThreatBasis.observed);
 }
 
-ui.FleetState fleet(int id, List<(String, int)> groups, {proto.Hex at = here, ui.FleetStatus status = ui.FleetStatus.idle, int fuel = 80, proto.StandingOrders? orders}) => ui.FleetState(
+ui.FleetState fleet(int id, List<(String, int)> groups,
+        {proto.Hex at = here, ui.FleetStatus status = ui.FleetStatus.idle, int fuel = 80, proto.StandingOrders? orders, proto.Refining? refine}) =>
+    ui.FleetState(
       orders: orders,
+      refine: refine,
       id: id,
       name: 'F$id',
       sector: at,
@@ -722,6 +725,58 @@ void main() {
     await endShell(tester, c);
   });
 
+  testWidgets('the status panel offers to refine exactly what the state says a refine order would do, and is greyed without it', (tester) async {
+    final c = await pumpFake(tester, calm());
+    ConsoleButton button() => tester.widget<ConsoleButton>(find.byKey(const ValueKey('status-refine')));
+    String line() => tester.widget<Text>(find.byKey(const Key('status-refine-yield'))).data!;
+    expect(button().onPressed, isNull, reason: 'the state carries no offer');
+    expect(line(), 'NOTHING TO REFINE');
+    expect(button().reason, startsWith('Refining turns the deuterium in the hold into fuel, 15% less of it than a dock gives.'));
+
+    c.push(calm().copyWith(fleets: [
+      fleet(1, [('Scout', 1), ('Corvette', 2)], refine: const proto.Refining(deuterium: 0.8, fuel: 8.5)),
+      fleet(2, [('Hauler', 1)], at: home),
+    ]));
+    await tester.pump();
+    expect(line(), '0.8 DE MAKES 8.5 FUEL');
+    await tester.tap(find.byKey(const ValueKey('status-refine')));
+    await tester.pump();
+    expect(c.commands.whereType<proto.RefineCommand>().map((r) => r.fleetId), [1]);
+    await finish(tester, c);
+  });
+
+  testWidgets('refine by the panel and by typed command is answered by the scripted world as the engine answers (demo)', (tester) async {
+    final c = DemoController()..startDemo();
+    c.place(101, proto.Hex.origin, const proto.Resources(metal: 7, deuterium: 1.6));
+    await pumpShell(tester, screen: Screen.windshield, controller: c);
+    String line() => tester.widget<Text>(find.byKey(const Key('status-refine-yield'))).data!;
+    expect(c.currentFleet.fuel, 96);
+    expect(line(), '1.6 DE MAKES 17 FUEL', reason: 'the dock would give 20 for it');
+
+    await tester.tap(find.byKey(const ValueKey('status-refine')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.state.events.map((e) => e.message),
+        contains('fleet 101 refined 1.6 deuterium into 17 fuel: the tank stands at 113 of 120, and the hold has no deuterium left'));
+    expect((c.currentFleet.fuel, c.state.holds[101]!.deuterium, c.state.holds[101]!.metal), (113, 0, 7));
+    expect(line(), 'NOTHING TO REFINE');
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('status-refine'))).onPressed, isNull);
+
+    c.handleCommand('refine');
+    expect(c.state.events.first.message, endsWith('the hold of fleet 101 carries no deuterium to refine'));
+    c.handleCommand('refine all');
+    expect(c.state.events.first.message, startsWith('refine: takes no argument'));
+
+    c.place(101, proto.Hex.origin, const proto.Resources(deuterium: 40));
+    c.handleCommand('refine');
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.currentFleet.fuel, 120, reason: 'the tank is full');
+    expect(c.state.holds[101]!.deuterium, closeTo(40 - 7 / 10.625, 1e-6), reason: 'and the rest stays aboard');
+    c.handleCommand('refine');
+    expect(c.state.events.first.message, endsWith('the tank of fleet 101 is full (120 of 120 fuel); refining would add nothing'));
+    expect(tester.takeException(), isNull);
+    await endShell(tester, c);
+  });
+
   testWidgets('P opens the standing orders: every doctrine with its line, the settings in the rules\' units, and Set sends what the typed policy sends', (tester) async {
     final c = await pumpFake(tester, calm());
     expect(find.byKey(const ValueKey('orders-panel')), findsNothing);
@@ -773,7 +828,7 @@ void main() {
       'type': 'policy_update',
       'fleet_id': 1,
       'preset': 'mine_and_return',
-      'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 8, 'engage_ratio_x10': 20, 'fuel_budget_pct': 35},
+      'params': {'min_fuel_pct': 10, 'cargo_return_pct': 85, 'max_range': 8, 'engage_ratio_x10': 20, 'fuel_budget_pct': 35, 'refine': false},
     });
 
     const held = 'refuelling on a fuel budget of 50% of deuterium income (tank 80 of 120, full in about 236 s)';
@@ -811,8 +866,8 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('orders-set')));
     await tester.pump(const Duration(milliseconds: 50));
     expect(c.sent.whereType<proto.PolicyUpdate>().last.toJson()['params'],
-        {'min_fuel_pct': 15, 'cargo_return_pct': 60, 'max_range': 7, 'engage_ratio_x10': 30, 'fuel_budget_pct': 50},
-        reason: 'one step changes one setting and keeps the other four as they are in force');
+        {'min_fuel_pct': 15, 'cargo_return_pct': 60, 'max_range': 7, 'engage_ratio_x10': 30, 'fuel_budget_pct': 50, 'refine': false},
+        reason: 'one step changes one setting and keeps the others as they are in force');
 
     await key(tester, LogicalKeyboardKey.escape, '');
     expect(panel, findsNothing);
@@ -888,6 +943,27 @@ void main() {
     expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 2 HEXES - ENGAGE 3.0X - FUEL 20%',
         reason: 'settings typed with no doctrine change the orders in force and leave the rest of them');
     expect(find.text('It turns home at 60% hold, or with fuel down to the way back plus 10% of the tank.'), findsOneWidget);
+
+    final refineSwitch = find.byKey(const ValueKey('orders-refine'));
+    await tester.ensureVisible(refineSwitch);
+    expect(find.descendant(of: refineSwitch, matching: find.text('OFF')), findsOneWidget, reason: 'off unless the orders say so');
+    await tester.tap(refineSwitch);
+    await tester.pump();
+    expect(find.descendant(of: refineSwitch, matching: find.text('ON')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const ValueKey('orders-set')));
+    await tester.tap(find.byKey(const ValueKey('orders-set')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.state.policyActs[101]!.map((a) => a.reason),
+        contains('doctrine set: patrol home (range 2, engage 3.0x, fuel budget 20% of deuterium income, refining from the hold when short of fuel)'));
+    expect(c.currentFleet.orders!.params.refine, isTrue);
+    expect(c.state.events.map((e) => e.message), contains(allOf(startsWith('> policy patrol '), endsWith(' refine=on'))),
+        reason: 'the line a player would have typed');
+    c.handleCommand('policy refine=off');
+    await tester.pump(const Duration(milliseconds: 100));
+    expect((c.currentFleet.orders!.params.refine, c.currentFleet.orders!.params.maxRange), (false, 2),
+        reason: 'the switch typed alone changes the orders in force and leaves the rest');
+    c.handleCommand('policy refine=maybe');
+    expect(c.state.events.first.message, startsWith('policy: manual|prospect|mine|salvage|patrol'));
 
     c.handleCommand('load metal 10');
     await tester.pump(const Duration(milliseconds: 100));

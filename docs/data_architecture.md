@@ -33,7 +33,7 @@ document, the same document for every host.**
 A header line of JSON, a newline, the `Snapshot` as JSON:
 
 ```
-{"format":5,"economy_version":5,"worldgen_version":3,"digest":<xxh3 of the body>,"host":{...}}
+{"format":6,"economy_version":7,"worldgen_version":3,"digest":<xxh3 of the body>,"host":{...}}
 {"world_seed":...,"meta":{"pace":...},"tick":...,"next_id":...,"players":{...},"fleets":{...},...}
 ```
 
