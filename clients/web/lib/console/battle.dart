@@ -103,14 +103,24 @@ List<proto.Volley> volleysByWeight(List<proto.Volley> volleys) => [...volleys]..
     return h != 0 ? h : b.shots.compareTo(a.shots);
   });
 
-/// "24 SHOTS  4 BOUNCED  SHIELDS 200  HULL 1,000": what a volley did.
-String volleyFigures(proto.Volley v) => [
+/// "24 SHOTS", "4 BOUNCED", "SHIELDS 200", "HULL 1,000": what a volley did,
+/// a figure a piece, so that a narrow panel breaks the line between two.
+List<String> volleyFigures(proto.Volley v) => [
       '${shortCount(v.shots)} SHOT${v.shots == 1 ? '' : 'S'}',
       if (v.bounced > 0) '${shortCount(v.bounced)} BOUNCED',
       if (v.wasted > 0) '${shortCount(v.wasted)} WASTED',
       'SHIELDS ${shortCount(v.absorbed)}',
       'HULL ${shortCount(v.hullDamage)}',
-    ].join('  ');
+    ];
+
+/// The same for all a side fired in a round, from the side's own totals.
+List<String> fireFigures(proto.BattleSide side) => [
+      '${shortCount(side.shots)} SHOT${side.shots == 1 ? '' : 'S'}',
+      'POWER ${shortCount(side.power)}',
+      'SHIELDS TOOK ${shortCount(side.absorbed)}',
+      'HULL DAMAGE ${shortCount(side.hullDamage)}',
+      'DESTROYED ${shortCount(side.destroyed)}',
+    ];
 
 /// "W3 S2 A1": the Weapons, Shielding and Armour levels a fleet fights with.
 String refitMark(proto.Refit r) => 'W${r.weapons} S${r.shielding} A${r.armour}';

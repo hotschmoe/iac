@@ -355,28 +355,58 @@ class WindshieldSim {
     return out;
   }
 
-  /// How far apart the marks of a side stand: wider for the heavy hulls.
-  double _spread(List<Unit> marks) =>
-      (marks.fold<double>(0, (m, u) => math.max(m, _pxOf(u.cls))) / 16).clamp(1.0, 1.5);
+  /// How large the marks of each side are drawn, 1 at their full size:
+  /// smaller when a side has more of them than its ground holds.
+  double ownZoom = 1, hostileZoom = 1;
 
-  /// The fleet's wedge: rows of one, two, three, four and six marks.
-  static Offset _formation(int i) {
-    const rows = [1, 2, 3, 4, 6];
-    var first = 0;
-    for (var row = 0; row < rows.length; row++) {
-      if (i < first + rows[row]) return Offset((i - first) - (rows[row] - 1) / 2, row * .9);
-      first += rows[row];
+  /// What a mark takes of the scope at full size, as a share of the hex's
+  /// radius for each pixel of [_pxOf]: its width and its length.
+  static const _markWide = .0105, _markLong = .0145;
+
+  /// The sizes [_rows] tries, largest first.
+  static const _zooms = [1.0, .85, .7, .6, .5, .42, .35];
+
+  /// [marks] set out in rows across a ground [width] wide, at the largest
+  /// size whose rows are no deeper than [depth] in all: where each stands
+  /// across and how far in, and the size.
+  static (List<Offset>, double) _rows(List<Unit> marks, {required double width, required double depth}) {
+    const gap = .012;
+    for (final zoom in _zooms) {
+      final places = <Offset>[];
+      var row = <double>[], across = 0.0, deep = 0.0, long = 0.0;
+      void close() {
+        var x = -across / 2;
+        for (final w in row) {
+          places.add(Offset(x + w / 2, deep + long / 2));
+          x += w + gap;
+        }
+        deep += long + gap;
+        row = [];
+        across = 0;
+        long = 0;
+      }
+
+      for (final u in marks) {
+        final w = _pxOf(u.cls) * _markWide * zoom;
+        if (row.isNotEmpty && across + w > width) close();
+        row.add(w);
+        across += w + (row.length > 1 ? gap : 0);
+        long = math.max(long, _pxOf(u.cls) * _markLong * zoom);
+      }
+      if (row.isNotEmpty) close();
+      if (deep <= depth || zoom == _zooms.last) return (places, zoom);
     }
-    return Offset(0, rows.length * .9);
+    return (const [], 1);
   }
 
+  /// The fleet stands in rows below the centre of the scope.
   void _formOwn({required bool snap}) {
     final live = [for (final u in own) if (!u.gone) u];
-    final k = _spread(live);
-    for (var i = 0; i < live.length; i++) {
-      final u = live[i], fm = _formation(i);
-      u.tx = fm.dx * .1 * k;
-      u.ty = .22 + fm.dy * .075 * k;
+    final (places, zoom) = _rows(live, width: 1.0, depth: .6);
+    ownZoom = zoom;
+    for (final (i, u) in live.indexed) {
+      u.tx = places[i].dx;
+      u.ty = .16 + places[i].dy;
       if (snap || !u.placed) {
         u.x = u.tx;
         u.y = u.ty;
@@ -385,20 +415,17 @@ class WindshieldSim {
     }
   }
 
-  /// Hostile marks drift about a seeded place of their own until a fight,
-  /// and stand in lines of six while it lasts.
+  /// Hostile marks stand in rows above it, and drift about their places
+  /// until a fight.
   void _formHostiles({required bool snap}) {
     final r = _seeded(loc ?? proto.Hex.origin);
     final live = [for (final u in hostiles) if (!u.gone) u];
-    final k = _spread(live);
-    for (var i = 0; i < live.length; i++) {
-      final u = live[i];
-      final row = i ~/ 6, across = math.min(6, live.length - row * 6);
-      u.bx = (r.nextDouble() - .5) * .7;
-      u.by = -.56 + r.nextDouble() * .26;
+    final (places, zoom) = _rows(live, width: 1.0, depth: .46);
+    hostileZoom = zoom;
+    for (final (i, u) in live.indexed) {
       final phase = r.nextDouble() * tau;
-      u.tx = ((i % 6) - (across - 1) / 2) * .13 * k;
-      u.ty = -.34 - row * .11 * k;
+      u.tx = u.bx = places[i].dx;
+      u.ty = u.by = -.24 - places[i].dy;
       if (snap || !u.placed) {
         u.x = u.bx;
         u.y = u.by;
@@ -557,7 +584,7 @@ class WindshieldSim {
   }
 
   void _explode(Unit t) {
-    final sz = _pxOf(t.cls) / 300 * 1.2;
+    final sz = markPx(t) / 300 * 1.2;
     _burst(t.x, t.y, const Color(0xFFFFCC66), 22, 1.5);
     _burst(t.x, t.y, const Color(0xFFFF5A3C), 14, 1);
     rings.add(Ring(t.x, t.y, now, sz));
@@ -590,7 +617,8 @@ class WindshieldSim {
         proto.ShipClass.deathstar => 44,
       };
 
-  static double shipPx(proto.ShipClass c) => _pxOf(c);
+  /// How large [u] is drawn, in pixels at the reference scale.
+  double markPx(Unit u) => _pxOf(u.cls) * (u.enemy ? hostileZoom : ownZoom);
 
   void _impact(Shot s) {
     final t = s.t;
@@ -633,8 +661,8 @@ class WindshieldSim {
       u.flash *= .9;
       u.screen *= .92;
       if (!combat) {
-        u.x = u.bx + math.sin(time * .4 + u.ph) * .06;
-        u.y = u.by + math.cos(time * .3 + u.ph) * .03;
+        u.x = u.bx + math.sin(time * .4 + u.ph) * .02;
+        u.y = u.by + math.cos(time * .3 + u.ph) * .012;
         u.ang = math.pi + math.sin(time * .4 + u.ph) * .2;
       } else {
         final m = own.where((o) => !o.dead).firstOrNull;

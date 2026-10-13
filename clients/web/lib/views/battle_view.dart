@@ -78,14 +78,16 @@ class ShipRows extends StatelessWidget {
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
             Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
               Expanded(child: Text(g.shipClass.label.toUpperCase(), overflow: TextOverflow.ellipsis, style: _name)),
+              const SizedBox(width: 6),
               Text(shortCount(g.count), style: _figure),
-              SizedBox(width: 118, child: Text(hullOf(g.hull, g.hullMax), textAlign: TextAlign.right, style: _small)),
+              SizedBox(width: 98, child: Text(hullOf(g.hull, g.hullMax), textAlign: TextAlign.right, style: _small)),
             ]),
-            if (g.damaged > 0) ...[
-              const SizedBox(height: 2),
-              HullBar(g.hull, g.hullMax, color: color),
-              DamageMarks(damaged: g.damaged, atRisk: g.atRisk),
-            ],
+            if (g.damaged > 0)
+              Row(children: [
+                Expanded(child: HullBar(g.hull, g.hullMax, color: color)),
+                const SizedBox(width: 8),
+                DamageMarks(damaged: g.damaged, atRisk: g.atRisk),
+              ]),
           ]),
         ),
       if (risk) Padding(padding: const EdgeInsets.only(top: 4), child: Text(atRiskRule, style: _small)),
@@ -258,32 +260,36 @@ class _BattlePanelState extends State<BattlePanel> {
               style: _small.copyWith(color: C.text2),
             ),
           ]),
+          _cells('', 'LEFT', 'LOST', 'DMG', 'RISK', head: true),
           for (final g in side.groups) ...[
             if (side.groups.length > 1 || !g.mine)
               Padding(padding: const EdgeInsets.only(top: 3), child: Text(groupName(g).toUpperCase(), overflow: TextOverflow.ellipsis, style: _small)),
-            for (final u in g.units) _unit(u, color),
+            for (final u in g.units)
+              _cells(u.unit.label.toUpperCase(), shortCount(u.count), u.lost > 0 ? '-${shortCount(u.lost)}' : '',
+                  u.damaged > 0 ? shortCount(u.damaged) : '', u.atRisk > 0 ? shortCount(u.atRisk) : '',
+                  gone: u.count == 0),
           ],
         ],
       );
 
-  Widget _unit(proto.BattleUnits u, Color color) => Padding(
-        padding: const EdgeInsets.only(top: 2),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-          Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
-            Expanded(child: Text(u.unit.label.toUpperCase(), overflow: TextOverflow.ellipsis, style: _name.copyWith(color: u.count == 0 ? C.text4 : C.text2))),
-            Text(shortCount(u.count), style: _figure.copyWith(color: u.count == 0 ? C.text3 : C.text)),
-            SizedBox(width: 58, child: Text(u.lost > 0 ? '-${shortCount(u.lost)}' : '', textAlign: TextAlign.right, style: _figure.copyWith(color: atRiskColor))),
-          ]),
-          if (u.damaged > 0) ...[
-            const SizedBox(height: 2),
-            HullBar(u.hull, u.hullMax, color: color),
-            Row(children: [
-              Expanded(child: DamageMarks(damaged: u.damaged, atRisk: u.atRisk)),
-              Text('HULL ${hullOf(u.hull, u.hullMax)}', style: _small),
-            ]),
-          ],
-        ]),
-      );
+  /// A row of the standing table: a kind of unit, how many are left, how
+  /// many the round destroyed, and of those left how many are damaged and
+  /// how many at risk.
+  Widget _cells(String name, String left, String lost, String damaged, String atRisk, {bool head = false, bool gone = false}) {
+    final label = T.cond(size: 9, color: C.text3, weight: FontWeight.w500, spacing: 1.2);
+    Widget cell(String text, Color color) =>
+        SizedBox(width: 40, child: Text(text, textAlign: TextAlign.right, style: head ? label : _figure.copyWith(color: color)));
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
+        Expanded(child: Text(name, overflow: TextOverflow.ellipsis, style: _name.copyWith(color: gone ? C.text4 : C.text2))),
+        cell(left, gone ? C.text3 : C.text),
+        cell(lost, atRiskColor),
+        cell(damaged, damagedColor),
+        cell(atRisk, atRiskColor),
+      ]),
+    );
+  }
 
   /// What a side fired: its own totals, then its volleys with the ones that
   /// decided the round first and the rest behind a button.
@@ -292,10 +298,7 @@ class _BattlePanelState extends State<BattlePanel> {
     final hidden = volleys.length - volleysShown;
     return Column(key: Key(tag), crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
       Lbl(title, color: color),
-      Text(
-          '${shortCount(side.shots)} SHOT${side.shots == 1 ? '' : 'S'}  POWER ${shortCount(side.power)}  SHIELDS TOOK ${shortCount(side.absorbed)}\n'
-          'HULL DAMAGE ${shortCount(side.hullDamage)}  DESTROYED ${shortCount(side.destroyed)}',
-          style: _small.copyWith(color: C.text2)),
+      _figures(fireFigures(side), _small.copyWith(color: C.text2)),
       for (final v in all ? volleys : volleys.take(volleysShown)) _volley(v, color),
       if (hidden > 0)
         Padding(
@@ -316,9 +319,12 @@ class _BattlePanelState extends State<BattlePanel> {
                     overflow: TextOverflow.ellipsis, style: T.cond(size: 10.5, color: C.text2, spacing: .9))),
             if (v.destroyed > 0) Text('${shortCount(v.destroyed)} DESTROYED', style: T.mono(size: 10, color: color, weight: FontWeight.w600)),
           ]),
-          Text(volleyFigures(v), style: _small),
+          _figures(volleyFigures(v), _small),
         ]),
       );
+
+  Widget _figures(List<String> parts, TextStyle style) =>
+      Wrap(spacing: 10, children: [for (final part in parts) Text(part, style: style)]);
 }
 
 /// A fight in one line, for the layout that keeps its panels in a sheet:
@@ -343,10 +349,10 @@ class BattleStrip extends StatelessWidget {
       line = Text.rich(
         TextSpan(children: [
           TextSpan(text: 'ROUND ${r.round}  ', style: const TextStyle(color: C.ember)),
-          TextSpan(text: shortCount(r.fleets.standing), style: const TextStyle(color: C.own)),
+          TextSpan(text: 'FLEETS ${shortCount(r.fleets.standing)}', style: const TextStyle(color: C.own)),
           if (r.hostiles.destroyed > 0) TextSpan(text: ' -${shortCount(r.hostiles.destroyed)}', style: const TextStyle(color: atRiskColor)),
           const TextSpan(text: '  V  ', style: TextStyle(color: C.text3)),
-          TextSpan(text: shortCount(r.hostiles.standing), style: const TextStyle(color: C.text)),
+          TextSpan(text: 'HOSTILES ${shortCount(r.hostiles.standing)}', style: const TextStyle(color: C.text)),
           if (r.fleets.destroyed > 0) TextSpan(text: ' -${shortCount(r.fleets.destroyed)}', style: const TextStyle(color: atRiskColor)),
         ]),
         overflow: TextOverflow.ellipsis,

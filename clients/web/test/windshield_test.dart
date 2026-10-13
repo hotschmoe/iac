@@ -624,7 +624,7 @@ void main() {
       c.push(fighting(round));
       await tester.pump(const Duration(milliseconds: 150));
       if (!wide) {
-        expect(textUnder(tester, find.byKey(const ValueKey('battle-strip'))), 'ROUND 2  2 -1  V  2 -1');
+        expect(textUnder(tester, find.byKey(const ValueKey('battle-strip'))), 'ROUND 2  FLEETS 2 -1  V  HOSTILES 2 -1');
         await shot(tester, 'ws-combat-strip-390');
         await tester.tap(find.byKey(const ValueKey('battle-strip')));
         await tester.pump(const Duration(milliseconds: 100));
@@ -632,11 +632,15 @@ void main() {
       final panel = find.byKey(const Key('battle-panel'));
       final told = textUnder(tester, panel);
       expect(told, contains('ROUND 2 - 2, 0'));
-      expect(textUnder(tester, find.byKey(const Key('battle-fleets'))), allOf(contains('2 STANDING  -1 THIS ROUND'), contains('LIGHT FIGHTER\n2\n-1'), contains('1 DAMAGED  1 AT RISK')));
-      expect(textUnder(tester, find.byKey(const Key('battle-hostiles'))), allOf(contains('3X HEAVY FIGHTER PACK'), contains('HEAVY FIGHTER\n1\n-1'), contains('CRUISER\n1')));
+      expect(textUnder(tester, find.byKey(const Key('battle-fleets'))),
+          allOf(contains('2 STANDING  -1 THIS ROUND'), contains('\nLEFT\nLOST\nDMG\nRISK\n'), contains('LIGHT FIGHTER\n2\n-1\n1\n1')),
+          reason: 'two fighters left, one lost this round, one of the two damaged and at risk');
+      expect(textUnder(tester, find.byKey(const Key('battle-hostiles'))),
+          allOf(contains('3X HEAVY FIGHTER PACK'), contains('HEAVY FIGHTER\n1\n-1\n\n'), contains('CRUISER\n1\n\n\n')));
       expect(textUnder(tester, find.byKey(const Key('battle-fire-fleets'))),
-          allOf(contains('3 SHOTS  POWER 150  SHIELDS TOOK 60'), contains('LIGHT FIGHTER > HEAVY FIGHTER'), contains('1 DESTROYED'), contains('2 SHOTS  SHIELDS 50  HULL 50')));
-      expect(textUnder(tester, find.byKey(const Key('battle-fire-hostiles'))), contains('1 SHOT  1 BOUNCED'), reason: 'a shot too weak for the shield is said to have bounced');
+          allOf(contains('3 SHOTS\nPOWER 150\nSHIELDS TOOK 60\nHULL DAMAGE 50\nDESTROYED 1'), contains('LIGHT FIGHTER > HEAVY FIGHTER\n1 DESTROYED\n2 SHOTS\nSHIELDS 50\nHULL 50')));
+      expect(textUnder(tester, find.byKey(const Key('battle-fire-hostiles'))), contains('CRUISER > LIGHT FIGHTER\n1 SHOT\n1 BOUNCED'),
+          reason: 'a shot too weak for the shield is said to have bounced');
       expect(textUnder(tester, find.byKey(const Key('battle-losses'))), 'F1 LOST 1X LIGHT FIGHTER\n3X HEAVY FIGHTER PACK LOST 2X HEAVY FIGHTER');
       expectTextFits(tester, panel, reason: 'the round panel at ${size.width.round()}');
       await shot(tester, 'ws-combat-${size.width.round()}');
@@ -752,24 +756,111 @@ void main() {
     await endShell(tester, c);
   });
 
-  testWidgets('split a ship off and merge it back through the panel (demo)', (tester) async {
+  testWidgets('ships are split off by class and count and merged back through the panel (demo)', (tester) async {
     final c = DemoController()..startDemo();
     await pumpShell(tester, screen: Screen.windshield, controller: c);
     await tester.tap(find.byKey(const ValueKey('manage-toggle')));
     await tester.pump(const Duration(milliseconds: 100));
+    Future<void> press(String key) async {
+      await tester.ensureVisible(find.byKey(ValueKey(key)));
+      await tester.tap(find.byKey(ValueKey(key)));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    String picked(proto.ShipClass cls) => tester.widget<Text>(find.byKey(Key('fm-count-${cls.wire}'))).data!;
+    List<(proto.ShipClass, int)> rows(ui.FleetState f) => [for (final g in f.ships) (g.shipClass, g.count)];
+    const cargo = proto.ShipClass.smallCargo, fighter = proto.ShipClass.lightFighter, probe = proto.ShipClass.espionageProbe;
     final before = c.state.fleets.length;
     final active = c.activeFleetId!;
-    final cls = c.currentFleet.ships.last.shipClass;
-    await tester.tap(find.byKey(ValueKey('fm-plus-$cls')));
-    await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('fm-split')));
+    expect(rows(c.currentFleet), [(cargo, 1), (fighter, 3), (probe, 1)]);
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('fm-split'))).onPressed, isNull, reason: 'nothing is picked yet');
+
+    await press('fm-step-10');
+    await press('fm-plus-LightFighter');
+    expect(picked(fighter), '3', reason: 'a step of ten stops at the three aboard');
+    await press('fm-all-SmallCargo');
+    await press('fm-all-EspionageProbe');
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('fm-split'))).onPressed, isNull, reason: 'one ship must stay');
+    expect(find.text('One ship must stay in the fleet.'), findsOneWidget);
+    await press('fm-all-SmallCargo');
+    await press('fm-step-1');
+    await press('fm-minus-LightFighter');
+    expect((picked(cargo), picked(fighter), picked(probe)), ('0', '2', '1'));
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('fm-split'))).label, 'Split off 3');
+    await shot(tester, 'ws-split-1440');
+
+    await press('fm-split');
     await tester.pump(const Duration(milliseconds: 200));
     expect(c.state.fleets.length, before + 1);
     expect(c.currentFleet.id, active);
-    final newId = c.mergeCandidates.single.id;
-    await tester.tap(find.byKey(ValueKey('fm-merge-$newId')));
+    expect(rows(c.currentFleet), [(cargo, 1), (fighter, 1)]);
+    final split = c.mergeCandidates.single;
+    expect(rows(split), [(fighter, 2), (probe, 1)]);
+    expect(c.state.events.map((e) => e.message), contains('fleet $active split: 3 ship(s) now fly as fleet ${split.id}'));
+    await press('fm-merge-${split.id}');
     await tester.pump(const Duration(milliseconds: 200));
     expect(c.state.fleets.length, before);
+    expect(rows(c.currentFleet), [(cargo, 1), (fighter, 3), (probe, 1)]);
+    expect(tester.takeException(), isNull);
+    await endShell(tester, c);
+  });
+
+  testWidgets('a fight is followed round by round to its end, the fleet shows its damage and what each dock would do, and the home dock mends it (demo)',
+      (tester) async {
+    const patrol = proto.Hex(6, -5), homeworld = proto.Hex(4, -2);
+    final c = DemoController()..startDemo();
+    await pumpShell(tester, screen: Screen.windshield, controller: c);
+    expect(find.byKey(const Key('fleet-damage')), findsNothing, reason: 'a whole fleet has no damage to quote');
+    expect(tester.widget<Kv>(find.byKey(const Key('fleet-refit'))).v, 'W3 S0 A2');
+    expect(find.byKey(const Key('fleet-refit-due')), findsNothing);
+
+    c.learn(proto.ResearchType.shieldingTechnology, 2);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.widget<Kv>(find.byKey(const Key('fleet-refit'))).v, 'W3 S0 A2', reason: 'research that finishes while a fleet is away waits for it at home');
+    expect(tester.widget<Text>(find.byKey(const Key('fleet-refit-due'))).data, contains('A REFIT WAITS AT THE HOME DOCK'));
+
+    c.place(101, patrol, const proto.Resources());
+    await tester.pump(const Duration(milliseconds: 100));
+    final group = c.state.sectors[patrol]!.hostiles!.single;
+    expect(tester.widget<Text>(find.byKey(Key('contact-hostile-${group.id}'))).data, 'PATROL - 2 SHIPS');
+    c.sendCommand(proto.AttackCommand(fleetId: 101, targetFleetId: group.id));
+    await tester.pump(const Duration(seconds: 1));
+    final panel = find.byKey(const Key('battle-panel'));
+    expect(textUnder(tester, panel), allOf(contains('ROUND 1 - 6, -5'), contains('2X LIGHT FIGHTER PATROL'), contains('LIGHT FIGHTER > LIGHT FIGHTER')));
+    expect(c.state.events.map((e) => e.message),
+        contains('Round 1 in $patrol: fleets fired 5 shots and destroyed 0, hostiles fired 2 and destroyed 0; 5 against 2 still stand'));
+
+    for (var tick = 0; tick < 10 && !c.state.battleAt(patrol)!.over; tick++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    final ended = c.state.battleAt(patrol)!.ended!;
+    expect((ended.outcome, ended.playerVictory), (proto.BattleOutcome.hostilesDestroyed, true));
+    expect(tester.widget<Text>(find.byKey(const Key('battle-outcome'))).data, 'HOSTILES DESTROYED');
+    expect(textUnder(tester, find.byKey(const Key('battle-end-losses'))), '2X LIGHT FIGHTER PATROL LOST 2X LIGHT FIGHTER AND IS DESTROYED');
+    expect(c.state.events.where((e) => e.message.startsWith('Round ')), hasLength(1), reason: 'a fight keeps one line of the log for its rounds');
+    expect(c.state.events.map((e) => e.message),
+        contains(startsWith('! Combat ended in $patrol after ${ended.rounds} rounds: the hostiles are destroyed. Wreckage ')));
+
+    final quote = c.currentFleet.repair!;
+    expect(c.currentFleet.hull, lessThan(c.currentFleet.hullMax));
+    expect(tester.widget<Kv>(find.byKey(const Key('fleet-damage'))).v, '${quote.ships} DAMAGED SHIPS LACK ${quote.hull} HULL');
+    expect(textUnder(tester, find.byKey(const Key('fleet-repair-home'))), 'HOME DOCK MENDS ALL ${quote.ships} (${quote.hull} HULL) FOR NOTHING');
+    expect(find.byKey(const Key('fleet-repair-outpost')), findsNothing, reason: 'the empire has no outpost');
+    expect(textUnder(tester, find.byKey(const Key('status-ships'))), contains('1 DAMAGED'));
+    await shot(tester, 'ws-damaged-1440');
+
+    c.place(101, homeworld, const proto.Resources());
+    await tester.pump(const Duration(seconds: 1));
+    expect(c.currentFleet.repair, isNull);
+    expect(find.byKey(const Key('fleet-damage')), findsNothing);
+    expect(tester.widget<Kv>(find.byKey(const Key('fleet-refit'))).v, 'W3 S2 A2');
+    expect(find.byKey(const Key('fleet-refit-due')), findsNothing);
+    expect(
+        c.state.events.map((e) => e.message),
+        containsAll([
+          'fleet 101 was mended at the home dock: ${quote.ships} ship(s) made whole, ${quote.hull} hull restored, for nothing',
+          'fleet 101 was refitted at the home dock: Weapons 3, Shielding 2, Armour 2 (it flew with 3, 0, 2)',
+        ]));
     expect(tester.takeException(), isNull);
     await endShell(tester, c);
   });

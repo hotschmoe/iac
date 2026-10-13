@@ -774,7 +774,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   void _pick(Offset p, Geo g) {
     String? h;
     bool near(Offset o, double r) => (p - o).distance < r;
-    if (sim.hostiles.any((u) => !u.dead && near(g.wp(u.x, u.y), WindshieldSim.shipPx(u.cls) * g.sc * 2))) {
+    if (sim.hostiles.any((u) => !u.dead && near(g.wp(u.x, u.y), sim.markPx(u) * g.sc * 2))) {
       h = 'h';
     } else if (sim.salvage != null && near(g.wp(sim.salvage!.x, sim.salvage!.y), g.rh * .08)) {
       h = 's';

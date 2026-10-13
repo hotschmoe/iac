@@ -321,6 +321,7 @@ class DemoWorld {
           policy: const StandingOrders(preset: PolicyPreset.prospect, params: PolicyParams(maxRange: 6, engageRatioX10: 20, fuelBudgetPct: 35))),
     ];
     _harvest[103] = HarvestResource.auto;
+    _tended.addAll([for (final f in _fleets) if (_atHomeDock(f)) f.id]);
 
     final pendingBuilds = <QueuedBuild>[];
     for (final t in const [BuildingType.metalMine, BuildingType.metalStorage]) {

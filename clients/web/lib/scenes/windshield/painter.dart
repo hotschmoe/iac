@@ -406,7 +406,7 @@ class ArenaPainter extends CustomPainter {
 
   void _ship(Unit u, bool enemy, double t, {double alphaMul = 1, Offset? at}) {
     final o = at ?? wp(u.x, u.y);
-    final s = WindshieldSim.shipPx(u.cls) * g.sc * 1.95, rot = u.ang;
+    final s = sim.markPx(u) * g.sc * 1.95, rot = u.ang;
     final col = enemy ? _ember : _own;
     final fl = u.flash;
     final warp = sim.warp != null;
@@ -431,10 +431,8 @@ class ArenaPainter extends CustomPainter {
   /// than a ship: the list beside the scope has the counts.
   void _scale() {
     if (sim.scale <= 1 || sim.warp != null) return;
-    final lead = sim.own.where((u) => !u.gone).firstOrNull;
-    if (lead == null) return;
-    final o = wp(lead.tx, lead.ty - .1);
-    Draw.text(c, 'EACH MARK: ${sim.scale} SHIPS', o.dx, o.dy, T.mono(size: 9.5, color: const Color(0xB3BFA370), spacing: .6), anchor: .5);
+    final o = wp(0, .1);
+    Draw.text(c, 'EACH MARK: UP TO ${sim.scale} SHIPS', o.dx, o.dy, T.mono(size: 9.5, color: const Color(0xB3BFA370), spacing: .6), anchor: .5);
   }
 
   void _hostiles(double t) {
@@ -444,7 +442,7 @@ class ArenaPainter extends CustomPainter {
       if (h.dead) continue;
       _ship(h, true, t);
       if (tg) {
-        final o = wp(h.x, h.y), r = WindshieldSim.shipPx(h.cls) * g.sc * 2.1;
+        final o = wp(h.x, h.y), r = sim.markPx(h) * g.sc * 2.1;
         c.save();
         c.translate(o.dx, o.dy);
         c.rotate(math.pi / 4);
