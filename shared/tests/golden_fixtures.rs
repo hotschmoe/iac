@@ -501,7 +501,7 @@ fn sample_player() -> PlayerState {
     PlayerState {
         id: 42,
         name: "Admiral".into(),
-        resources: res(2_500_000.216, 600.0, 150.25),
+        resources: res(1200.5, 600.0, 150.25),
         homeworld: h(4, -2),
         exchange: sold_meter(),
     }
@@ -1398,7 +1398,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             outpost: None,
             defended: false,
             breached: false,
-            resources_lost: res(100.0, 50.0, 25.0),
+            resources_lost: res(2_500_000.216, 50.0, 25.0),
             salvage_dropped: Some(res(10.0, 5.0, 0.0)),
             salvage_despawn_tick: Some(4940),
             raid_power: 120.0,

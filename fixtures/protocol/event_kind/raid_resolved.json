@@ -13,7 +13,7 @@
   "resources_lost": {
     "crystal": 50.0,
     "deuterium": 25.0,
-    "metal": 100.0
+    "metal": 2500000.216
   },
   "salvage_despawn_tick": 4940,
   "salvage_dropped": {
