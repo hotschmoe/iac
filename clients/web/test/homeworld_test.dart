@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iac_client/console/economy_view.dart';
+import 'package:iac_client/console/intel.dart' show groupDigits;
 import 'package:iac_client/console/notifier.dart';
 import 'package:iac_client/console/services.dart';
 import 'package:iac_client/console/prefs.dart';
@@ -125,8 +126,9 @@ void main() {
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('hw-queue')));
     await tester.pump();
-    expect(c.state.events.any((e) => e.message.contains('> ship Scout x5')), isTrue);
-    expect(c.state.shipyard.single.name, contains('Scout x5'));
+    final first = proto.ShipClass.values.first.label;
+    expect(c.state.events.any((e) => e.message.contains('> ship $first x5')), isTrue);
+    expect(c.state.shipyard.single.name, contains('$first x5'));
     await snap(tester, 'homeworld/shipyard-1440');
     await endShell(tester, c);
   });
@@ -156,38 +158,42 @@ void main() {
     final c = await open(tester);
     await tester.tap(find.byKey(const ValueKey('hw-tab-research')));
     await tester.pump();
-    expect(find.text('FUEL EFFICIENCY'), findsWidgets);
+    expect(find.text('ENERGY TECHNOLOGY'), findsWidgets);
     final techs = c.state.catalog!.research;
     expect([for (final o in techs) o.tech], proto.ResearchType.values);
     for (var i = 0; i < techs.length; i++) {
       expect(find.byKey(ValueKey('hw-card-$i')), findsOneWidget, reason: '${techs[i].tech.label} has a node');
     }
-    final fab = techs.indexWhere((o) => o.tech == proto.ResearchType.modularFabrication);
-    await tester.tap(find.byKey(ValueKey('hw-card-$fab')));
+    final plasma = techs.indexWhere((o) => o.tech == proto.ResearchType.plasmaTechnology);
+    await tester.tap(find.byKey(ValueKey('hw-card-$plasma')));
     await tester.pump();
-    expect(c.hwCursor, fab);
+    expect(c.hwCursor, plasma);
+    expect(tester.widget<Text>(find.byKey(const Key('hw-needed-by'))).data, 'BOMBER (LEVEL 5), PLASMA TURRET (LEVEL 7)',
+        reason: 'a research with no figure of its own says what asks for it');
+    await snap(tester, 'homeworld/research-plasma-1440');
     await tester.tap(find.byKey(const ValueKey('hw-card-1')));
     await tester.pump();
     expect(c.hwCursor, 1);
+    expect(find.byKey(const ValueKey('hw-effect-buildSlots')), findsOneWidget, reason: 'Computer Technology says what a level of it does');
     await snap(tester, 'homeworld/research-1440');
     await endShell(tester, c);
   });
 
-  testWidgets('the queue strip has a pill for each build slot the server reports, and for the next one while a level of Modular Fabrication is left', (tester) async {
+  testWidgets('the queue strip has a pill for each build slot the server reports, and for the next one while the server names what opens it', (tester) async {
     final c = await open(tester) as DemoController;
     Finder inPill(String letter, String text) => find.descendant(of: find.byKey(Key('hw-pill-slot-$letter')), matching: find.textContaining(text));
     expect(inPill('b', 'LOCKED'), findsOneWidget);
-    expect(inPill('b', 'Needs Modular Fabrication L1'), findsOneWidget);
+    expect(inPill('b', 'Needs Computer Technology level 3 (you have 1)'), findsOneWidget);
     expect(find.byKey(const Key('hw-pill-slot-c')), findsNothing);
 
-    c.learn(proto.ResearchType.modularFabrication, 1);
+    c.learn(proto.ResearchType.computerTechnology, 3);
     await tester.pump(const Duration(seconds: 1));
     expect(c.state.hw!.buildSlots, 2);
     expect(inPill('b', 'LOCKED'), findsNothing);
     expect(inPill('c', 'LOCKED'), findsOneWidget);
-    expect(inPill('c', 'Needs Modular Fabrication L2'), findsOneWidget);
+    expect(inPill('c', 'Needs Computer Technology level 6 (you have 3)'), findsOneWidget);
 
-    c.learn(proto.ResearchType.modularFabrication, 2);
+    c.learn(proto.ResearchType.computerTechnology, 6);
     await tester.pump(const Duration(seconds: 1));
     expect(c.state.hw!.buildSlots, 3);
     expect(c.state.hw!.buildQueue, hasLength(3), reason: 'the two waiting orders took the new slots');
@@ -204,18 +210,80 @@ void main() {
     await endShell(tester, c);
   });
 
-  testWidgets('defence and storage render from the demo', (tester) async {
-    final c = await open(tester);
+  testWidgets('defence and storage render from the demo: a row for every defence, a dome that is one of a kind, a building for each stockpile', (tester) async {
+    final c = await open(tester) as DemoController;
     await tester.tap(find.byKey(const ValueKey('hw-tab-defence')));
     await tester.pump();
     expect(find.textContaining('RAID'), findsWidgets);
-    expect(find.text('PULSE TURRET'), findsWidgets);
-    expect(find.textContaining('BUILD X'), findsWidgets);
+    final defences = c.state.catalog!.defences;
+    for (var i = 0; i < defences.length; i++) {
+      expect(find.descendant(of: find.byKey(ValueKey('hw-card-$i')), matching: find.text(defences[i].kind.label.toUpperCase())), findsOneWidget,
+          reason: '${defences[i].kind.label} has a row to order it from');
+    }
+    expect(find.textContaining('BUILD X'), findsNWidgets(defences.length));
+    expect(find.text('ONE OF A KIND'), findsNWidgets(2), reason: 'the two domes');
+    expect(find.descendant(of: find.byKey(const Key('defence-satellites')), matching: find.text('x2')), findsOneWidget);
+    expect(find.text('DOCKED SHIPS ${groupDigits(c.state.hw!.dockedPower.round())}'), findsOneWidget, reason: 'the three parts of the defence are the server\'s figures');
+    expect(find.text('SOLAR SATELLITES ${groupDigits(c.state.hw!.satellitePower.round())}'), findsOneWidget);
+    expect(find.text('DEFENCES ${groupDigits(c.state.hw!.structurePower.round())}'), findsOneWidget);
     await snap(tester, 'homeworld/defence-1440');
+
+    c.learn(proto.ResearchType.shieldingTechnology, 2);
+    await tester.pump(const Duration(milliseconds: 100));
+    final dome = defences.indexWhere((o) => o.kind == proto.DefenceKind.smallShieldDome);
+    await tester.ensureVisible(find.byKey(ValueKey('hw-card-$dome')));
+    await tester.tap(find.byKey(ValueKey('hw-card-$dome')));
+    await tester.pump();
+    expect(tester.widget<Kv>(find.byKey(const Key('hw-defence-limit'))).v, 'ONE OF A KIND');
+    c.setShipBatch(5);
+    await tester.pump();
+    expect(find.descendant(of: find.byKey(ValueKey('hw-card-$dome')), matching: find.text('BUILD X1')), findsOneWidget, reason: 'a batch of a dome is the one that may stand');
+    c.activateHomeworldCard(dome);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.state.events.map((e) => e.message), contains('> defence Small Shield Dome x1'));
+    expect(c.state.catalog!.defences[dome].room, 0);
+    expect(find.descendant(of: find.byKey(ValueKey('hw-card-$dome')), matching: find.text('At most 1 may stand, counting those on order and being rebuilt')), findsOneWidget);
+    await snap(tester, 'homeworld/defence-dome-1440');
+
     await tester.tap(find.byKey(const ValueKey('hw-tab-storage')));
     await tester.pump();
-    expect(find.text('STORAGE VAULT'), findsOneWidget);
+    for (final kind in proto.ResourceKind.values) {
+      final row = find.byKey(Key('storage-row-${kind.name}'));
+      expect(find.descendant(of: row, matching: find.textContaining('RAISE ${kind.storage.toUpperCase()} TO L')), findsOneWidget,
+          reason: '${kind.name} is held by its own building, which is raised from its row');
+    }
+    expect(find.descendant(of: find.byKey(const Key('energy-readout')), matching: find.text('MINES AT 100%')), findsOneWidget);
+    expect(find.byKey(const Key('energy-warning')), findsNothing);
     await snap(tester, 'homeworld/storage-1440');
+    await tester.tap(find.byKey(const ValueKey('hw-upgrade-crystal')));
+    await tester.pump();
+    expect(c.state.hw!.buildPending.last.buildingType, proto.BuildingType.crystalStorage);
+    await endShell(tester, c);
+  });
+
+  testWidgets('short of energy the readout warns, with what is made and needed, and says when the reactor has nothing to burn', (tester) async {
+    final c = await open(tester) as DemoController;
+    c.raise(proto.BuildingType.solarPlant, 8);
+    await tester.pump(const Duration(milliseconds: 100));
+    final energy = c.state.hw!.energy;
+    expect(energy.fraction, lessThan(1));
+    final share = (energy.fraction * 100).floor();
+    expect(find.descendant(of: find.byKey(const Key('energy-readout')), matching: find.text('MINES AT $share%')), findsOneWidget);
+    expect(tester.widget<Text>(find.byKey(const Key('energy-warning'))).data, 'EVERY MINE MAKES $share% OF ITS OUTPUT UNTIL MORE ENERGY IS MADE.');
+    expect(tester.widget<Text>(find.byKey(const Key('energy-figures'))).textSpan!.toPlainText(), '${energy.made} MADE / ${energy.needed} NEEDED');
+    expect(tester.widget<Text>(find.byKey(const Key('energy-satellites'))).data, 'SOLAR SATELLITES 2, +${energy.perSatellite} EACH');
+    await snap(tester, 'homeworld/energy-short-1440');
+
+    c.raise(proto.BuildingType.fusionReactor, 3);
+    c.stock(const proto.Resources(metal: 5000, crystal: 5000));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.state.hw!.energy.fusionStarved, isTrue);
+    expect(tester.widget<Text>(find.byKey(const Key('energy-fusion'))).data, 'FUSION REACTOR STOPPED: NO DEUTERIUM TO BURN');
+    c.stock(const proto.Resources(metal: 5000, crystal: 5000, deuterium: 900));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.widget<Text>(find.byKey(const Key('energy-fusion'))).data, startsWith('FUSION REACTOR BURNS '));
+    await snap(tester, 'homeworld/energy-fusion-1440');
+    expect(tester.takeException(), isNull);
     await endShell(tester, c);
   });
 
@@ -234,27 +302,32 @@ void main() {
     await tester.pump();
     expect(find.byKey(const ValueKey('hold-fleet-102')), findsOneWidget, reason: 'the fleet docked at home');
     expect(find.byKey(const ValueKey('hold-fleet-101')), findsNothing, reason: 'a fleet away cannot load');
-    expect(tester.widget<Text>(find.byKey(const Key('hold-aboard'))).data, '0 / 400');
-    expect(offer(tester), 'Load 400 Fe', reason: 'all that fits: the hold is smaller than the stockpile');
+    final room = c.state.fleets.firstWhere((f) => f.id == 102).holdCapacity;
+    final half = room / 2;
+    String whole(double v) => groupDigits(v.floor());
+    expect(room, lessThan(c.state.stock.metal), reason: 'the hold of two Small Cargoes is smaller than the stockpile');
+    expect(tester.widget<Text>(find.byKey(const Key('hold-aboard'))).data, '0 / ${whole(room)}');
+    expect(offer(tester), 'Load ${whole(room)} Fe', reason: 'all that fits');
     expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('hold-unload'))).onPressed, isNull);
 
     await press(tester, 'hold-share-50');
-    expect(offer(tester), 'Load 200 Fe');
+    expect(offer(tester), 'Load ${whole(half)} Fe');
     final metal = c.state.stock.metal;
     await press(tester, 'hold-load');
-    expect(c.state.events.map((e) => e.message), contains('> load 200 metal into F102'));
-    expect(c.state.events.map((e) => e.message), contains(startsWith('fleet 102 loaded 200 metal from the stockpile: it carries 200 of 400')));
-    expect((c.state.holds[102]!.metal, c.state.stock.metal), (200, metal - 200));
+    expect(c.state.events.map((e) => e.message), contains('> load ${half.round()} metal into F102'));
+    expect(c.state.events.map((e) => e.message),
+        contains(startsWith('fleet 102 loaded ${half.round()} metal from the stockpile: it carries ${half.round()} of ${room.round()}')));
+    expect((c.state.holds[102]!.metal, c.state.stock.metal), (half, metal - half));
     expect(c.state.fleets.firstWhere((f) => f.id == 102).laden, isTrue);
-    expect(tester.widget<Text>(find.byKey(const Key('hold-aboard'))).data, '200 / 400');
-    expect(cargo(tester), 'Fe 200   Cr 0   De 0   KEPT ABOARD UNTIL THE FLEET HAS BEEN AWAY');
+    expect(tester.widget<Text>(find.byKey(const Key('hold-aboard'))).data, '${whole(half)} / ${whole(room)}');
+    expect(cargo(tester), 'Fe ${whole(half)}   Cr 0   De 0   KEPT ABOARD UNTIL THE FLEET HAS BEEN AWAY');
     expect(find.text('LADEN'), findsOneWidget);
 
     await press(tester, 'hold-res-crystal');
     await press(tester, 'hold-share-100');
-    expect(offer(tester), 'Load 200 Cr', reason: 'what is left of the hold');
+    expect(offer(tester), 'Load ${whole(half)} Cr', reason: 'what is left of the hold');
     await press(tester, 'hold-load');
-    expect(c.state.holds[102]!.crystal, 200);
+    expect(c.state.holds[102]!.crystal, closeTo(half, 1e-6));
     expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('hold-load'))).onPressed, isNull);
     expect(offer(tester), 'Load');
     expect(tester.widget<Text>(find.descendant(of: find.byKey(const Key('hold-why')), matching: find.byType(Text))).data, 'The hold of F102 is full.');
@@ -262,7 +335,7 @@ void main() {
     await snap(tester, 'homeworld/hold-1440');
 
     await press(tester, 'hold-unload');
-    expect(c.state.events.map((e) => e.message), contains('fleet 102 unloaded 200 metal and 200 crystal into the stockpile'));
+    expect(c.state.events.map((e) => e.message), contains('fleet 102 unloaded ${half.ceil()} metal and ${half.ceil()} crystal into the stockpile'));
     expect(c.state.holds[102]!.total, 0);
     expect(c.state.stock.metal, closeTo(metal, 10), reason: 'what was loaded is back, and a tick or two of the mines');
     expect(find.text('LADEN'), findsNothing);
@@ -279,12 +352,13 @@ void main() {
     expect(c.state.holds[101]!.metal, 34, reason: 'a refused load moves nothing');
 
     c.selectFleet(1);
-    c.handleCommand('load deut 5000');
-    expect(c.state.events.first.message, endsWith('the stockpile holds 880.0 deuterium; fleet 102 cannot load 5000.0'));
-    c.handleCommand('load crystal 120.5');
+    c.handleCommand('load deut 50000');
+    expect(c.state.events.first.message, endsWith('the stockpile holds 8800.0 deuterium; fleet 102 cannot load 50000.0'));
+    final room = c.state.fleets.firstWhere((f) => f.id == 102).holdCapacity;
+    c.handleCommand('load crystal ${room - 279.5}');
     c.handleCommand('load deut');
     final hold = c.state.holds[102]!;
-    expect((hold.metal, hold.crystal, hold.deuterium), (0, 120.5, 279.5), reason: 'an amount, then all that fits');
+    expect([hold.metal, hold.crystal, hold.deuterium], [0, closeTo(room - 279.5, 1e-6), closeTo(279.5, 1e-6)], reason: 'an amount, then all that fits');
     c.handleCommand('unload');
     expect(c.state.holds[102]!.total, 0);
     c.handleCommand('unload');

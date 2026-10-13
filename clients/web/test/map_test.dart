@@ -81,7 +81,7 @@ GameState _state(int tick, List<ui.FleetState> fleets) {
       hostiles: hostile
           ? const [proto.NpcFleetInfo(id: 9, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.cruiser, count: 1)], behavior: proto.NpcBehavior.aggressive)]
           : minor
-              ? const [proto.NpcFleetInfo(id: 10, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.scout, count: 1)], behavior: proto.NpcBehavior.patrol)]
+              ? const [proto.NpcFleetInfo(id: 10, ships: [proto.NpcShipInfo(shipClass: proto.ShipClass.lightFighter, count: 1)], behavior: proto.NpcBehavior.patrol)]
               : null,
       threat: hostile
           ? const proto.ThreatInfo(rating: 6, estPower: 137.5, basis: proto.ThreatBasis.observed)

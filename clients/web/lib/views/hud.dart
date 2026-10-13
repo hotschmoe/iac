@@ -73,7 +73,7 @@ class Hud extends StatelessWidget {
                 builder: (context, box) => Row(children: [
                   for (final s in stockpiles)
                     Expanded(child: _ResChip(s, eco, narrow, showRate: !narrow && box.maxWidth >= 3 * _chipWithRate)),
-                  if (con.state.hw?.energy case final energy? when !narrow || energy.fraction < 1) _EnergyChip(energy, narrow),
+                  if (con.state.hw?.energy case final energy? when !narrow || energy.short) _EnergyChip(energy, narrow),
                 ]),
               ),
             ),
@@ -308,8 +308,8 @@ class _EnergyChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final short = energy.fraction < 1;
-    final share = (energy.fraction * 100).floor();
+    final short = energy.short;
+    final share = energy.sharePct;
     return Semantics(
       label: 'Energy: mines at $share percent, ${energy.made} made of ${energy.needed} needed',
       excludeSemantics: true,

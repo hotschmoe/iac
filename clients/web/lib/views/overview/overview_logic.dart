@@ -126,10 +126,10 @@ NextUp nextUp(GameState s, EconomyView eco) {
     }
   }
   final energy = s.hw?.energy;
-  if (energy != null && energy.fraction < 1) {
+  if (energy != null && energy.short) {
     return NextUp(
         'ENERGY',
-        'The mines run at ${(energy.fraction * 100).floor()}%',
+        'The mines run at ${energy.sharePct}%',
         'The homeworld makes ${energy.made} energy and its mines need ${energy.needed}, so every mine makes that share of its output. '
             '${energy.fusionStarved ? 'The Fusion Reactor has no deuterium to burn. ' : ''}Make more energy.',
         'Open homeworld',
@@ -188,10 +188,10 @@ List<OvAlert> buildAlerts(GameState s, EconomyView eco) {
     out.add(OvAlert('Raid incoming', 'Power est. ${d.raidEstimate.round()} vs your defence ${d.total.round()}.', critical: true, time: clockFmt(raidIn), tab: 'defence'));
   }
   final energy = s.hw?.energy;
-  if (energy != null && energy.fraction < 1) {
+  if (energy != null && energy.short) {
     out.add(OvAlert(
         'Short of energy',
-        'The mines run at ${(energy.fraction * 100).floor()}% of their output: ${energy.made} energy made, ${energy.needed} needed.'
+        'The mines run at ${energy.sharePct}% of their output: ${energy.made} energy made, ${energy.needed} needed.'
             '${energy.fusionStarved ? ' The Fusion Reactor has no deuterium to burn.' : ''}',
         critical: true,
         tab: 'buildings'));

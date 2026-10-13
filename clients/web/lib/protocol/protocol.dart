@@ -155,6 +155,15 @@ extension RapidFireOf on WorldInfo {
   List<RapidFire> rapidFireAgainst(ShipyardItem target) => [for (final r in rapidFire) if (r.against == target) r];
 }
 
+extension EnergyShare on EnergyState {
+  /// Less energy is made than the mines need.
+  bool get short => fraction < 1;
+
+  /// The share of their output the mines run at, as a whole percent that
+  /// reads 100 only when it is all of it.
+  int get sharePct => (fraction * 100).floor();
+}
+
 extension CatalogStorage on HomeworldCatalog {
   /// The building that stores [kind], which Rust names by its label.
   BuildingOption? storageOf(ResourceKind kind) {

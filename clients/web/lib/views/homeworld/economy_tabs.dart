@@ -40,8 +40,8 @@ class EnergyReadout extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final e = hw.energy;
-    final short = e.fraction < 1;
-    final share = (e.fraction * 100).floor();
+    final short = e.short;
+    final share = e.sharePct;
     final col = short ? C.ember : C.own;
     return Semantics(
       label: 'Energy: ${e.made} made, ${e.needed} needed, mines at $share percent',
@@ -208,6 +208,9 @@ const loadShares = [25, 50, 75, 100];
 
 const _abbr = {proto.ResourceKind.metal: 'Fe', proto.ResourceKind.crystal: 'Cr', proto.ResourceKind.deuterium: 'De'};
 
+/// "31,622": an amount as a hold or a stockpile counts it, in whole units.
+String _whole(double v) => groupDigits(v.floor());
+
 /// The two docks a hold is filled and emptied at by hand: the homeworld,
 /// from the stockpile, and the player's outpost, from its store.
 enum HoldDock { home, outpost }
@@ -290,14 +293,14 @@ class _HoldPanelState extends State<HoldPanel> {
         const SizedBox(height: 4),
         Wrap(spacing: 6, runSpacing: 6, children: [
           for (final f in docked)
-            ConsoleButton('${f.name} ${(st.holds[f.id]?.total ?? 0).floor()}/${f.holdCapacity.floor()}',
+            ConsoleButton('${f.name} ${_whole(st.holds[f.id]?.total ?? 0)}/${_whole(f.holdCapacity)}',
                 key: ValueKey('hold-fleet-${f.id}'), small: true, primary: f.id == fleet.id, onPressed: () => setState(() => _fleet = f.id)),
         ]),
         const SizedBox(height: 10),
         Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
           const Lbl('Aboard'),
           const SizedBox(width: 10),
-          Text('${hold.total.floor()} / ${fleet.holdCapacity.floor()}', key: const Key('hold-aboard'), style: T.mono(size: 13, color: C.text)),
+          Text('${_whole(hold.total)} / ${_whole(fleet.holdCapacity)}', key: const Key('hold-aboard'), style: T.mono(size: 13, color: C.text)),
           const Spacer(),
           if (fleet.laden) const Lamp('Laden', color: C.ok),
         ]),
@@ -307,7 +310,7 @@ class _HoldPanelState extends State<HoldPanel> {
         Text.rich(
           TextSpan(children: [
             for (final k in proto.ResourceKind.values) ...[
-              TextSpan(text: '${_abbr[k]} ${k.of(hold).floor()}', style: TextStyle(color: C.ore(k.name))),
+              TextSpan(text: '${_abbr[k]} ${_whole(k.of(hold))}', style: TextStyle(color: C.ore(k.name))),
               const TextSpan(text: '   '),
             ],
             if (note != null) TextSpan(text: note, style: const TextStyle(color: C.text3)),
@@ -320,7 +323,7 @@ class _HoldPanelState extends State<HoldPanel> {
         const SizedBox(height: 4),
         Wrap(spacing: 6, runSpacing: 6, children: [
           for (final k in proto.ResourceKind.values)
-            ConsoleButton('${_abbr[k]} ${k.of(from).floor()}${capped.contains(k) ? ' full' : ''}',
+            ConsoleButton('${_abbr[k]} ${_whole(k.of(from))}${capped.contains(k) ? ' full' : ''}',
                 key: ValueKey('hold-res-${k.name}'),
                 small: true,
                 primary: k == resource,
@@ -336,10 +339,10 @@ class _HoldPanelState extends State<HoldPanel> {
                 key: ValueKey('hold-share-$s'), small: true, primary: s == _share, onPressed: () => setState(() => _share = s)),
         ]),
         const SizedBox(height: 8),
-        Kv('Room in the hold', key: const Key('hold-room'), v: '${room.floor()}'),
+        Kv('Room in the hold', key: const Key('hold-room'), v: _whole(room)),
         const SizedBox(height: 10),
         Wrap(spacing: 8, runSpacing: 6, children: [
-          ConsoleButton(why == null ? 'Load ${(amount ?? fits).floor()} ${_abbr[resource]}' : 'Load',
+          ConsoleButton(why == null ? 'Load ${_whole(amount ?? fits)} ${_abbr[resource]}' : 'Load',
               key: const ValueKey('hold-load'),
               small: true,
               primary: why == null,

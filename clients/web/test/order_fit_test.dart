@@ -18,7 +18,7 @@ const _big = 1234567;
 const _desktop = Size(1440, 900);
 const _phone = Size(390, 844);
 const _shortBy = 'Short by 1,234,567 Fe, 1,234,567 Cr, 1,234,567 De';
-const _waitingShort = 'short by 1,234,567 Fe, 1,234,567 Cr, 1,234,567 De, starts in about 34:17:36';
+const _waitingShort = 'short by 1,234,567 Fe, 1,234,567 Cr, 1,234,567 De, starts in about 1d 10:17:36';
 
 Map<String, dynamic> _cost([int times = 1]) => {'metal': _big * times, 'crystal': _big * times, 'deuterium': _big * times};
 
@@ -37,21 +37,21 @@ proto.ServerMessage _brokeWorld() {
         'cost': _cost(), 'ticks': 86400, 'waiting_for': _cost(), 'waiting_on': 'Resources', 'start_in': 123456,
       },
       {
-        'id': 902, 'building_type': 'StorageVault', 'target_level': 9, 'reserve': false,
+        'id': 902, 'building_type': 'DeuteriumTank', 'target_level': 9, 'reserve': false,
         'cost': _cost(), 'ticks': 86400, 'waiting_for': _cost(), 'waiting_on': 'Order', 'start_in': 123456,
       },
     ]
     ..remove('research_active')
     ..['research_pending'] = [
       {
-        'id': 903, 'tech': 'HarvestingEfficiency', 'target_level': 5, 'reserve': false,
+        'id': 903, 'tech': 'HyperspaceTechnology', 'target_level': 5, 'reserve': false,
         'cost': _cost(), 'ticks': 86400, 'waiting_for': _cost(), 'waiting_on': 'Resources', 'start_in': 123456,
       },
     ]
     ..remove('shipyard_queue')
     ..['shipyard_pending'] = [
       {
-        'id': 904, 'item': 'LancerBattery', 'count': 1000,
+        'id': 904, 'item': 'RocketLauncher', 'count': 1000,
         'cost': _cost(1000), 'unit_cost': _cost(), 'ticks': 86400, 'waiting_on': 'Prerequisite',
       },
     ];
@@ -110,8 +110,8 @@ void main() {
 
       for (final (queue, order, waits) in [
         ('building', '${proto.BuildingType.deuteriumSynthesizer.label} Lv.12', _waitingShort),
-        ('research', '${proto.ResearchType.harvestingEfficiency.label} Lv.5', _waitingShort),
-        ('ship', '${proto.DefenceKind.lancerBattery.label} x1000', 'paid, waiting for a prerequisite'),
+        ('research', '${proto.ResearchType.hyperspaceTechnology.label} Lv.5', _waitingShort),
+        ('ship', '${proto.DefenceKind.rocketLauncher.label} x1000', 'paid, waiting for a prerequisite'),
       ]) {
         final pill = find.byKey(Key('hw-pill-$queue'));
         expect(find.descendant(of: pill, matching: find.textContaining('${order.toUpperCase()}  $waits')), findsOneWidget,
@@ -184,7 +184,7 @@ void main() {
       expect(find.descendant(of: find.byKey(const Key('card-slot-a')), matching: find.text(_waitingShort)), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('card-shipyard')), matching: find.textContaining('paid, waiting for a prerequisite')), findsOneWidget);
 
-      final ship = find.byKey(const Key('sug-ship-scout'));
+      final ship = find.byKey(Key('sug-ship-${proto.ShipClass.values.first.name}'));
       await _show(tester, ship);
       expect(find.descendant(of: ship, matching: find.text(_shortBy)), findsOneWidget, reason: 'the ship tile names the shortfall');
       await tester.tap(ship, warnIfMissed: false);

@@ -139,7 +139,7 @@ class _Hero extends StatelessWidget {
     final name = con.game.playerName.isEmpty ? 'Homeworld' : con.game.playerName;
     final chips = <Widget>[
       Tag(zone, on: true),
-      if (energy != null) Tag('Mines at ${(energy.fraction * 100).floor()}%', color: energy.fraction < 1 ? C.ember : C.own),
+      if (energy != null) Tag('Mines at ${energy.sharePct}%', color: energy.short ? C.ember : C.own),
       if (s.hw case final hw? when hw.satellites > 0) Tag('${hw.satellites} Solar Satellite${hw.satellites == 1 ? '' : 's'}'),
       if (eco.world != null) Tag('Pace x${eco.world!.pace == eco.world!.pace.roundToDouble() ? eco.world!.pace.toInt() : eco.world!.pace}'),
     ];

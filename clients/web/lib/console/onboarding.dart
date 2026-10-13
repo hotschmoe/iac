@@ -174,7 +174,7 @@ class Onboarding extends ChangeNotifier {
         final energy = s.hw?.energy;
         if (energy == null) return l.hint;
         return '${l.hint} The homeworld makes ${energy.made} energy and the mines need ${energy.needed}'
-            '${energy.fraction < 1 ? ': they run at ${(energy.fraction * 100).floor()}%.' : '.'}';
+            '${energy.short ? ': they run at ${energy.sharePct}%.' : '.'}';
       case Lesson.cargo:
         final unmet = [
           for (final r in s.catalog?.ships.where((o) => o.shipClass == proto.ShipClass.smallCargo).firstOrNull?.requires ?? const <proto.Requirement>[])

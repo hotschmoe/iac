@@ -249,12 +249,15 @@ void main() {
     test('the homeworld lists defences, defence power and the next raid estimate', () {
       final f = fixtureFiles('protocol/server_message').firstWhere((f) => baseName(f) == 'full_state');
       final hw = (ServerMessage.fromJson(readJson(f)) as GameState).homeworld;
-      expect(hw.defences.first.kind, DefenceKind.pulseTurret);
+      expect(hw.defences.first.kind, DefenceKind.rocketLauncher);
       expect(hw.defences.first.count, 12);
       expect(hw.defences.first.restoring, 2);
-      expect(hw.homeDefencePower, 340.5);
+      expect(hw.homeDefencePower, 2340.5);
+      expect((hw.dockedPower, hw.satellitePower, hw.structurePower), (444, closeTo(126.6, 1e-4), closeTo(1769.9, 1e-4)));
       expect(hw.nextRaidEstimatePower, 300.25);
-      expect(hw.catalog.defences.map((d) => d.count), [12, 0, 3]);
+      expect(hw.catalog.defences.map((d) => d.count), [12, 0, 0, 3, 0, 0, 1, 0]);
+      expect(hw.catalog.defences.map((d) => (d.max, d.room)), [for (var i = 0; i < 6; i++) (null, null), (1, 0), (1, 0)],
+          reason: 'a dome is one of a kind, and one that stands or is on order leaves room for no more');
       expect(hw.catalog.defences.first.requires.first.label, 'Shipyard level 1');
     });
 
@@ -303,9 +306,9 @@ void main() {
       expect(hw.buildQueue.length, 2);
       expect(hw.buildPending.first.waitingFor!.crystal, 120.5);
       expect(hw.buildPending.last.waitingFor, isNull);
-      expect(hw.shipyardPending.map((q) => q.item.label), ['Frigate', 'Pulse Turret']);
+      expect(hw.shipyardPending.map((q) => q.item.label), ['Cruiser', 'Rocket Launcher']);
       expect(hw.shipyardPending.first.count, 2);
-      expect(hw.researchPending.single.tech, ResearchType.cruiserTech);
+      expect(hw.researchPending.single.tech, ResearchType.ionTechnology);
     });
 
     test('the mapper lists waiting items after the running ones and says what they wait for', () {
@@ -315,7 +318,7 @@ void main() {
       expect(ui.buildQueue.map((q) => q.active), [true, true, false, false]);
       expect(ui.buildQueue[2].time, 'short by 121 Cr, starts in about 1:35');
       expect(ui.buildQueue[3].time, 'held by a reserved order, starts in about 1:35');
-      expect(ui.shipyard.map((q) => q.name).skip(1), ['Frigate x2', 'Pulse Turret x10']);
+      expect(ui.shipyard.map((q) => q.name).skip(1), ['Cruiser x2', 'Rocket Launcher x10']);
       expect(ui.shipyard.map((q) => q.time).skip(1), ['paid, waiting for the yard, starts in about 4:00', 'paid, waiting for a prerequisite']);
       expect(ui.research.waiting.single.time, 'short by 1,200 De, starts in about 30:00');
     });
