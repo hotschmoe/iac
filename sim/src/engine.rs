@@ -3929,7 +3929,7 @@ impl GameEngine {
     /// The exact reading, span and window of `player`'s exchange meter now.
     fn exchange_standing(&self, player: &Player) -> (f64, f64, u64) {
         let pace = self.world.pace;
-        let span = scaling::exchange_span(&player.production_per_tick(&pace), &pace);
+        let span = scaling::exchange_span(&player.mined_per_tick(&pace), &pace);
         let window = scaling::exchange_window(&pace);
         let elapsed = self.current_tick.saturating_sub(player.exchange_tick);
         (scaling::exchange_pressure_after(player.exchange_pressure, elapsed, span, window), span, window)
@@ -5392,7 +5392,7 @@ impl GameEngine {
     /// Deuterium per tick a doctrine's fuel budget grows by.
     fn fuel_income(&self, owner: u64, params: &PolicyParams) -> f64 {
         let Some(player) = self.players.get(&owner) else { return 0.0; };
-        player.production_per_tick(&self.world.pace).deuterium * f64::from(params.fuel_budget_pct) / 100.0
+        player.production_per_tick(&self.world.pace).deuterium.max(0.0) * f64::from(params.fuel_budget_pct) / 100.0
     }
 
     /// Shields come back while a fleet idles and hull never does, so a fleet

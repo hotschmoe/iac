@@ -105,14 +105,14 @@ pub fn find_sector(engine: &GameEngine, min_dist: u16, pred: impl Fn(Density, De
     panic!("no matching sector in a 60x60 window");
 }
 
-pub fn lone_scout_sector(engine: &GameEngine, behavior: NpcBehaviorType) -> Hex {
+pub fn lone_fighter_sector(engine: &GameEngine, behavior: NpcBehaviorType) -> Hex {
     for q in -20i16..20 {
         for r in -20i16..20 {
             let coord = Hex { q, r };
             if let Some(t) = engine.world_gen.generate_sector(coord).npc_template
                 && t.behavior == behavior
                 && t.count == 1
-                && t.ship_class == ShipClass::Scout
+                && t.ship_class == ShipClass::LightFighter
                 && engine.derelict_site_at(coord).is_none()
             {
                 return coord;
@@ -152,7 +152,6 @@ pub fn muster(engine: &mut GameEngine, fid: u64, classes: &[(ShipClass, usize)],
                     shield: stats.shield,
                     shield_max: stats.shield,
                     weapon_power: stats.weapon,
-                    speed: stats.speed,
                 };
                 fleet.ship_count += 1;
             }
@@ -442,7 +441,7 @@ impl Cast for Pilots {
                     tech: ResearchType::from_usize(rng.random_range(0..ResearchType::COUNT)).unwrap(),
                     reserve: false,
                 }),
-                8 => Some(Command::BuildShip { ship_class: ShipClass::Scout, count: 2 }),
+                8 => Some(Command::BuildShip { ship_class: ShipClass::LightFighter, count: 2 }),
                 9 => here.map(|at| Command::Attack { fleet_id, target_fleet_id: template_npc_id(at) }),
                 10 => Some(Command::Recall { fleet_id }),
                 _ => Some(Command::CollectSalvage { fleet_id }),

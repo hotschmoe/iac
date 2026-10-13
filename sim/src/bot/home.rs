@@ -106,6 +106,7 @@ const TURTLE: Profile = Profile {
     tank: 0.0,
     tech: 2.0,
     research: &[
+        (T::CombustionDrive, 1),
         (T::ComputerTechnology, 3),
         (T::ArmourTechnology, 2),
         (T::WeaponsTechnology, 2),

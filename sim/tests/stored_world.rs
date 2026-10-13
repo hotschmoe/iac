@@ -78,7 +78,7 @@ impl Settler {
     fn play(&self, engine: &mut GameEngine) {
         let (pid, fleet_id) = (self.pid, self.fleet);
         let stock = &mut engine.players.get_mut(&pid).unwrap().resources;
-        (stock.metal, stock.crystal, stock.deuterium) = (stock.metal.max(9000.0), stock.crystal.max(5000.0), stock.deuterium.max(3000.0));
+        (stock.metal, stock.crystal, stock.deuterium) = (stock.metal.max(27_000.0), stock.crystal.max(15_000.0), stock.deuterium.max(9000.0));
         let Some(fleet) = engine.fleets.get(&fleet_id) else { return };
         if !matches!(fleet.state, FleetStatus::Idle | FleetStatus::Docked) || fleet.action_cooldown > 0 {
             return;
@@ -93,7 +93,7 @@ impl Settler {
             }
         };
         if at == self.home && !laden {
-            for (resource, amount) in [(ResourceKind::Metal, 1500.0), (ResourceKind::Crystal, 800.0), (ResourceKind::Deuterium, 400.0)] {
+            for (resource, amount) in [(ResourceKind::Metal, 4500.0), (ResourceKind::Crystal, 2400.0), (ResourceKind::Deuterium, 1200.0)] {
                 let _ = engine.execute(pid, Command::Load { fleet_id, resource, amount: Some(amount) });
             }
         } else if at == self.site {
@@ -169,8 +169,8 @@ impl Cast for Crew {
                     tech: ResearchType::from_usize(rng.random_range(0..ResearchType::COUNT)).unwrap(),
                     reserve: false,
                 }),
-                9 => Some(Command::BuildShip { ship_class: ShipClass::Scout, count: 2 }),
-                10 => Some(Command::BuildDefence { kind: DefenceKind::PulseTurret, count: 2 }),
+                9 => Some(Command::BuildShip { ship_class: ShipClass::LightFighter, count: 2 }),
+                10 => Some(Command::BuildDefence { kind: DefenceKind::RocketLauncher, count: 2 }),
                 11 => here.map(|at| Command::Attack { fleet_id, target_fleet_id: template_npc_id(at) }),
                 12 => Some(Command::Recall { fleet_id }),
                 13 => Some(Command::ExploreSite { fleet_id }),

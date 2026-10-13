@@ -1457,10 +1457,10 @@ pub fn ore_density_odds(dist: u16) -> [f32; 4] {
 // ── Loot ─────────────────────────────────────────────────────────
 
 /// A destroyed group leaves `WRECK_VALUE_K * power^WRECK_VALUE_EXPONENT`
-/// units. The 1.2 it was is multiplied by `MAP_PAYS`; a group's power is
-/// ten times what it was besides, so a group of a given ring leaves about
-/// nineteen times the wreckage it did.
-pub const WRECK_VALUE_K: f64 = 1.2 * MAP_PAYS;
+/// units. A group of a given ring is to leave `MAP_PAYS` times what it did
+/// before OGame's catalogue, when this was 1.2 and a group's power was a
+/// tenth of what it is: 1.2 * 3 / 10^0.8. Provisional.
+pub const WRECK_VALUE_K: f64 = 0.57;
 pub const WRECK_VALUE_EXPONENT: f64 = 0.8;
 /// Metal, crystal and deuterium shares of any loot value.
 pub const LOOT_SPLIT: [f64; 3] = [0.55, 0.30, 0.15];
@@ -1473,7 +1473,7 @@ pub const DERELICT_VALUE_RING: u16 = 4;
 pub const DERELICT_ROLL_MIN: f32 = 0.6;
 pub const DERELICT_ROLL_MAX: f32 = 1.4;
 /// Score points an ancient relic is worth.
-pub const RELIC_POINTS: f32 = 30.0;
+pub const RELIC_POINTS: f32 = 300.0;
 
 /// Anti-farming: every kill in a sector adds one point of heat, and the next
 /// kill's loot and score are multiplied by `FARM_DECAY^heat`. Heat halves

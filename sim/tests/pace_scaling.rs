@@ -7,21 +7,25 @@ mod common;
 use common::*;
 use iac_shared::constants::{Resources, ShipClass};
 use iac_shared::protocol::Command;
-use iac_shared::scaling::{BuildingType, ResearchType};
+use iac_shared::scaling::{BuildingType, DefenceKind, ResearchType};
 
-const ORDERS: [Command; 6] = [
+const ORDERS: [Command; 10] = [
     Command::Build { building_type: BuildingType::MetalMine, reserve: false },
     Command::Build { building_type: BuildingType::CrystalMine, reserve: false },
+    Command::Build { building_type: BuildingType::RoboticsFactory, reserve: false },
+    Command::Build { building_type: BuildingType::RoboticsFactory, reserve: false },
     Command::Build { building_type: BuildingType::Shipyard, reserve: false },
     Command::Build { building_type: BuildingType::ResearchLab, reserve: false },
-    Command::Research { tech: ResearchType::CorvetteTech, reserve: false },
-    Command::BuildShip { ship_class: ShipClass::Corvette, count: 2 },
+    Command::Research { tech: ResearchType::EnergyTechnology, reserve: false },
+    Command::Research { tech: ResearchType::CombustionDrive, reserve: false },
+    Command::BuildShip { ship_class: ShipClass::LightFighter, count: 2 },
+    Command::BuildDefence { kind: DefenceKind::RocketLauncher, count: 1 },
 ];
 
 fn ticks_to_finish_the_build_order(pace: &str) -> u64 {
     let mut e = Empire::join(world(pace), "Planner");
     let pid = e.pid;
-    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().resources = Resources { metal: 9_000.0, crystal: 9_000.0, deuterium: 9_000.0 });
+    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().resources = Resources { metal: 15_000.0, crystal: 9_000.0, deuterium: 9_000.0 });
     let mut next = 0;
     for _ in 0..60_000 {
         if next < ORDERS.len() && e.order(ORDERS[next].clone()).is_ok() {
