@@ -26,7 +26,10 @@ use iac_shared::constants::{Density, ResourceKind, ShipClass, TerrainType};
 use iac_shared::hex::{Hex, HexDirection, hex_ring, hex_spiral};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::*;
-use iac_shared::scaling::{BuildingLevels, BuildingType, DefenceKind, RatioLabel, ResearchLevels, ResearchType, ShipyardItem};
+use iac_shared::scaling::{
+    BuildingLevels, BuildingType, DefenceKind, MAX_BUILDING_LEVEL, RatioLabel, ResearchLevels, ResearchType, ShipyardItem,
+    research_max_level,
+};
 use iac_shared::world::HubService;
 
 mod wire;
@@ -471,9 +474,18 @@ fn sample_homeworld() -> HomeworldState {
             DefenceState { kind: DefenceKind::SmallShieldDome, count: 1, restoring: 0, power: 421.1 },
         ],
         home_defence_power: 2340.5,
+        docked_power: 444.0,
         satellite_power: 126.6,
+        structure_power: 1769.9,
         next_raid_estimate_power: 300.25,
-        catalog: HomeworldCatalog::new(&levels, &researched, &[12, 0, 0, 3, 0, 0, 1, 0], 412, &Pace::PERSISTENT),
+        catalog: HomeworldCatalog::new(
+            &levels,
+            &researched,
+            &[12, 0, 0, 3, 0, 0, 1, 0],
+            &[14, 0, 0, 3, 0, 0, 1, 1],
+            412,
+            &Pace::PERSISTENT,
+        ),
     }
 }
 
@@ -503,11 +515,14 @@ fn idle_homeworld() -> HomeworldState {
         docked_ships: vec![],
         defences: vec![],
         home_defence_power: 0.0,
+        docked_power: 0.0,
         satellite_power: 0.0,
+        structure_power: 0.0,
         next_raid_estimate_power: 55.5,
         catalog: HomeworldCatalog::new(
             &BuildingLevels::default(),
             &ResearchLevels::default(),
+            &[0; DefenceKind::COUNT],
             &[0; DefenceKind::COUNT],
             22,
             &Pace::PERSISTENT,
@@ -1813,8 +1828,33 @@ fn generate() -> Files {
     put(&mut f, "protocol/ratio_labels.json".into(), &Value::Array(labels));
 
     synth_fixtures(&mut f);
+    catalog_levels(&mut f);
     hex_fixtures(&mut f);
     f
+}
+
+/// The catalogue of an empire whose every building and research stands at
+/// one level, for each level there is, one catalogue a line. The scripted
+/// world of the Flutter tests takes each of its rows from here, so what it
+/// offers and charges is what the engine would. No Nanite Factory stands in
+/// it: one a level would halve every time that often.
+fn catalog_levels(files: &mut Files) {
+    let lines: Vec<String> = (0..=MAX_BUILDING_LEVEL)
+        .map(|level| {
+            let mut buildings = BuildingLevels::default();
+            for b in BuildingType::ALL {
+                buildings.set(b, if b == BuildingType::NaniteFactory { 0 } else { level });
+            }
+            let mut research = ResearchLevels::default();
+            for t in ResearchType::ALL {
+                research.set(t, level.min(research_max_level(t)));
+            }
+            let none = [0; DefenceKind::COUNT];
+            let catalog = HomeworldCatalog::new(&buildings, &research, &none, &none, 0, &Pace::PERSISTENT);
+            serde_json::to_string(&catalog).unwrap()
+        })
+        .collect();
+    files.insert("protocol/catalog_by_level.json".into(), format!("[\n{}\n]\n", lines.join(",\n")));
 }
 
 fn wire_model() -> Model {

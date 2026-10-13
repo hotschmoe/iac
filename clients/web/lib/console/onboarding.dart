@@ -22,13 +22,25 @@ enum Lesson {
   harvest('Harvest ore', 'Ore fills the hold every tick.', guided: true, screen: Screen.windshield, target: 'dock-harvest', keys: 'H'),
   unload('Recall and unload', 'Docking at home empties the hold into storage.', guided: true, screen: Screen.windshield, target: 'dock-recall', keys: 'R'),
   orders('Set standing orders', 'A fleet with orders flies itself.', guided: true, screen: Screen.windshield, target: 'orders', keys: 'P'),
-  mine('Metal Mine to level 3', 'Metal pays for everything else.'),
-  corvette('Build a Corvette', 'Needs a Shipyard. Your first combat hull.'),
+  mine('Raise a mine', 'Metal pays for everything else, and every level of a mine needs more energy.'),
+  power('', 'Short of energy, every mine makes only that share of its output.'),
+  yard('', 'Ships and defences are built there.'),
+  cargo('', 'Two fighters carry little. A cargo ship brings the ore home.'),
   range('Fly 6 sectors from home', 'Ore and loot improve with distance. Watch the fuel home.'),
   board('Board a derelict', 'A violet hull on the scope. Clear hostiles, then board.'),
   fight('Win a fight', 'Read the ratio gauge first: FAVOURABLE or better.');
 
-  final String title;
+  final String _title;
+
+  /// What the lesson asks for. One about an item of the catalogue names it
+  /// as the engine does.
+  String get title => switch (this) {
+        Lesson.power => 'Raise the ${proto.BuildingType.solarPlant.label}',
+        Lesson.yard => 'Build a ${proto.BuildingType.shipyard.label}',
+        Lesson.cargo => 'Build a ${proto.ShipClass.smallCargo.label}',
+        _ => _title,
+      };
+
   final String hint;
   final bool guided;
 
@@ -39,7 +51,7 @@ enum Lesson {
   final Screen? screen;
   final String? target;
   final String? keys;
-  const Lesson(this.title, this.hint, {this.guided = false, this.listed = true, this.screen, this.target, this.keys});
+  const Lesson(this._title, this.hint, {this.guided = false, this.listed = true, this.screen, this.target, this.keys});
 }
 
 /// The first-five-minutes guide: which lessons this account has done, and
@@ -122,7 +134,7 @@ class Onboarding extends ChangeNotifier {
   String note(Lesson l, Screen at) {
     final s = game.state;
     if (l.screen == Screen.windshield) {
-      if (s.fleets.isEmpty) return 'No fleet to fly. Build a Scout at the Homeworld shipyard.';
+      if (s.fleets.isEmpty) return 'No fleet to fly. Build a ${proto.ShipClass.lightFighter.label} at the Homeworld shipyard.';
       if (at != Screen.windshield) return '${_ahead(l)} Open the Windshield.';
     }
     final fleet = game.currentFleet;
@@ -132,7 +144,7 @@ class Onboarding extends ChangeNotifier {
         return 'This token is the password for ${game.playerName}, and the server shows it once. '
             '${stored ? 'This browser has stored it; keep a copy for any other device.' : 'This browser could not store it: copy it now.'}';
       case Lesson.build:
-        return 'Mines produce by themselves, and each level adds output. '
+        return 'Mines produce by themselves. Each level adds output and needs more energy, which the ${proto.BuildingType.solarPlant.label} makes. '
             '${at == Screen.overview ? 'Queue an upgrade from a marked card.' : 'Queue an upgrade on the Overview.'}';
       case Lesson.scan:
         return 'A scan charts the lanes and contacts around the fleet. Press SCAN.';
@@ -158,7 +170,18 @@ class Onboarding extends ChangeNotifier {
       case Lesson.orders:
         return 'Tired of flying? A fleet with standing orders flies itself. '
             'Press ORDERS under Fleet status, choose MINE + RETURN and set it: the fleet harvests and comes home when the hold fills.';
-      case Lesson.mine || Lesson.corvette || Lesson.range || Lesson.board || Lesson.fight:
+      case Lesson.power:
+        final energy = s.hw?.energy;
+        if (energy == null) return l.hint;
+        return '${l.hint} The homeworld makes ${energy.made} energy and the mines need ${energy.needed}'
+            '${energy.fraction < 1 ? ': they run at ${(energy.fraction * 100).floor()}%.' : '.'}';
+      case Lesson.cargo:
+        final unmet = [
+          for (final r in s.catalog?.ships.where((o) => o.shipClass == proto.ShipClass.smallCargo).firstOrNull?.requires ?? const <proto.Requirement>[])
+            if (!r.met) r.label,
+        ];
+        return unmet.isEmpty ? l.hint : '${l.hint} It needs ${unmet.join(', ')}.';
+      case Lesson.mine || Lesson.yard || Lesson.range || Lesson.board || Lesson.fight:
         return l.hint;
     }
   }
@@ -231,8 +254,8 @@ class Onboarding extends ChangeNotifier {
     final hw = s.hw;
     if (hw != null) {
       if (hw.buildQueue.isNotEmpty || hw.buildPending.isNotEmpty) learn(Lesson.build);
-      if (hw.buildings.any((b) => b.buildingType == proto.BuildingType.metalMine && b.level >= 3)) learn(Lesson.mine);
-      if (hw.dockedShips.any((ship) => ship.shipClass == proto.ShipClass.corvette)) learn(Lesson.corvette);
+      if (hw.buildingLevel(proto.BuildingType.shipyard) > 0) learn(Lesson.yard);
+      if (hw.dockedShips.any((ship) => ship.shipClass == proto.ShipClass.smallCargo)) learn(Lesson.cargo);
     }
     for (final f in s.fleets) {
       if (f.sector != home) learn(Lesson.jump);
@@ -242,7 +265,7 @@ class Onboarding extends ChangeNotifier {
       }
       if (f.policy != null && f.policy != proto.PolicyPreset.manual.label) learn(Lesson.orders);
       if (proto.Hex.distance(f.sector, home) >= 6) learn(Lesson.range);
-      if (f.ships.any((g) => g.shipClass == proto.ShipClass.corvette.label)) learn(Lesson.corvette);
+      if (f.ships.any((g) => g.shipClass == proto.ShipClass.smallCargo.label)) learn(Lesson.cargo);
     }
     if (done(Lesson.harvest) && !done(Lesson.unload)) {
       final hauler = s.fleets.where((f) => f.id == _hauler).firstOrNull;
@@ -258,13 +281,23 @@ class Onboarding extends ChangeNotifier {
       case proto.ResourceHarvestedEvent(:final fleetId):
         _hauler ??= fleetId;
         _learn(Lesson.harvest);
-      case proto.BuildingCompletedEvent():
+      case proto.BuildingCompletedEvent(:final buildingType):
         _learn(Lesson.build);
+        switch (buildingType) {
+          case proto.BuildingType.metalMine || proto.BuildingType.crystalMine || proto.BuildingType.deuteriumSynthesizer:
+            _learn(Lesson.mine);
+          case proto.BuildingType.solarPlant:
+            _learn(Lesson.power);
+          case proto.BuildingType.shipyard:
+            _learn(Lesson.yard);
+          default:
+            break;
+        }
       case proto.QueueEvent(:final queueType, :final action)
           when queueType == proto.QueueType.building && action != proto.QueueAction.cancelled:
         _learn(Lesson.build);
-      case proto.ShipBuiltEvent(:final shipClass) when shipClass == proto.ShipClass.corvette:
-        _learn(Lesson.corvette);
+      case proto.ShipBuiltEvent(:final shipClass) when shipClass == proto.ShipClass.smallCargo:
+        _learn(Lesson.cargo);
       case proto.SiteExploredEvent():
         _learn(Lesson.board);
       case proto.CombatEndedEvent(:final mine, :final playerVictory) when mine && playerVictory:

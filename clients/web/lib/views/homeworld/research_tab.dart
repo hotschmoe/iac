@@ -9,30 +9,32 @@ import '../../scenes/homeworld/plan.dart';
 import '../../state/game_controller.dart';
 
 enum _Lane {
-  propulsion('Propulsion'),
+  energy('Energy and beams'),
+  drives('Drives'),
   combat('Combat'),
-  industry('Industry'),
-  hulls('Hull classes');
+  systems('Systems');
 
   const _Lane(this.title);
   final String title;
 
   /// The lane a tech is drawn in. The switch is over every tech the engine
   /// has, so a new one does not compile until it has a lane, and the tab
-  /// draws a node for each tech of the catalog.
+  /// draws a node for each tech of the catalog. A lane is a heading and
+  /// nothing more: what a tech needs is drawn from its requirements.
   static _Lane of(proto.ResearchType tech) => switch (tech) {
-        proto.ResearchType.fuelEfficiency ||
-        proto.ResearchType.extendedFuelTanks ||
-        proto.ResearchType.navigation ||
-        proto.ResearchType.emergencyJump =>
-          propulsion,
-        proto.ResearchType.reinforcedHulls || proto.ResearchType.advancedShields || proto.ResearchType.weaponsResearch => combat,
-        proto.ResearchType.harvestingEfficiency || proto.ResearchType.modularFabrication => industry,
-        proto.ResearchType.corvetteTech ||
-        proto.ResearchType.frigateTech ||
-        proto.ResearchType.cruiserTech ||
-        proto.ResearchType.haulerTech =>
-          hulls,
+        proto.ResearchType.energyTechnology ||
+        proto.ResearchType.laserTechnology ||
+        proto.ResearchType.ionTechnology ||
+        proto.ResearchType.plasmaTechnology ||
+        proto.ResearchType.gravitonTechnology =>
+          energy,
+        proto.ResearchType.combustionDrive ||
+        proto.ResearchType.impulseDrive ||
+        proto.ResearchType.hyperspaceTechnology ||
+        proto.ResearchType.hyperspaceDrive =>
+          drives,
+        proto.ResearchType.weaponsTechnology || proto.ResearchType.shieldingTechnology || proto.ResearchType.armourTechnology => combat,
+        proto.ResearchType.espionageTechnology || proto.ResearchType.computerTechnology => systems,
       };
 }
 
@@ -49,10 +51,11 @@ class ResearchTab extends StatelessWidget {
     final lanes = {
       for (final lane in _Lane.values) lane: [for (final o in cat.research) if (_Lane.of(o.tech) == lane) o.tech],
     };
-    final active = ctrl.state.research.name;
+    final active = ctrl.state.hw?.researchActive?.tech;
+    final selected = cat.research.elementAtOrNull(ctrl.hwCursor)?.tech;
     return LayoutBuilder(builder: (context, box) {
       final w = math.max(300.0, box.maxWidth);
-      final cols = w >= 620 ? 4 : 2;
+      final cols = w >= 900 ? 5 : w >= 620 ? 4 : 2;
       const gap = 24.0, pad = 12.0, nh = 64.0, head = 26.0;
       final nw = math.min(190.0, (w - 2 * pad - (cols - 1) * gap) / cols);
       final rects = <proto.ResearchType, Rect>{};
@@ -67,17 +70,14 @@ class ResearchTab extends StatelessWidget {
         }
         y += ((techs.length + cols - 1) ~/ math.max(1, cols)) * (nh + 18) + 6;
       }
+      // An edge for each tech another one requires; those of the selected
+      // tech are drawn bright, the rest faint.
       final edges = <(Rect, Rect, bool)>[];
-      for (final techs in lanes.values) {
-        for (var k = 0; k + 1 < techs.length; k++) {
-          edges.add((rects[techs[k]]!, rects[techs[k + 1]]!, false));
-        }
-      }
       for (final o in cat.research) {
         for (final r in o.requires) {
           for (final other in cat.research) {
-            if (other.tech.label == r.name && rects.containsKey(other.tech) && rects.containsKey(o.tech)) {
-              edges.add((rects[other.tech]!, rects[o.tech]!, true));
+            if (!r.energy && other.tech.label == r.name) {
+              edges.add((rects[other.tech]!, rects[o.tech]!, o.tech == selected || other.tech == selected));
             }
           }
         }
@@ -94,9 +94,9 @@ class ResearchTab extends StatelessWidget {
     });
   }
 
-  Widget _node(proto.ResearchOption o, int i, Rect r, String active) {
+  Widget _node(proto.ResearchOption o, int i, Rect r, proto.ResearchType? active) {
     final locked = o.requires.any((q) => !q.met);
-    final isActive = active.startsWith(o.tech.label);
+    final isActive = active == o.tech;
     final done = o.next == null;
     final sel = ctrl.hwCursor == i;
     final state = isActive ? 'RESEARCHING' : done ? 'DONE' : locked ? 'LOCKED' : o.level > 0 ? 'L${o.level}' : 'AVAILABLE';

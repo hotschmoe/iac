@@ -68,13 +68,97 @@ const _engageBounds = '${policyEngageRatioX10Min / 10}-${policyEngageRatioX10Max
 const _cargoBounds = '$policyCargoReturnPctMin-$policyCargoReturnPctMax';
 const _reserveBounds = '0-$policyMinFuelPctMax';
 
-const helpLines = [
+/// A catalogue item as a player types it: its name without the spaces.
+String _word(String label) => label.toLowerCase().replaceAll(' ', '');
+
+/// Every item of a catalogue by the word it is typed as, with [short], the
+/// abbreviations it also answers to.
+Map<String, T> _named<T>(List<T> values, String Function(T) label, Map<String, T> short) =>
+    {for (final v in values) _word(label(v)): v, ...short};
+
+final _buildings = _named(BuildingType.values, (b) => b.label, const {
+  'metal': BuildingType.metalMine,
+  'mine': BuildingType.metalMine,
+  'crystal': BuildingType.crystalMine,
+  'deut': BuildingType.deuteriumSynthesizer,
+  'deuterium': BuildingType.deuteriumSynthesizer,
+  'synth': BuildingType.deuteriumSynthesizer,
+  'solar': BuildingType.solarPlant,
+  'fusion': BuildingType.fusionReactor,
+  'reactor': BuildingType.fusionReactor,
+  'robotics': BuildingType.roboticsFactory,
+  'nanite': BuildingType.naniteFactory,
+  'yard': BuildingType.shipyard,
+  'tank': BuildingType.deuteriumTank,
+  'lab': BuildingType.researchLab,
+});
+
+final _techs = _named(ResearchType.values, (t) => t.label, const {
+  'espionage': ResearchType.espionageTechnology,
+  'computer': ResearchType.computerTechnology,
+  'weapons': ResearchType.weaponsTechnology,
+  'shielding': ResearchType.shieldingTechnology,
+  'shields': ResearchType.shieldingTechnology,
+  'armour': ResearchType.armourTechnology,
+  'armor': ResearchType.armourTechnology,
+  'energy': ResearchType.energyTechnology,
+  'hyperspace': ResearchType.hyperspaceTechnology,
+  'combustion': ResearchType.combustionDrive,
+  'impulse': ResearchType.impulseDrive,
+  'hyperdrive': ResearchType.hyperspaceDrive,
+  'laser': ResearchType.laserTechnology,
+  'ion': ResearchType.ionTechnology,
+  'plasma': ResearchType.plasmaTechnology,
+  'graviton': ResearchType.gravitonTechnology,
+});
+
+final _ships = _named(ShipClass.values, (c) => c.label, const {
+  'sc': ShipClass.smallCargo,
+  'lc': ShipClass.largeCargo,
+  'lf': ShipClass.lightFighter,
+  'hf': ShipClass.heavyFighter,
+  'cr': ShipClass.cruiser,
+  'bs': ShipClass.battleship,
+  'rec': ShipClass.recycler,
+  'probe': ShipClass.espionageProbe,
+  'bb': ShipClass.bomber,
+  'satellite': ShipClass.solarSatellite,
+  'sat': ShipClass.solarSatellite,
+  'dest': ShipClass.destroyer,
+  'ds': ShipClass.deathstar,
+  'bc': ShipClass.battlecruiser,
+});
+
+final _defences = _named(DefenceKind.values, (k) => k.label, const {
+  'rl': DefenceKind.rocketLauncher,
+  'rocket': DefenceKind.rocketLauncher,
+  'll': DefenceKind.lightLaser,
+  'hl': DefenceKind.heavyLaser,
+  'gauss': DefenceKind.gaussCannon,
+  'ic': DefenceKind.ionCannon,
+  'pt': DefenceKind.plasmaTurret,
+  'smalldome': DefenceKind.smallShieldDome,
+  'largedome': DefenceKind.largeShieldDome,
+});
+
+/// "smallcargo|largecargo|...": every item of a catalogue as it is typed.
+String _words<T>(List<T> values, String Function(T) label) => values.map((v) => _word(label(v))).join('|');
+
+final _buildingWords = _words(BuildingType.values, (b) => b.label);
+final _techWords = _words(ResearchType.values, (t) => t.label);
+final _shipWords = _words(ShipClass.values, (c) => c.label);
+final _defenceWords = _words(DefenceKind.values, (k) => k.label);
+
+final helpLines = [
   'fleet:  h[arvest] [metal|crystal|deut]  a[ttack] [n]  r[ecall]  s[alvage]  v|scan  x|explore  stop',
   'move:   m[ove] <e|ne|nw|w|sw|se | 1-6 | q r>      (one hop along a known lane)',
-  'base:   b[uild] <metal|crystal|deut|shipyard|lab|fuel|sensor|defense|vault|fab>',
-  '        research <fuel|tanks|hulls|shields|weapons|nav|harvest|corvette|frigate|cruiser|hauler|jump|modfab>',
-  '        ship <scout|corvette|frigate|cruiser|hauler> [count]   cancel <building|ship|research> [id]  [waiting]',
-  '        buildings and research queue ahead of resources and pay when they start; a ship batch is paid in full when ordered',
+  'base:   b[uild] <$_buildingWords>',
+  '        research <$_techWords>',
+  '        ship <$_shipWords> [count]',
+  '        defence <$_defenceWords> [count]',
+  '        a name is typed without its spaces; the short ones work too (metal, solar, yard, tank, lab; weapons, energy, laser; lf, sc, probe, sat; rl, ll, gauss)',
+  '        cancel <building|ship|research> [id]  [waiting]     a defence stands in the ship queue',
+  '        buildings and research queue ahead of resources and pay when they start; a ship or a defence batch is paid in full when ordered',
   'fleets: f[leet] [n]  select/list   split <class> [count]  detach ships into a new fleet',
   '        merge <fleet id>  fold a fleet in this sector into the active one',
   'orders: p[olicy] <manual|prospect|mine|salvage|patrol>  standing orders: the active fleet flies itself and reports each act and each hold with its reason',
@@ -109,47 +193,6 @@ const _dirs = {
   'w': HexDirection.west,
   'sw': HexDirection.southWest,
   'se': HexDirection.southEast,
-};
-
-const _buildings = {
-  'metal': BuildingType.metalMine,
-  'mine': BuildingType.metalMine,
-  'crystal': BuildingType.crystalMine,
-  'deut': BuildingType.deuteriumSynthesizer,
-  'deuterium': BuildingType.deuteriumSynthesizer,
-  'shipyard': BuildingType.shipyard,
-  'yard': BuildingType.shipyard,
-  'lab': BuildingType.researchLab,
-  'fuel': BuildingType.fuelDepot,
-  'depot': BuildingType.fuelDepot,
-  'sensor': BuildingType.sensorArray,
-  'defense': BuildingType.defenseGrid,
-  'grid': BuildingType.defenseGrid,
-  'vault': BuildingType.storageVault,
-  'storage': BuildingType.storageVault,
-  'fab': BuildingType.fabricator,
-  'fabricator': BuildingType.fabricator,
-};
-
-const _techs = {
-  'fuel': ResearchType.fuelEfficiency,
-  'efficiency': ResearchType.fuelEfficiency,
-  'tanks': ResearchType.extendedFuelTanks,
-  'hull': ResearchType.reinforcedHulls,
-  'hulls': ResearchType.reinforcedHulls,
-  'shield': ResearchType.advancedShields,
-  'shields': ResearchType.advancedShields,
-  'weapons': ResearchType.weaponsResearch,
-  'nav': ResearchType.navigation,
-  'navigation': ResearchType.navigation,
-  'harvest': ResearchType.harvestingEfficiency,
-  'corvette': ResearchType.corvetteTech,
-  'frigate': ResearchType.frigateTech,
-  'cruiser': ResearchType.cruiserTech,
-  'hauler': ResearchType.haulerTech,
-  'jump': ResearchType.emergencyJump,
-  'modfab': ResearchType.modularFabrication,
-  'slots': ResearchType.modularFabrication,
 };
 
 const _resources = {
@@ -199,7 +242,7 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
 
   switch (verb) {
     case 'help' || '?':
-      return const ParsedLocal(helpLines);
+      return ParsedLocal(helpLines);
 
     case 'status':
       final f = ctx.fleet;
@@ -301,23 +344,27 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
 
     case 'b' || 'build':
       final t = args.isEmpty ? null : _buildings[args.first];
-      if (t == null) return ParsedError('build: ${_buildings.keys.where((k) => k.length > 3).toSet().join('|')}');
+      if (t == null) return ParsedError('build: $_buildingWords');
       return ParsedSend([CommandMessage(BuildCommand(buildingType: t))]);
 
     case 'research' || 'res':
       final t = args.isEmpty ? null : _techs[args.first];
-      if (t == null) return ParsedError('research: ${_techs.keys.join('|')}');
+      if (t == null) return ParsedError('research: $_techWords');
       return ParsedSend([CommandMessage(ResearchCommand(tech: t))]);
 
     case 'ship' || 'buildship':
-      ShipClass? c;
-      for (final s in ShipClass.values) {
-        if (args.isNotEmpty && s.name == args.first) c = s;
-      }
-      if (c == null) return const ParsedError('ship: scout|corvette|frigate|cruiser|hauler [count]');
+      final c = args.isEmpty ? null : _ships[args.first];
+      if (c == null) return ParsedError('ship: <$_shipWords> [count]');
       final n = args.length > 1 ? int.tryParse(args[1]) : 1;
       if (n == null || n < 1 || n > 1000) return const ParsedError('ship: count must be 1-1000');
       return ParsedSend([CommandMessage(BuildShipCommand(shipClass: c, count: n))]);
+
+    case 'defence' || 'defense' || 'def':
+      final k = args.isEmpty ? null : _defences[args.first];
+      if (k == null) return ParsedError('defence: <$_defenceWords> [count]');
+      final n = args.length > 1 ? int.tryParse(args[1]) : 1;
+      if (n == null || n < 1 || n > 1000) return const ParsedError('defence: count must be 1-1000');
+      return ParsedSend([CommandMessage(BuildDefenceCommand(kind: k, count: n))]);
 
     case 'cancel':
       final q = switch (args.isEmpty ? '' : args.first) {
@@ -339,15 +386,12 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
     case 'split':
       final fleet = ctx.fleet;
       if (fid == null || fleet == null) return const ParsedError('No fleet selected (you have none)');
-      ShipClass? c;
-      for (final s in ShipClass.values) {
-        if (args.isNotEmpty && s.name == args.first) c = s;
-      }
-      if (c == null) return const ParsedError('split: <scout|corvette|frigate|cruiser|hauler> [count]');
+      final c = args.isEmpty ? null : _ships[args.first];
+      if (c == null) return ParsedError('split: <$_shipWords> [count]');
       final n = args.length > 1 ? int.tryParse(args[1]) : 1;
       final aboard = [for (final s in fleet.ships) if (s.shipClass == c) s.id];
       if (n == null || n < 1 || n > aboard.length) {
-        return ParsedError('split: F$fid has ${aboard.length} ${c.name}');
+        return ParsedError('split: F$fid has ${aboard.length} ${c.label}');
       }
       if (n >= fleet.ships.length) return const ParsedError('split: at least one ship must stay in the fleet');
       return ParsedSend([CommandMessage(SplitCommand(fleetId: fid, shipIds: aboard.take(n).toList()))]);

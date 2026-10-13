@@ -169,13 +169,8 @@ class ArenaPainter extends CustomPainter {
     }
   }
 
-  int _rating() {
-    var p = 0.0;
-    for (final h in sim.hostiles) {
-      if (!h.dead) p += h.cls.power;
-    }
-    return p <= 0 ? 0 : (1 + (math.log(math.max(1, p) / 4) / math.ln2).floor()).clamp(1, 9);
-  }
+  /// The sector's threat rating, as the server rates it.
+  int _rating() => sim.sector?.threat.rating ?? 0;
 
   void _gate(GateInfo gi, int i, double t) {
     final hv = sim.hover == i;
@@ -422,7 +417,7 @@ class ArenaPainter extends CustomPainter {
         c.drawLine(l(k * s, s * .9), l(k * s, s * (.9 + .5 * f * (k == 0 ? 1.5 : 1))), Draw.line(enemy ? const Color(0xFFFF965A) : const Color(0xFFA0FFF0), 1.1, .6));
       }
     }
-    final def = (enemy ? Sym.hostile : Sym.own)[u.cls]!;
+    final def = enemy ? Sym.hostile(u.cls) : Sym.own(u.cls);
     final cc = fl > .3 ? const Color(0xFFFFF0DC) : col;
     Draw.symbol(c, def, o.dx, o.dy, s, rot: rot, color: cc, lw: 1.3 + fl * .9, alpha: math.min(1.0, .92 + fl) * alphaMul, bloom: bloom && alphaMul == 1);
     if (alphaMul != 1) return;

@@ -8,11 +8,19 @@ import '../protocol/protocol.dart' as proto;
 /// against a sector is never worked out on the client: it is the server's
 /// `preview_move` and `odds` answers, read with [GameState.oddsFor].
 String shipAbbr(proto.ShipClass c) => switch (c) {
-      proto.ShipClass.scout => 'SCT',
-      proto.ShipClass.corvette => 'COR',
-      proto.ShipClass.frigate => 'FRG',
+      proto.ShipClass.smallCargo => 'SCG',
+      proto.ShipClass.largeCargo => 'LCG',
+      proto.ShipClass.lightFighter => 'LFT',
+      proto.ShipClass.heavyFighter => 'HFT',
       proto.ShipClass.cruiser => 'CRU',
-      proto.ShipClass.hauler => 'HLR',
+      proto.ShipClass.battleship => 'BSH',
+      proto.ShipClass.recycler => 'REC',
+      proto.ShipClass.espionageProbe => 'PRB',
+      proto.ShipClass.bomber => 'BMB',
+      proto.ShipClass.solarSatellite => 'SAT',
+      proto.ShipClass.destroyer => 'DES',
+      proto.ShipClass.deathstar => 'DTH',
+      proto.ShipClass.battlecruiser => 'BCR',
     };
 
 class SectorThreat {

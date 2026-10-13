@@ -114,7 +114,7 @@ NextUp nextUp(GameState s, EconomyView eco) {
     return NextUp(
       'RAID WARNING',
       'Raid in ${clockFmt(raidIn)}',
-      'Raid fleet vectoring for ${s.homeworld}. Home defence is ${d.total.round()} power: docked fleet and grid ${d.other.round()}, structures ${d.structures.round()}. Estimated raid power ${d.raidEstimate.round()}.',
+      'Raid fleet vectoring for ${s.homeworld}. Home defence is ${d.total.round()} power: ${d.parts}. Estimated raid power ${d.raidEstimate.round()}.',
       'Open defence',
       NextAction.openDefence,
       urgent: true,
@@ -125,12 +125,22 @@ NextUp nextUp(GameState s, EconomyView eco) {
       return NextUp('FLEET STRANDED', '${f.name} is out of fuel', 'It cannot jump from ${f.sector}. Send fuel or wait for a tanker.', 'Open windshield', NextAction.openWindshield, urgent: true);
     }
   }
+  final energy = s.hw?.energy;
+  if (energy != null && energy.fraction < 1) {
+    return NextUp(
+        'ENERGY',
+        'The mines run at ${(energy.fraction * 100).floor()}%',
+        'The homeworld makes ${energy.made} energy and its mines need ${energy.needed}, so every mine makes that share of its output. '
+            '${energy.fusionStarved ? 'The Fusion Reactor has no deuterium to burn. ' : ''}Make more energy.',
+        'Open homeworld',
+        NextAction.openHomeworld);
+  }
   final st = eco.storage;
   if (st != null) {
-    for (final e in {'metal': (s.stock.metal, 'Metal'), 'crystal': (s.stock.crystal, 'Crystal'), 'deut': (s.stock.deuterium, 'Deuterium')}.entries) {
-      final cap = st.cap[e.key] ?? 0;
-      if (proto.storageNearCap(e.value.$1, cap)) {
-        return NextUp('STORAGE', '${e.value.$2} is near its cap', 'Production above the cap is discarded. Spend it or raise the Storage Vault.', 'Open homeworld', NextAction.openHomeworld);
+    for (final e in stockpiles) {
+      if (proto.storageNearCap(e.kind.of(s.stock), st.cap(e.kind))) {
+        return NextUp('STORAGE', '${e.name} is near its cap', 'Production above the cap is discarded. Spend it or raise the ${e.kind.storage}.', 'Open homeworld',
+            NextAction.openHomeworld);
       }
     }
   }
@@ -177,16 +187,23 @@ List<OvAlert> buildAlerts(GameState s, EconomyView eco) {
   if (d != null && raidIn != null && raidIn > 0) {
     out.add(OvAlert('Raid incoming', 'Power est. ${d.raidEstimate.round()} vs your defence ${d.total.round()}.', critical: true, time: clockFmt(raidIn), tab: 'defence'));
   }
+  final energy = s.hw?.energy;
+  if (energy != null && energy.fraction < 1) {
+    out.add(OvAlert(
+        'Short of energy',
+        'The mines run at ${(energy.fraction * 100).floor()}% of their output: ${energy.made} energy made, ${energy.needed} needed.'
+            '${energy.fusionStarved ? ' The Fusion Reactor has no deuterium to burn.' : ''}',
+        critical: true,
+        tab: 'buildings'));
+  }
   final st = eco.storage;
   if (st != null) {
-    final rates = {'metal': s.resources.metal.rate, 'crystal': s.resources.crystal.rate, 'deut': s.resources.deut.rate};
-    final stock = {'metal': s.stock.metal, 'crystal': s.stock.crystal, 'deut': s.stock.deuterium};
-    final names = {'metal': 'Metal', 'crystal': 'Crystal', 'deut': 'Deuterium'};
-    for (final k in stock.keys) {
-      final cap = st.cap[k] ?? 0;
-      if (proto.storageNearCap(stock[k]!, cap)) {
-        final f = st.fullIn(k, stock[k]!, rates[k]!);
-        out.add(OvAlert('${names[k]} storage near cap', '${(stock[k]! / cap * 100).round()}% of the Vault L${st.vaultLevel} cap. Production above the cap is discarded.', time: f == null ? null : clockFmt(f), tab: 'storage'));
+    for (final e in stockpiles) {
+      final stock = e.kind.of(s.stock), cap = st.cap(e.kind);
+      if (proto.storageNearCap(stock, cap)) {
+        final f = st.fullIn(e.kind);
+        out.add(OvAlert('${e.name} storage near cap', '${(stock / cap * 100).round()}% of the ${st.buildingTag(e.kind)} cap. Production above the cap is discarded.',
+            time: f == null ? null : clockFmt(f), tab: 'storage'));
       }
     }
   }

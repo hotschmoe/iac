@@ -819,6 +819,7 @@
               "need": 2
             }
           ],
+          "room": 0,
           "shield": 2600.0,
           "ticks_per_unit": 57,
           "unit_cost": {
@@ -850,6 +851,7 @@
               "need": 6
             }
           ],
+          "room": 0,
           "shield": 13000.0,
           "ticks_per_unit": 282,
           "unit_cost": {
@@ -1911,6 +1913,7 @@
         "restoring": 0
       }
     ],
+    "docked_power": 444.0,
     "docked_ships": [
       {
         "class": "Cruiser",
@@ -2094,7 +2097,8 @@
         "deuterium": 32000.0,
         "metal": 12000.0
       }
-    }
+    },
+    "structure_power": 1769.9000244140625
   },
   "player": {
     "exchange": {

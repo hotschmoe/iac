@@ -12,6 +12,7 @@ import '../../design/tokens.dart';
 import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../state/game_controller.dart';
+import '../homeworld/economy_tabs.dart' show EnergyReadout;
 import '../onboarding.dart';
 import 'ov_panel.dart';
 import 'overview_logic.dart';
@@ -40,6 +41,12 @@ class OvActions {
     con.play('ok');
   }
 
+  void defence(proto.DefenceKind k, int n) {
+    g.note('> defence ${k.label} x$n', level: EventLevel.full);
+    g.sendCommand(proto.BuildDefenceCommand(kind: k, count: n));
+    con.play('ok');
+  }
+
   void cancel(proto.QueueType q, {int index = 0}) => g.cancelHomeworldQueue(q, index: index);
 
   void openTab(HomeworldTab t) {
@@ -62,20 +69,28 @@ class ResourceTiles extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tiles = [for (final k in const ['metal', 'crystal', 'deut']) ResourceTile(k: k, narrow: narrow)];
+    final hw = Console.of(context).state.hw;
+    final tiles = [for (final s in stockpiles) ResourceTile(stockpile: s, narrow: narrow)];
+    final energy = hw == null ? null : EnergyReadout(hw: hw);
     if (narrow) {
-      return Column(children: [for (final t in tiles) Padding(padding: const EdgeInsets.only(bottom: 10), child: t)]);
+      return Column(children: [
+        for (final t in tiles) Padding(padding: const EdgeInsets.only(bottom: 10), child: t),
+        ?energy,
+      ]);
     }
-    return Row(children: [
-      for (var i = 0; i < 3; i++) ...[if (i > 0) const SizedBox(width: 12), Expanded(child: tiles[i])],
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Row(children: [
+        for (var i = 0; i < 3; i++) ...[if (i > 0) const SizedBox(width: 12), Expanded(child: tiles[i])],
+      ]),
+      if (energy != null) Padding(padding: const EdgeInsets.only(top: 12), child: energy),
     ]);
   }
 }
 
 class ResourceTile extends StatefulWidget {
-  final String k;
+  final Stockpile stockpile;
   final bool narrow;
-  const ResourceTile({super.key, required this.k, required this.narrow});
+  const ResourceTile({super.key, required this.stockpile, required this.narrow});
   @override
   State<ResourceTile> createState() => _ResourceTileState();
 }
@@ -101,27 +116,27 @@ class _ResourceTileState extends State<ResourceTile> {
   Widget build(BuildContext context) {
     final con = Console.of(context);
     final s = con.state;
-    final k = widget.k;
-    final (gem, color, name, stock, rate) = switch (k) {
-      'metal' => ('Fe', C.metal, 'Metal', s.stock.metal, s.resources.metal.rate),
-      'crystal' => ('Cr', C.crystal, 'Crystal', s.stock.crystal, s.resources.crystal.rate),
-      _ => ('De', C.deut, 'Deuterium', s.stock.deuterium, s.resources.deut.rate),
-    };
+    final kind = widget.stockpile.kind;
+    final gem = widget.stockpile.unit, name = widget.stockpile.name;
+    final color = C.ore(kind.name);
+    final stock = kind.of(s.stock);
+    final rate = kind.of(s.hw?.production ?? const proto.Resources());
     _sample(stock, rate, s.tick);
     final st = con.economy.storage;
-    final cap = st?.cap[k];
+    final cap = st?.cap(kind);
     final pct = cap == null || cap <= 0 ? 0.0 : (stock / cap).clamp(0.0, 1.0);
-    final full = cap != null && pct > .97;
+    final full = st != null && st.capped(kind);
     final near = cap != null && proto.storageNearCap(stock, cap) && !full;
-    final left = st?.fullIn(k, stock, rate);
+    final left = st?.fullIn(kind);
     final narrow = widget.narrow;
     final warnCol = full ? C.ember : C.threat(5);
     final lampText = full ? 'FULL' : 'NEAR CAP ${(pct * 100).round()}%';
+    final falling = rate < 0;
 
     return Semantics(
       label: '$name ${stock.floor()}${cap != null ? ' of ${cap.floor()}' : ', uncapped'}${near || full ? ', $lampText' : ''}',
       child: ConsolePanel(
-        key: Key('res-tile-$k'),
+        key: Key('res-tile-${widget.stockpile.key}'),
         border: full ? C.ember : near ? C.threat(5) : null,
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
         child: Stack(children: [
@@ -136,7 +151,7 @@ class _ResourceTileState extends State<ResourceTile> {
               if (near || full)
                 Lamp(lampText, color: warnCol, blink: true)
               else if (st != null)
-                Text('VAULT L${st.vaultLevel}', style: T.mono(size: 9.5, color: C.text3)),
+                Flexible(child: Text(st.buildingTag(kind).toUpperCase(), overflow: TextOverflow.ellipsis, style: T.mono(size: 9.5, color: C.text3))),
             ]),
             const SizedBox(height: 8),
             Wrap(crossAxisAlignment: WrapCrossAlignment.end, children: [
@@ -147,10 +162,12 @@ class _ResourceTileState extends State<ResourceTile> {
                   child: Text(cap == null ? 'UNCAPPED' : '/ ${fmtInt(cap)}', style: T.mono(size: 12, color: C.text3))),
             ]),
             const SizedBox(height: 2),
-            Text.rich(TextSpan(children: [
-              TextSpan(text: '+${rate.toStringAsFixed(2)} / tick', style: T.mono(size: 11.5, color: color)),
-              TextSpan(text: '  ${fmtInt(rate * 3600)} / hour', style: T.mono(size: 11.5, color: C.text3)),
-            ])),
+            Text.rich(
+                key: Key('res-rate-${widget.stockpile.key}'),
+                TextSpan(children: [
+                  TextSpan(text: '${signedAnHour(rate)} / hour', style: T.mono(size: 11.5, color: falling ? C.ember : color)),
+                  if (falling) TextSpan(text: '  FALLING', style: T.mono(size: 11.5, color: C.ember, weight: FontWeight.w600)),
+                ])),
             const SizedBox(height: 12),
             if (cap != null) LedBar(pct, color: color, height: 10) else Container(height: 10, decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.lineLo)))),
             const SizedBox(height: 8),
@@ -554,38 +571,40 @@ class _ShipyardCard extends StatelessWidget {
     final act = OvActions(con);
     final slots = con.economy.slots;
     final q = s.runningShip;
+    final run = s.hw?.shipyardQueue;
     final sub = slots == null ? null : 'queue ${(q == null ? 0 : 1) + slots.shipQueued.length}/${slots.singleMaxDepth}';
-    if (q != null) {
-      final m = RegExp(r'^(.*?) x(\d+) \((\d+) built\)').firstMatch(q.name);
-      final label = m?.group(1) ?? q.name;
-      final n = int.tryParse(m?.group(2) ?? '') ?? 0;
-      final built = int.tryParse(m?.group(3) ?? '') ?? 0;
-      final cls = proto.ShipClass.values.where((c) => c.label == label).firstOrNull;
-      final batch = con.game.shipBatch;
-      final cost = s.catalog?.ships.where((o) => o.shipClass == cls).firstOrNull?.unitCost;
-      String? why;
-      if (cls == null || cost == null) {
-        why = 'Ship class not in the catalog';
-      } else {
-        why = shortReason(s.stock, proto.Resources(metal: cost.metal * batch, crystal: cost.crystal * batch, deuterium: cost.deuterium * batch));
-      }
+    if (q != null && run != null) {
+      final ship = s.catalog?.ships.where((o) => o.shipClass == run.item.ship).firstOrNull;
+      final defence = s.catalog?.defences.where((o) => o.kind == run.item.defence).firstOrNull;
+      final batch = defence == null ? con.game.shipBatch : defenceBatch(defence, con.game.shipBatch);
+      final unit = ship?.unitCost ?? defence?.unitCost;
+      final why = unit == null
+          ? '${run.item.label} is not in the catalog'
+          : (defence == null ? null : limitReason(defence)) ?? shortReason(s.stock, batchCost(unit, batch));
       return OvPanel(
         key: const Key('card-shipyard'),
         title: 'Shipyard',
         subText: sub,
         footer: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Wrap(spacing: 6, runSpacing: 4, children: [
-            ConsoleButton('+$batch more', small: true, reason: why, onPressed: why == null ? () => act.ship(cls!, batch) : null),
+            ConsoleButton('+${math.max(1, batch)} more',
+                small: true,
+                reason: why,
+                onPressed: why != null
+                    ? null
+                    : ship != null
+                        ? () => act.ship(ship.shipClass, batch)
+                        : () => act.defence(defence!.kind, batch)),
             ConsoleButton('Cancel', small: true, onPressed: () => act.cancel(proto.QueueType.ship)),
           ]),
           if (why != null) WhyText(why),
         ]),
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          _ringRow(n > 0 ? built / n : q.pct / 100, n > 0 ? '$built/$n' : '${q.pct.round()}%', q.time, n > built ? 'next ship ~${clockFmt(_secs(q.time) ~/ (n - built))}' : 'finishing'),
+          _ringRow(run.count > 0 ? run.built / run.count : q.pct / 100, '${run.built}/${run.count}', q.time, 'to the next one'),
           const SizedBox(height: 10),
-          _qTitle('${n}x $label'),
-          _qSub('Ships join the dock on completion'),
+          _qTitle('${run.count}x ${run.item.label}'),
+          _qSub(ship != null && ship.flies ? 'Ships join the dock on completion' : 'They stand at the homeworld'),
           if (slots != null) _queuedRows(slots.shipQueued),
         ]),
       );
@@ -619,13 +638,4 @@ class _ShipyardCard extends StatelessWidget {
       ]),
     );
   }
-}
-
-int _secs(String t) {
-  final p = t.split(':').map((e) => int.tryParse(e) ?? 0).toList();
-  var v = 0;
-  for (final x in p) {
-    v = v * 60 + x;
-  }
-  return v;
 }

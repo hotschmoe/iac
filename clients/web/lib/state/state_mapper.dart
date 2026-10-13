@@ -328,7 +328,7 @@ class StateMapper {
       case proto.StorageFullEvent():
         msg = '!! ${k.resource.name} storage FULL: production is wasted';
         level = EventLevel.bright;
-        _pushAlert(Alert(icon: '!', message: '${k.resource.name} storage full', detail: 'Spend it or build a Storage Vault', level: AlertTone.glow));
+        _pushAlert(Alert(icon: '!', message: '${k.resource.name} storage full', detail: 'Spend it or raise the ${k.resource.storage}', level: AlertTone.glow));
       case proto.FleetArrivedEvent():
         msg = '${_fleet(k.fleetId)} arrived at ${k.sector}';
       case proto.BuildingCompletedEvent():
@@ -404,9 +404,10 @@ class StateMapper {
         final pile = k.salvageDropped == null
             ? ''
             : ', wreckage ${amountsOf(k.salvageDropped!)}${k.salvageDespawnTick == null ? '' : ' drifts away in ${clockFmt(math.max(0, k.salvageDespawnTick! - tick))}'}';
+        final satellites = k.satellitesLost == 0 ? '' : ', ${k.satellitesLost} Solar Satellite${k.satellitesLost == 1 ? '' : 's'} destroyed';
         msg = k.defended
             ? '! Raid repelled (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)})$structures$pile'
-            : '! Raid broke through (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)}): lost ${amountsOf(k.resourcesLost)}$structures${k.shipsLost > 0 ? ', ${k.shipsLost} docked ships destroyed' : ''}';
+            : '! Raid broke through (raid ${k.raidPower.toStringAsFixed(0)} vs defense ${k.defensePower.toStringAsFixed(0)}): lost ${amountsOf(k.resourcesLost)}$structures${k.shipsLost > 0 ? ', ${k.shipsLost} docked ships destroyed' : ''}$satellites';
         level = EventLevel.bright;
       case proto.SiteExplorationStartedEvent():
         msg = '${_fleet(k.fleetId)} boarding derelict (tier ${k.tier}) in ${k.sector}, done tick ${k.endTick}';
@@ -585,7 +586,7 @@ class StateMapper {
             shipClass: e.key.label,
             count: e.value.count,
             hull: e.value.hull.round(),
-            hullMax: e.value.hullMax.round().clamp(1, 99999),
+            hullMax: math.max(1, e.value.hullMax.round()),
             ids: e.value.ids,
           ),
       ],
@@ -603,6 +604,7 @@ class StateMapper {
       fuelExact: f.fuel,
       jumpFuelExact: f.jumpFuel,
       jumpTicks: f.jumpTicks,
+      scanRange: f.scanRange,
       outpostFuel: f.outpostFuel?.round(),
       atOutpost: f.atOutpost,
       cooldown: f.cooldownRemaining,
@@ -731,11 +733,13 @@ class StateMapper {
   }
 
   static String _fmtTicks(int t) {
-    final h = t ~/ 3600;
+    final d = t ~/ 86400;
+    final h = (t % 86400) ~/ 3600;
     final m = (t % 3600) ~/ 60;
     final s = t % 60;
     final mm = m.toString().padLeft(2, '0');
     final ss = s.toString().padLeft(2, '0');
-    return h > 0 ? '${h.toString().padLeft(2, '0')}:$mm:$ss' : '$mm:$ss';
+    final hms = '${h.toString().padLeft(2, '0')}:$mm:$ss';
+    return d > 0 ? '${d}d $hms' : h > 0 ? hms : '$mm:$ss';
   }
 }

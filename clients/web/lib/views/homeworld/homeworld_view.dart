@@ -69,7 +69,7 @@ class _HomeworldViewState extends State<HomeworldView> {
     final c = _ctrl;
     final k = e.logicalKey;
     final tab = c.hwTab;
-    final listTab = tab == HomeworldTab.buildings || tab == HomeworldTab.research || tab == HomeworldTab.shipyard;
+    final listTab = tab != HomeworldTab.storage;
     if (k == LogicalKeyboardKey.bracketLeft) {
       c.cycleHomeworldTab(-1);
     } else if (k == LogicalKeyboardKey.bracketRight) {

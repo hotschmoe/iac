@@ -1320,8 +1320,12 @@ pub struct HomeworldState {
     /// Docked ships, Solar Satellites and all defences together: what the
     /// next raid meets.
     pub home_defence_power: f32,
+    /// The share of `home_defence_power` the ships standing at home add.
+    pub docked_power: f32,
     /// The Solar Satellites' share of `home_defence_power`.
     pub satellite_power: f32,
+    /// The standing defences' share of `home_defence_power`.
+    pub structure_power: f32,
     /// Typical power of the next raid, from the empire's building and
     /// research points; the actual raid rolls 0.80 to 1.15 times this.
     pub next_raid_estimate_power: f32,
@@ -1743,6 +1747,10 @@ pub struct DefenceOption {
     /// 1 for a dome. Absent when there is no limit.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max: Option<u32>,
+    /// How many more may be ordered now: `max` less those standing, being
+    /// rebuilt and on order. Absent when there is no limit.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub room: Option<u32>,
     pub unit_cost: Resources,
     pub ticks_per_unit: u64,
     /// What one fights with: the kind's figures with the owner's Armour,
@@ -1756,10 +1764,13 @@ pub struct DefenceOption {
 }
 
 impl HomeworldCatalog {
+    /// `defences` is what stands of each kind; `committed` adds to it those
+    /// being rebuilt and those on order, which is what a limit counts.
     pub fn new(
         buildings: &BuildingLevels,
         research: &ResearchLevels,
         defences: &[u32; DefenceKind::COUNT],
+        committed: &[u32; DefenceKind::COUNT],
         energy_made: u32,
         pace: &Pace,
     ) -> Self {
@@ -1836,6 +1847,7 @@ impl HomeworldCatalog {
                     kind,
                     count: defences[kind as usize],
                     max: kind.max_count(),
+                    room: kind.max_count().map(|most| most.saturating_sub(committed[kind as usize])),
                     unit_cost: kind.build_cost(),
                     ticks_per_unit: scaling::defence_build_time(kind, buildings, pace),
                     hull: built.hull,

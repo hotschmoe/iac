@@ -579,6 +579,7 @@
               "need": 2
             }
           ],
+          "room": 1,
           "shield": 2000.0,
           "ticks_per_unit": 28800,
           "unit_cost": {
@@ -610,6 +611,7 @@
               "need": 6
             }
           ],
+          "room": 1,
           "shield": 10000.0,
           "ticks_per_unit": 144000,
           "unit_cost": {
@@ -1662,6 +1664,7 @@
       ]
     },
     "defences": [],
+    "docked_power": 0.0,
     "docked_ships": [],
     "energy": {
       "fraction": 1.0,
@@ -1705,7 +1708,8 @@
         "deuterium": 0.0,
         "metal": 0.0
       }
-    }
+    },
+    "structure_power": 0.0
   },
   "known_sectors": [],
   "player": {

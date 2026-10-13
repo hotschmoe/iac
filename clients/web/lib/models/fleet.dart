@@ -1,5 +1,5 @@
 import '../protocol/hex.dart';
-import '../protocol/protocol.dart' as proto show Refining, StandingOrders;
+import '../protocol/protocol.dart' as proto show Refining, StandingOrders, scanBaseRange;
 
 enum FleetStatus {
   docked('DOCKED'),
@@ -82,6 +82,9 @@ class FleetState {
   /// Ticks one jump takes this fleet, from the order to the arrival.
   final int jumpTicks;
 
+  /// Hops a scan by this fleet reveals, as the server states it.
+  final int scanRange;
+
   /// Fuel for the way to the player's outpost, 0 standing at it; null
   /// unless that outpost is in service.
   final int? outpostFuel;
@@ -128,6 +131,7 @@ class FleetState {
     this.fuelExact,
     this.jumpFuelExact,
     this.jumpTicks = 0,
+    this.scanRange = proto.scanBaseRange,
     this.outpostFuel,
     this.atOutpost = false,
     this.cooldown = 0,

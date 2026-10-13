@@ -2736,15 +2736,20 @@ impl GameEngine {
     /// and every defence.
     pub fn home_defense_power(&self, player_id: u64) -> f32 {
         let Some(player) = self.players.get(&player_id) else { return 0.0; };
+        self.docked_power(player) + Self::satellite_power(player) + player.defences.power(&player.research)
+    }
+
+    /// What the ships standing at the homeworld add to its defence.
+    pub fn docked_power(&self, player: &Player) -> f32 {
         let mut power = 0.0;
         for fleet in self.fleets.values() {
-            if fleet.owner_id != player_id || fleet.location != player.homeworld { continue; }
+            if fleet.owner_id != player.id || fleet.location != player.homeworld { continue; }
             for ship in &fleet.ships[0..fleet.ship_count] {
                 if ship.hull <= 0.0 { continue; }
                 power += ship.weapon_power + (ship.hull + ship.shield) / 10.0;
             }
         }
-        power + Self::satellite_power(player) + player.defences.power(&player.research)
+        power
     }
 
     /// What the Solar Satellites at home add to its defence.

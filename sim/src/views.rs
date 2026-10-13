@@ -323,12 +323,19 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
             power: iac_shared::scaling::structure_power(kind, &player.research),
         }).collect(),
         home_defence_power: engine.home_defense_power(player.id),
+        docked_power: engine.docked_power(player),
         satellite_power: GameEngine::satellite_power(player),
+        structure_power: player.defences.power(&player.research),
         next_raid_estimate_power: iac_shared::scaling::raid_power_base(
             iac_shared::scaling::econ_points(&player.buildings, &player.research),
         ) * (RAID_POWER_ROLL_MIN + RAID_POWER_ROLL_MAX) / 2.0,
         catalog: iac_shared::protocol::HomeworldCatalog::new(
-            &player.buildings, &player.research, &player.defences.count, power.made, &pace,
+            &player.buildings,
+            &player.research,
+            &player.defences.count,
+            &DefenceKind::ALL.map(|kind| GameEngine::defences_owned_and_ordered(player, kind)),
+            power.made,
+            &pace,
         ),
     }
 }

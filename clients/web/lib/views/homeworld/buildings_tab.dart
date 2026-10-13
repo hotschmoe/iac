@@ -10,6 +10,7 @@ import '../../design/tokens.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../scenes/homeworld/plan.dart';
 import '../../state/game_controller.dart';
+import 'economy_tabs.dart';
 import 'spec.dart';
 
 class BuildingsTab extends StatelessWidget {
@@ -17,22 +18,6 @@ class BuildingsTab extends StatelessWidget {
   final ValueChanged<int> onSelect;
   final ConsolePrefs? prefs;
   const BuildingsTab({super.key, required this.ctrl, required this.onSelect, this.prefs});
-
-  String _sub(proto.BuildingType t) {
-    final r = ctrl.state.resources;
-    return switch (t) {
-      proto.BuildingType.metalMine => '+${r.metal.rate.toStringAsFixed(2)} FE/T',
-      proto.BuildingType.crystalMine => '+${r.crystal.rate.toStringAsFixed(2)} CR/T',
-      proto.BuildingType.deuteriumSynthesizer => '+${r.deut.rate.toStringAsFixed(2)} DE/T',
-      proto.BuildingType.shipyard => 'BUILDS SHIPS',
-      proto.BuildingType.researchLab => 'RESEARCH',
-      proto.BuildingType.fuelDepot => 'FUEL',
-      proto.BuildingType.sensorArray => 'SENSORS',
-      proto.BuildingType.defenseGrid => 'DEFENCE',
-      proto.BuildingType.storageVault => 'STORAGE',
-      proto.BuildingType.fabricator => 'BUILD TIME',
-    };
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -48,7 +33,17 @@ class BuildingsTab extends StatelessWidget {
       final tileW = s * 2 * .96;
       final tileH = tileW * math.sqrt(3) / 2;
       final narrow = s < 52;
-      return SizedBox(
+      final hw = ctrl.state.hw;
+      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        if (hw != null) Padding(padding: const EdgeInsets.fromLTRB(12, 12, 12, 0), child: EnergyReadout(hw: hw)),
+        _plan(context, cat, w, s, h, origin, tileW, tileH, narrow, still),
+      ]);
+    });
+  }
+
+  Widget _plan(BuildContext context, proto.HomeworldCatalog cat, double w, double s, double h, Offset origin, double tileW, double tileH, bool narrow,
+          bool still) =>
+      SizedBox(
         height: math.max(h, 360),
         width: w,
         child: Stack(clipBehavior: Clip.none, children: [
@@ -75,12 +70,11 @@ class BuildingsTab extends StatelessWidget {
           Positioned(right: 8, bottom: 8, child: _TitleBlock(ctrl)),
         ]),
       );
-    });
-  }
 
   Widget _tile(BuildContext context, int i, proto.BuildingOption o, Offset origin, double s, double tw, double th, bool narrow, bool still) {
-    final slot = planSlots[o.buildingType]!;
+    final slot = planSlot(o.buildingType);
     final c = origin + planCenter(slot.$1, slot.$2, s);
+    final caption = effectCaption(o.effects);
     final spec = specFor(ctrl, index: i);
     final locked = o.requires.any((r) => !r.met);
     final busy = ctrl.state.hw?.buildQueue.any((q) => q.buildingType == o.buildingType) ?? false;
@@ -105,7 +99,8 @@ class BuildingsTab extends StatelessWidget {
                 Text(o.buildingType.label.toUpperCase(),
                     maxLines: 2, textAlign: TextAlign.center, style: T.cond(size: 9, color: C.text2, weight: FontWeight.w500, spacing: narrow ? .2 : 1)),
                 Register(o.level, width: 2, size: narrow ? 14 : 20, color: locked ? C.text3 : C.a100),
-                if (!narrow) Text(_sub(o.buildingType), style: T.mono(size: 8.5, color: C.text3)),
+                if (!narrow && caption != null)
+                  FittedBox(fit: BoxFit.scaleDown, child: Text(caption.toUpperCase(), maxLines: 1, style: T.mono(size: 8.5, color: C.text3))),
               ]),
             ),
           ),

@@ -2691,8 +2691,14 @@ class HomeworldState {
   /// next raid meets.
   final double homeDefencePower;
 
+  /// The share of `home_defence_power` the ships standing at home add.
+  final double dockedPower;
+
   /// The Solar Satellites' share of `home_defence_power`.
   final double satellitePower;
+
+  /// The standing defences' share of `home_defence_power`.
+  final double structurePower;
 
   /// Typical power of the next raid, from the empire's building and
   /// research points; the actual raid rolls 0.80 to 1.15 times this.
@@ -2721,7 +2727,9 @@ class HomeworldState {
     required this.dockedShips,
     required this.defences,
     required this.homeDefencePower,
+    required this.dockedPower,
     required this.satellitePower,
+    required this.structurePower,
     required this.nextRaidEstimatePower,
     required this.catalog,
   });
@@ -2748,7 +2756,9 @@ class HomeworldState {
       dockedShips: _list(m['docked_ships'], ShipState.fromJson),
       defences: _list(m['defences'], DefenceState.fromJson),
       homeDefencePower: _double(m['home_defence_power']),
+      dockedPower: _double(m['docked_power']),
       satellitePower: _double(m['satellite_power']),
+      structurePower: _double(m['structure_power']),
       nextRaidEstimatePower: _double(m['next_raid_estimate_power']),
       catalog: HomeworldCatalog.fromJson(m['catalog']),
     );
@@ -2774,7 +2784,9 @@ class HomeworldState {
     'docked_ships': dockedShips.map((e) => e.toJson()).toList(),
     'defences': defences.map((e) => e.toJson()).toList(),
     'home_defence_power': homeDefencePower,
+    'docked_power': dockedPower,
     'satellite_power': satellitePower,
+    'structure_power': structurePower,
     'next_raid_estimate_power': nextRaidEstimatePower,
     'catalog': catalog.toJson(),
   };
@@ -3296,6 +3308,10 @@ class DefenceOption {
   /// The most that may stand, those being rebuilt and ordered included:
   /// 1 for a dome. Absent when there is no limit.
   final int? max;
+
+  /// How many more may be ordered now: `max` less those standing, being
+  /// rebuilt and on order. Absent when there is no limit.
+  final int? room;
   final Resources unitCost;
   final int ticksPerUnit;
 
@@ -3313,6 +3329,7 @@ class DefenceOption {
     required this.kind,
     required this.count,
     this.max,
+    this.room,
     required this.unitCost,
     required this.ticksPerUnit,
     required this.hull,
@@ -3328,6 +3345,7 @@ class DefenceOption {
       kind: DefenceKind.fromJson(m['kind']),
       count: _int(m['count']),
       max: _opt(m['max'], _int),
+      room: _opt(m['room'], _int),
       unitCost: Resources.fromJson(m['unit_cost']),
       ticksPerUnit: _int(m['ticks_per_unit']),
       hull: _double(m['hull']),
@@ -3342,6 +3360,7 @@ class DefenceOption {
     'kind': kind.toJson(),
     'count': count,
     'max': ?max,
+    'room': ?room,
     'unit_cost': unitCost.toJson(),
     'ticks_per_unit': ticksPerUnit,
     'hull': hull,

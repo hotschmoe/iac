@@ -24,6 +24,21 @@ String? shortReason(proto.Resources stock, proto.Resources cost) {
   return missing == null ? null : shortBy(missing, opening: true);
 }
 
+/// What [n] units cost at [unit] each.
+proto.Resources batchCost(proto.Resources unit, int n) =>
+    proto.Resources(metal: unit.metal * n, crystal: unit.crystal * n, deuterium: unit.deuterium * n);
+
+/// How many of [o] a batch of [batch] orders: all of it, or as many as the
+/// server says its limit still has room for.
+int defenceBatch(proto.DefenceOption o, int batch) => switch (o.room) {
+      null => batch,
+      final room => math.min(batch, room),
+    };
+
+/// Why no more of [o] can be ordered, when its limit is reached; else null.
+String? limitReason(proto.DefenceOption o) =>
+    o.room == 0 ? 'At most ${o.max} may stand, counting those on order and being rebuilt' : null;
+
 /// Presentation model for the economy side of the protocol: pace, storage
 /// caps, build slots and queues, defences and raids, score. Views read only
 /// this class; [EconomyView.of] is the single mapping from `GameState`
@@ -37,22 +52,43 @@ class WorldView {
   String get label => '${preset.toUpperCase()} x${pace == pace.roundToDouble() ? pace.toInt() : pace}';
 }
 
+/// The stockpile's limits as the server states them, a resource at a time.
 class StorageView {
-  final Map<String, double> cap;
-  final Map<String, double> protected;
-  final Map<String, int?> fullInS;
-  final Set<String> capped;
-  final int vaultLevel;
-  const StorageView(this.cap, this.protected, this.fullInS, this.capped, this.vaultLevel);
+  final proto.StorageState _state;
+  final proto.HomeworldCatalog? _catalog;
+  const StorageView(this._state, this._catalog);
 
-  /// Seconds to full from [stock] at [perTick]; null when not filling.
-  int? fullIn(String k, double stock, double perTick) {
-    final room = (cap[k] ?? 0) - stock;
-    if (room <= 0) return 0;
-    if (perTick <= 0) return null;
-    return (room / perTick).ceil();
-  }
+  double cap(proto.ResourceKind k) => k.of(_state.cap);
+  double protected(proto.ResourceKind k) => k.of(_state.protected);
+
+  /// Ticks until the stockpile of [k] is full, as the server counts them:
+  /// 0 when it is, null when it is not filling.
+  int? fullIn(proto.ResourceKind k) => _state.fullInS.of(k);
+
+  bool capped(proto.ResourceKind k) => _state.capped.contains(k);
+
+  /// The building that holds [k], with its level and its next.
+  proto.BuildingOption? building(proto.ResourceKind k) => _catalog?.storageOf(k);
+
+  /// "Metal Storage L2": the building of [k] and where it stands.
+  String buildingTag(proto.ResourceKind k) => '${k.storage} L${building(k)?.level ?? 0}';
 }
+
+/// A stockpile as the console lists it: the resource, the unit it is
+/// counted in, its name, and the key its widgets carry.
+class Stockpile {
+  final proto.ResourceKind kind;
+  final String unit;
+  final String name;
+  final String key;
+  const Stockpile(this.kind, this.unit, this.name, this.key);
+}
+
+const stockpiles = [
+  Stockpile(proto.ResourceKind.metal, 'Fe', 'Metal', 'metal'),
+  Stockpile(proto.ResourceKind.crystal, 'Cr', 'Crystal', 'crystal'),
+  Stockpile(proto.ResourceKind.deuterium, 'De', 'Deuterium', 'deut'),
+];
 
 class QueueSlotView {
   final String name;
@@ -87,8 +123,8 @@ class SlotsView {
   final List<QueuedItemView> shipQueued;
   final List<QueuedItemView> researchQueued;
 
-  /// What opens one more building slot, while the tech that adds them has a
-  /// level left; null when it has none.
+  /// What opens one more building slot, in the server's words; null when
+  /// every slot is open.
   final String? nextSlot;
   const SlotsView({
     required this.depth,
@@ -111,28 +147,41 @@ class DefenceRow {
   final int count;
   final int restoring;
 
-  /// Power of one structure at the current Defense Grid level.
+  /// Power of one with the owner's research.
   final double unitPower;
   final proto.DefenceOption? option;
   const DefenceRow(this.kind, this.count, this.restoring, this.unitPower, this.option);
-
-  /// What the structures standing add to the home defence.
-  double get power => count * unitPower;
 }
 
+/// What the next raid meets at home, in the three parts the server counts.
 class DefenceView {
   final double total;
+  final double docked;
+  final double satellites;
   final double structures;
   final double raidEstimate;
+
+  /// Solar Satellites at home.
+  final int satelliteCount;
 
   /// Ticks until the announced raid lands, or null when none is announced.
   final int? raidInTicks;
   final List<DefenceRow> rows;
-  const DefenceView(this.total, this.structures, this.raidEstimate, this.raidInTicks, this.rows);
+  const DefenceView({
+    required this.total,
+    required this.docked,
+    required this.satellites,
+    required this.structures,
+    required this.raidEstimate,
+    required this.satelliteCount,
+    required this.raidInTicks,
+    required this.rows,
+  });
 
-  /// Docked fleet and the Defense Grid: what is not a standing structure.
-  double get other => math.max(0, total - structures);
   double get ratio => total / math.max(1, raidEstimate);
+
+  /// "docked ships 182, satellites 63, defences 612".
+  String get parts => 'docked ships ${docked.round()}, satellites ${satellites.round()}, defences ${structures.round()}';
 }
 
 class RankView {
@@ -175,22 +224,7 @@ class EconomyView {
     }
     if (hw == null) return EconomyView(world: world, rank: rank);
 
-    int lvl(proto.BuildingType t) => hw.buildings.where((b) => b.buildingType == t).map((b) => b.level).fold(0, math.max);
-    final st = hw.storage;
-    final storage = StorageView(
-      {'metal': st.cap.metal, 'crystal': st.cap.crystal, 'deut': st.cap.deuterium},
-      {'metal': st.protected.metal, 'crystal': st.protected.crystal, 'deut': st.protected.deuterium},
-      {'metal': st.fullInS.metal, 'crystal': st.fullInS.crystal, 'deut': st.fullInS.deuterium},
-      {
-        for (final k in st.capped)
-          switch (k) {
-            proto.ResourceKind.metal => 'metal',
-            proto.ResourceKind.crystal => 'crystal',
-            proto.ResourceKind.deuterium => 'deut',
-          },
-      },
-      lvl(proto.BuildingType.storageVault),
-    );
+    final storage = StorageView(hw.storage, s.catalog);
 
     final tick = s.tick;
     QueueSlotView slot(proto.BuildQueueItem q) {
@@ -198,10 +232,7 @@ class EconomyView {
       return QueueSlotView(q.buildingType.label, q.targetLevel, ((tick - q.startTick) / total).clamp(0.0, 1.0), math.max(0, q.endTick - tick), q.startTick);
     }
 
-    // The engine's `scaling::building_slots` gives one slot for each level of Modular Fabrication.
-    final fab = s.catalog?.research.where((r) => r.tech == proto.ResearchType.modularFabrication).firstOrNull;
-    final fabNext = fab?.next;
-    final unmet = [for (final r in fab?.requires ?? const <proto.Requirement>[]) if (!r.met) r.label];
+    final unlock = hw.buildSlotUnlock;
     final slots = SlotsView(
       depth: hw.buildQueue.length + hw.buildPending.length,
       maxDepth: hw.buildSlots + hw.queueWaitingMax,
@@ -211,9 +242,7 @@ class EconomyView {
       queued: [for (final q in hw.buildPending) QueuedItemView('${q.buildingType.label} Lv.${q.targetLevel}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
       shipQueued: [for (final q in hw.shipyardPending) QueuedItemView('${q.item.label} x${q.count}', batchWaitSummary(q.waitingOn, q.startIn))],
       researchQueued: [for (final q in hw.researchPending) QueuedItemView('${q.tech.label} Lv.${q.targetLevel}', waitSummary(q.waitingOn, q.waitingFor, q.startIn))],
-      nextSlot: fab == null || fabNext == null
-          ? null
-          : 'Needs ${fab.tech.label} L${fabNext.level}${unmet.isEmpty ? '' : ' (requires ${unmet.join(', ')})'}',
+      nextSlot: unlock == null ? null : 'Needs ${unlock.label} (you have ${unlock.have})',
     );
 
     final rows = [
@@ -221,11 +250,14 @@ class EconomyView {
         DefenceRow(d.kind, d.count, d.restoring, d.power, s.catalog?.defences.where((o) => o.kind == d.kind).firstOrNull),
     ];
     final defence = DefenceView(
-      hw.homeDefencePower,
-      rows.fold(0.0, (a, r) => a + r.power),
-      raid != null && raid.estPower > 0 ? raid.estPower : hw.nextRaidEstimatePower,
-      raid == null ? null : math.max(0, raid.arrivalTick - tick),
-      rows,
+      total: hw.homeDefencePower,
+      docked: hw.dockedPower,
+      satellites: hw.satellitePower,
+      structures: hw.structurePower,
+      raidEstimate: raid != null && raid.estPower > 0 ? raid.estPower : hw.nextRaidEstimatePower,
+      satelliteCount: hw.satellites,
+      raidInTicks: raid == null ? null : math.max(0, raid.arrivalTick - tick),
+      rows: rows,
     );
     return EconomyView(world: world, storage: storage, slots: slots, defence: defence, rank: rank);
   }

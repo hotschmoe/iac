@@ -2,11 +2,13 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../console/intel.dart';
 import '../../design/panel.dart';
 import '../../design/tokens.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../scenes/homeworld/plan.dart';
 import '../../state/game_controller.dart';
+import '../../state/state_mapper.dart' show amountsOf;
 import 'spec.dart';
 
 class ShipyardTab extends StatelessWidget {
@@ -32,13 +34,18 @@ class ShipyardTab extends StatelessWidget {
     });
   }
 
+  /// The second line of a card: what the class is for, in its own figures.
+  String _role(proto.ShipOption o) {
+    final hw = ctrl.state.hw;
+    if (!o.flies) return 'STAYS AT HOME${hw == null ? '' : '   +${hw.energy.perSatellite} ENERGY EACH   ${hw.satellites} AT HOME'}';
+    return 'POWER ${groupDigits(o.power.round())}   JUMP ${o.jumpTicks}T   FUEL ${trimmed(o.jumpFuel, 1)}';
+  }
+
   Widget _card(int i, proto.ShipOption o) {
-    final st = o.shipClass;
     final locked = o.requires.any((r) => !r.met);
     final sel = ctrl.hwCursor == i;
     final spec = specFor(ctrl, index: i);
     final blocked = locked ? null : spec?.reason;
-    final total = o.unitCost.metal + o.unitCost.crystal + o.unitCost.deuterium;
     return Semantics(
       button: true,
       selected: sel,
@@ -64,12 +71,13 @@ class ShipyardTab extends StatelessWidget {
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(o.shipClass.label.toUpperCase(), style: T.cond(size: 14, color: sel ? C.a100 : C.a200, spacing: 1.4)),
                     const SizedBox(height: 4),
-                    Text('HULL ${st.hull.round()}  SHLD ${st.shield.round()}  WPN ${st.weapon.round()}  CARGO ${st.cargo.round()}',
+                    Text(
+                        'HULL ${groupDigits(o.hull.round())}  SHLD ${groupDigits(o.shield.round())}  WPN ${groupDigits(o.weapon.round())}'
+                        '${o.flies ? '  CARGO ${groupDigits(o.cargo.round())}' : ''}',
                         style: T.mono(size: 10, color: C.text2)),
-                    Text('POWER ${st.power.toStringAsFixed(1)}   ${(total / st.power).toStringAsFixed(0)} RES/PWR', style: T.mono(size: 10, color: C.text3)),
+                    Text(_role(o), style: T.mono(size: 10, color: C.text3)),
                     const SizedBox(height: 4),
-                    Text('${o.unitCost.metal.round()} Fe  ${o.unitCost.crystal.round()} Cr  ${o.unitCost.deuterium.round()} De  ${fmtTicks(o.ticksPerShip)}',
-                        style: T.mono(size: 10, color: C.a300)),
+                    Text('${amountsOf(o.unitCost)}   ${fmtTicks(o.ticksPerShip)}', style: T.mono(size: 10, color: C.a300)),
                     if (locked) WhyText('Locked: needs ${o.requires.where((r) => !r.met).map((r) => r.label).join(', ')}'),
                     if (blocked != null) ...[
                       const SizedBox(height: 3),

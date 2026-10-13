@@ -3,7 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../console/economy_view.dart';
-import '../console/intel.dart' show clockFmt;
+import '../console/intel.dart' show clockFmt, signedAnHour;
 import '../console/outpost.dart';
 import '../models/game_state.dart';
 import '../console/services.dart';
@@ -71,8 +71,9 @@ class Hud extends StatelessWidget {
             Expanded(
               child: LayoutBuilder(
                 builder: (context, box) => Row(children: [
-                  for (final k in const ['metal', 'crystal', 'deut'])
-                    Expanded(child: _ResChip(k, eco, narrow, showRate: !narrow && box.maxWidth >= 3 * _chipWithRate)),
+                  for (final s in stockpiles)
+                    Expanded(child: _ResChip(s, eco, narrow, showRate: !narrow && box.maxWidth >= 3 * _chipWithRate)),
+                  if (con.state.hw?.energy case final energy? when !narrow || energy.fraction < 1) _EnergyChip(energy, narrow),
                 ]),
               ),
             ),
@@ -298,26 +299,60 @@ class _IconBtnState extends State<_IconBtn> {
   }
 }
 
+/// The share of their output the mines run at, as the server states it:
+/// amber at full power, ember and blinking short of it.
+class _EnergyChip extends StatelessWidget {
+  final proto.EnergyState energy;
+  final bool narrow;
+  const _EnergyChip(this.energy, this.narrow);
+
+  @override
+  Widget build(BuildContext context) {
+    final short = energy.fraction < 1;
+    final share = (energy.fraction * 100).floor();
+    return Semantics(
+      label: 'Energy: mines at $share percent, ${energy.made} made of ${energy.needed} needed',
+      excludeSemantics: true,
+      child: Container(
+        key: const Key('hud-energy'),
+        padding: EdgeInsets.symmetric(horizontal: narrow ? 6 : 12),
+        decoration: const BoxDecoration(border: Border(right: BorderSide(color: C.lineLo))),
+        alignment: Alignment.center,
+        child: Blink(
+          period: 12,
+          onSteps: 7,
+          builder: (_, on) => Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('ENERGY', style: T.cond(size: narrow ? 8.5 : 9.5, color: short ? C.ember : C.text3, spacing: narrow ? .6 : 1.5)),
+            Text('$share%',
+                style: T.mono(size: narrow ? 13 : 16, color: !short ? C.a100 : on ? C.ember : C.ember.withValues(alpha: .4), weight: FontWeight.w500)),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
 class _ResChip extends StatelessWidget {
-  final String k;
+  final Stockpile stockpile;
   final EconomyView eco;
   final bool narrow;
 
-  /// The rate per tick is printed beside the stock where the chip has room
-  /// for both; the stock comes first.
+  /// The rate a game hour is printed beside the stock where the chip has
+  /// room for both; the stock comes first.
   final bool showRate;
-  const _ResChip(this.k, this.eco, this.narrow, {required this.showRate});
+  const _ResChip(this.stockpile, this.eco, this.narrow, {required this.showRate});
 
   @override
   Widget build(BuildContext context) {
     final con = Console.of(context);
     final st = con.state;
-    final (label, color, name, stock, rate) = switch (k) {
-      'metal' => ('Fe', C.metal, 'Metal', st.stock.metal, st.resources.metal.rate),
-      'crystal' => ('Cr', C.crystal, 'Crystal', st.stock.crystal, st.resources.crystal.rate),
-      _ => ('De', C.deut, 'Deuterium', st.stock.deuterium, st.resources.deut.rate),
-    };
-    final cap = eco.storage?.cap[k];
+    final kind = stockpile.kind;
+    final label = stockpile.unit, name = stockpile.name;
+    final color = C.ore(kind.name);
+    final stock = kind.of(st.stock);
+    final rate = kind.of(st.hw?.production ?? const proto.Resources());
+    final cap = eco.storage?.cap(kind);
+    final capped = eco.storage?.capped(kind) ?? false;
     return Container(
       padding: EdgeInsets.symmetric(horizontal: narrow ? 6 : 14),
       decoration: const BoxDecoration(border: Border(right: BorderSide(color: C.lineLo))),
@@ -326,9 +361,9 @@ class _ResChip extends StatelessWidget {
         onSteps: 1,
         builder: (context, _) {
           final dt = math.min(1.2, con.sinceTick);
-          var v = stock + rate * dt;
+          var v = math.max(0.0, stock + rate * dt);
           if (cap != null) v = math.min(v, cap);
-          final full = cap != null && v >= cap * .98;
+          final full = capped;
           final near = cap != null && proto.storageNearCap(v, cap);
           return Semantics(
             label: '$name ${v.floor()}${cap != null ? ' of ${cap.floor()}' : ''}',
@@ -343,7 +378,7 @@ class _ResChip extends StatelessWidget {
                         fit: BoxFit.scaleDown,
                         alignment: Alignment.centerLeft,
                         child: Register(v, size: narrow ? 13 : 16, glow: true, color: full ? C.ember : C.a100))),
-                if (showRate) Text('+${rate.toStringAsFixed(1)}/T', style: T.mono(size: 10, color: C.text3)),
+                if (showRate) Text('${signedAnHour(rate)}/H', style: T.mono(size: 10, color: rate < 0 ? C.ember : C.text3)),
               ]),
               SizedBox(height: narrow ? 1 : 3),
               if (cap != null)

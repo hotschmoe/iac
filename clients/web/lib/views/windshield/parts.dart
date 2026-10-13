@@ -279,8 +279,6 @@ class StatusPanel extends StatelessWidget {
     final hops = f.fuelForHops ?? f.fuel;
     final need = f.homeFuel;
     final low = need > 0 && f.fuel < need * 1.2;
-    // The engine's `handle_scan` picks the range the same way: a Scout aboard extends it.
-    final scanRange = groupOf(f, proto.ShipClass.scout) != null ? proto.scanScoutRange : proto.scanBaseRange;
     final cargo = f.cargo.total;
     final pol = f.policy == null ? 'MANUAL' : f.policy!.toUpperCase();
     return ConsolePanel(
@@ -342,7 +340,7 @@ class StatusPanel extends StatelessWidget {
                   v: '$toOutpost FUEL${toOutpost > f.fuel ? '  SHORT' : ''}',
                   vc: toOutpost > f.fuel ? C.threat(6) : null),
             Kv('Fleet power', v: f.power.round().toString()),
-            Kv('Scan range', v: '$scanRange'),
+            Kv('Scan range', v: '${f.scanRange}'),
             Kv('Orders', key: const Key('status-orders'), v: holding == null ? pol : '$pol - HOLDING', vc: C.a300),
             if (f.policy != null)
               ConstrainedBox(
