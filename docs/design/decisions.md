@@ -3,6 +3,21 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (the Flutter test flake is left alone)
+
+`docs/design/flutter_test_flake.md` found that this machine's kernel loses
+floating-point state around SVE, in a C program with no Dart in it, and that
+this is the likely cause of `flutter test` failing some runs. The owner:
+
+> thats a arm specific problem so no issue in wasm or on other machines
+> (probably). we can ignore it for now, add a note in claudemd as needed
+
+So nothing is done about it: no kernel parameter, no new kernel, no retry
+around the suite, no change to the client. The suite is run with a timeout
+and a failure is run again before it is read as the client's (`CLAUDE.md`).
+"Probably" is the owner's word and stands: that the fault is what breaks the
+suite was not shown, and no other machine has run the suite to compare.
+
 ## 2026-10-13 (the OGame study's eleven questions: the defaults)
 
 The owner was shown the eleven questions of `docs/design/ogame.md`, section 14,
