@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
+import '../../console/battle.dart' show outcomeSentence, outcomeTitle, roundsOf;
 import '../../console/intel.dart';
 import '../../console/outpost.dart' show inOutpostRings;
 import '../../console/route_planner.dart';
@@ -23,6 +24,7 @@ import '../../scenes/windshield/geometry.dart';
 import '../../scenes/windshield/painter.dart';
 import '../../scenes/windshield/sim.dart';
 import '../../state/game_controller.dart' show HomeworldTab;
+import '../battle_view.dart' show BattlePanel, BattleStrip;
 import '../homeworld/economy_tabs.dart' show HoldDock, HoldPanel;
 import '../onboarding.dart';
 import '../outpost_view.dart' show FoundingPanel, OutpostPanel;
@@ -68,6 +70,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
 
   /// Where the desktop layout's fleet rail starts, under the sector head.
   static const _railTop = 230.0;
+
+  /// Where the phone layout's line for a fight stands, over the fleet rail.
+  static const _stripBottom = 106.0;
 
   /// The panels stand in the desktop layout's column or in the phone
   /// layout's sheet. The key carries them from one to the other when the
@@ -193,7 +198,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         }
       case proto.CombatEndedEvent():
         if (k.mine) {
-          _showBanner(k.playerVictory ? 'VICTORY' : 'DEFEAT', k.playerVictory ? 'Hostiles destroyed. Salvage drifts in the wake.' : 'Fleet withdrew or was lost.', !k.playerVictory);
+          _showBanner(outcomeTitle(k.outcome), 'After ${roundsOf(k.rounds)}: ${outcomeSentence(k.outcome)}.', !k.playerVictory);
           con.play(k.playerVictory ? 'ok' : 'alert');
         }
       case proto.SiteExploredEvent():
@@ -554,7 +559,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final combat = f.status == ui.FleetStatus.combat;
       final harvesting = f.status == ui.FleetStatus.harvesting;
       final exploring = f.status == ui.FleetStatus.exploring;
-      final shield = _shieldFrac();
+      final battle = st.battleAt(f.sector);
       final mine = st.outpost;
       final atOutpost = f.atOutpost;
 
@@ -576,6 +581,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       final feedCeiling = g.cardCenter(dirs[4]).dy + GateCard.tallest / 2;
 
       final rightCol = Column(key: _panels, mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        if (battle != null) ...[BattlePanel(key: ValueKey(battle.sector), battle: battle), const SizedBox(height: 8)],
         if (_orders) ...[OrdersPanel(controller: con.game), const SizedBox(height: 8)],
         if (_trade) ...[ExchangePanel(controller: con.game), const SizedBox(height: 8)],
         if (_outpost && mine == null) ...[FoundingPanel(controller: con.game), const SizedBox(height: 8)],
@@ -587,7 +593,6 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         ],
         StatusPanel(
           f: f,
-          shieldFrac: shield,
           atHome: f.sector == st.homeworld,
           holding: st.holdOf(f),
           onRefine: () => con.game.refineHold(f.id),
@@ -681,6 +686,18 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
                   constraints: BoxConstraints(maxHeight: math.max(FleetRail.cardHeight, feedCeiling - _railTop)),
                   child: FleetRail(ctrl: con.game, narrow: false, combat: combat))),
         if (narrow) Positioned(left: 8, right: 8, bottom: 70, child: FleetRail(ctrl: con.game, narrow: true, combat: combat)),
+        if (narrow && battle != null && !_sheet)
+          Positioned(
+              left: 8,
+              right: 8,
+              bottom: _stripBottom,
+              child: Center(
+                  child: BattleStrip(
+                      battle: battle,
+                      onTap: () {
+                        setState(() => _sheet = true);
+                        _clearForSheet();
+                      }))),
         if (narrow)
           Positioned(
               top: 8,
@@ -753,15 +770,6 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         proto.WorldZone.outerRing => const Color(0xFFFF5A28),
         proto.WorldZone.wandering => const Color(0xFFA05AFF),
       };
-
-  double _shieldFrac() {
-    var s = 0.0, m = 0.0;
-    for (final u in sim.own) {
-      s += u.shield;
-      m += u.shieldMax;
-    }
-    return m > 0 ? s / m : 0;
-  }
 
   void _pick(Offset p, Geo g) {
     String? h;

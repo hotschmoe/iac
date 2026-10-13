@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../console/battle.dart';
 import '../../console/intel.dart';
 import '../../console/outpost.dart';
 import '../../console/threat.dart';
@@ -17,6 +18,7 @@ import '../../models/game_state.dart';
 import '../../protocol/protocol.dart' as proto;
 import '../../scenes/windshield/geometry.dart';
 import '../../state/game_controller.dart';
+import '../battle_view.dart';
 import '../onboarding.dart';
 
 const voice = {
@@ -242,7 +244,6 @@ class _HoverState extends State<Hover> {
 
 class StatusPanel extends StatelessWidget {
   final ui.FleetState f;
-  final double shieldFrac;
 
   /// The fleet stands in its homeworld's sector.
   final bool atHome;
@@ -254,7 +255,7 @@ class StatusPanel extends StatelessWidget {
   /// what that would do.
   final VoidCallback? onRefine;
   final Widget? footer;
-  const StatusPanel({super.key, required this.f, required this.shieldFrac, required this.atHome, this.holding, this.onRefine, this.footer});
+  const StatusPanel({super.key, required this.f, required this.atHome, this.holding, this.onRefine, this.footer});
 
   /// What a fleet under orders keeps free under its Orders row for the
   /// reason of a hold, four lines of it, so that a hold that starts or ends
@@ -263,12 +264,7 @@ class StatusPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    var hull = 0, hm = 0;
-    for (final g in f.ships) {
-      hull += g.hull;
-      hm += g.hullMax;
-    }
-    final hullFrac = hm > 0 ? hull / hm : 0.0;
+    final hullFrac = hullShare(f.hull, f.hullMax);
     final hops = f.fuelForHops ?? f.fuel;
     final need = f.homeFuel;
     final low = need > 0 && f.fuel < need * 1.2;
@@ -276,13 +272,13 @@ class StatusPanel extends StatelessWidget {
     final pol = f.policy == null ? 'MANUAL' : f.policy!.toUpperCase();
     return ConsolePanel(
       title: 'Fleet status',
-      subText: '${f.name} / ${f.shipCount} ships',
+      subText: '${f.name} / ${shipsOf(f.shipCount)}',
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
           child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
             Dial(frac: f.fuelMax > 0 ? f.fuel / f.fuelMax : 0, warn: .2, label: 'FUEL', value: '${f.fuel}/${f.fuelMax}'),
-            Dial(frac: hullFrac, warn: .3, label: 'HULL', value: '${(hullFrac * 100).round()}%', color: C.own),
+            Dial(frac: hullFrac, warn: .3, label: 'HULL', value: '${(hullFrac * 100).floor()}%', color: C.own),
           ]),
         ),
         Padding(
@@ -312,14 +308,15 @@ class StatusPanel extends StatelessWidget {
                   child: Text(switch (f.refine) { null => 'NOTHING TO REFINE', final r => refineLine(r) },
                       key: const Key('status-refine-yield'), textAlign: TextAlign.right, style: T.mono(size: 10, color: C.text3))),
             ]),
-            const SizedBox(height: 7),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              const Lbl('Shield', size: 10),
-              Text('${(shieldFrac * 100).round()}%', style: T.mono(size: 11)),
-            ]),
-            const SizedBox(height: 3),
-            LedBar(shieldFrac, color: C.crystal),
             const SizedBox(height: 8),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              const Lbl('Ships', size: 10),
+              Text('HULL ${hullOf(f.hull, f.hullMax)}', key: const Key('status-hull'), style: T.mono(size: 10, color: C.text3)),
+            ]),
+            ShipRows(f.ships, key: const Key('status-ships'), tag: 'status-ship'),
+            const SizedBox(height: 7),
+            FleetCondition(refit: f.refit, refitDue: f.refitDue, repair: f.repair),
+            Kv('A round', key: const Key('status-round'), v: 'FIRES ${shortCount(f.attack)}  SHIELD ${shortCount(f.shield)}'),
             Kv('Fuel for', v: hopCount(hops).toUpperCase()),
             if (atHome)
               const Kv('Way home', v: 'AT THE DOCK')
@@ -332,7 +329,7 @@ class StatusPanel extends StatelessWidget {
                   key: const Key('status-way-outpost'),
                   v: '$toOutpost FUEL${toOutpost > f.fuel ? '  SHORT' : ''}',
                   vc: toOutpost > f.fuel ? C.threat(6) : null),
-            Kv('Fleet power', v: f.power.round().toString()),
+            Kv('Fleet power', v: shortCount(f.power.round())),
             Kv('Scan range', v: '${f.scanRange}'),
             Kv('Orders', key: const Key('status-orders'), v: holding == null ? pol : '$pol - HOLDING', vc: C.a300),
             if (f.policy != null)
@@ -460,8 +457,12 @@ class ContactsPanel extends StatelessWidget {
         'h',
         _Diamond(th),
         Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          _t(threat.composition.map((e) => '${e.$2}x ${shipAbbr(e.$1)}').join(' + '), trail: ThreatBadge(th, sm: true)),
-          _d(Text('${threat.behavior?.wire.toUpperCase() ?? ''} - POWER ${threat.power.round()}${combat ? ' - ENGAGED' : ''}', style: _ds.copyWith(color: combat ? C.threat(6) : C.text3))),
+          _t(threat.groups.length == 1 ? 'Hostile group' : '${threat.groups.length} hostile groups', trail: ThreatBadge(th, sm: true)),
+          _d(Text('POWER ${shortCount(threat.power.round())}${combat ? ' - ENGAGED' : ''}', style: _ds.copyWith(color: combat ? C.threat(6) : C.text3))),
+          for (final g in threat.groups) ...[
+            _d(Text('${g.behavior.wire.toUpperCase()} - ${shipsOf(g.shipCount).toUpperCase()}', key: Key('contact-hostile-${g.id}'), style: _ds.copyWith(color: C.text2))),
+            ShipRows(g.ships, color: C.ember, tag: 'contact-hostile-${g.id}'),
+          ],
           if (o == null)
             _d(Text('ODDS: REQUESTED', key: const Key('contact-odds-pending'), style: _ds))
           else ...[
@@ -635,9 +636,15 @@ class FleetManagePanel extends StatefulWidget {
   State<FleetManagePanel> createState() => _FleetManagePanelState();
 }
 
+/// The steps the split picker's - and + move a class's count by: one for a
+/// fleet of five, a hundred for a fleet of thousands.
+const splitSteps = [1, 10, 100];
+
 class _FleetManagePanelState extends State<FleetManagePanel> {
-  final Map<String, int> _pick = {};
+  final Map<proto.ShipClass, int> _pick = {};
   int? _forFleet;
+  int _step = splitSteps.first;
+  bool _damagedFirst = false;
   GameController get c => widget.controller;
 
   @override
@@ -646,30 +653,45 @@ class _FleetManagePanelState extends State<FleetManagePanel> {
     if (_forFleet != fleet.id) {
       _forFleet = fleet.id;
       _pick.clear();
+      _damagedFirst = false;
     }
+    _pick.removeWhere((cls, _) => fleet.ships.every((g) => g.shipClass != cls));
     for (final g in fleet.ships) {
       _pick.update(g.shipClass, (n) => n.clamp(0, g.count), ifAbsent: () => 0);
     }
     final picked = _pick.values.fold<int>(0, (a, b) => a + b);
     final canSplit = picked > 0 && picked < fleet.shipCount;
+    final why = picked == 0 ? 'Pick ships with + first.' : 'One ship must stay in the fleet.';
     final partners = c.mergeCandidates;
     return ConsolePanel(
+      key: const Key('fleet-manage'),
       title: 'Fleet management',
+      subText: '${fleet.name} / ${shipsOf(fleet.shipCount)}',
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        const Lbl('Split off'),
+        Row(children: [
+          const Expanded(child: Lbl('Split off')),
+          for (final s in splitSteps)
+            Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: ConsoleButton('x$s', key: ValueKey('fm-step-$s'), small: true, active: _step == s, onPressed: () => setState(() => _step = s))),
+        ]),
         for (final g in fleet.ships) _pickRow(g),
+        const SizedBox(height: 8),
+        Wrap(spacing: 6, runSpacing: 6, children: [
+          ConsoleButton('Whole first', key: const ValueKey('fm-whole-first'), small: true, active: !_damagedFirst, onPressed: () => setState(() => _damagedFirst = false)),
+          ConsoleButton('Damaged first', key: const ValueKey('fm-damaged-first'), small: true, active: _damagedFirst, onPressed: () => setState(() => _damagedFirst = true)),
+        ]),
+        WhyText(_damagedFirst
+            ? 'The most damaged ships of each class go: how the wounded are sent home.'
+            : 'Whole ships of each class go first, damaged ones when the whole run out.'),
         const SizedBox(height: 8),
         Align(
           alignment: Alignment.centerLeft,
-          child: ConsoleButton(picked == 0 ? 'Split off' : 'Split off $picked',
-              key: const ValueKey('fm-split'),
-              small: true,
-              primary: canSplit,
-              onPressed: canSplit ? () => _split(fleet) : null,
-              reason: picked == 0 ? 'Pick ships with + first' : 'One ship must stay in the fleet'),
+          child: ConsoleButton(picked == 0 ? 'Split off' : 'Split off ${groupDigits(picked)}',
+              key: const ValueKey('fm-split'), small: true, primary: canSplit, onPressed: canSplit ? () => _split(fleet) : null, reason: why),
         ),
-        if (!canSplit) WhyText(picked == 0 ? 'Pick ships with + first.' : 'One ship must stay in the fleet.'),
+        if (!canSplit) WhyText(why),
         const SizedBox(height: 10),
         const Lbl('Merge in (same sector)'),
         if (partners.isEmpty) const WhyText('No other fleet here.') else for (final p in partners) _mergeRow(p),
@@ -677,15 +699,29 @@ class _FleetManagePanelState extends State<FleetManagePanel> {
     );
   }
 
-  Widget _pickRow(ui.ShipState g) {
-    final n = _pick[g.shipClass] ?? 0;
+  Widget _pickRow(proto.ShipGroupState g) {
+    final cls = g.shipClass;
+    final n = _pick[cls] ?? 0;
+    void set(int to) => setState(() => _pick[cls] = to.clamp(0, g.count));
     return Padding(
-      padding: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.only(top: 5),
       child: Row(children: [
-        Expanded(child: Text('${g.shipClass.toUpperCase()} x${g.count}', style: T.mono(size: 11, color: C.text2))),
-        ConsoleButton('-', key: ValueKey('fm-minus-${g.shipClass}'), small: true, onPressed: n > 0 ? () => setState(() => _pick[g.shipClass] = n - 1) : null, reason: 'None picked'),
-        SizedBox(width: 26, child: Text('$n', textAlign: TextAlign.center, style: T.mono(size: 11, color: C.a300))),
-        ConsoleButton('+', key: ValueKey('fm-plus-${g.shipClass}'), small: true, onPressed: n < g.count ? () => setState(() => _pick[g.shipClass] = n + 1) : null, reason: 'All picked'),
+        Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+          Text(cls.label.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.cond(size: 11.5, color: C.text2, spacing: 1.1)),
+          Text.rich(
+            TextSpan(children: [
+              TextSpan(text: 'OF ${groupDigits(g.count)}'),
+              if (g.damaged > 0) TextSpan(text: '  ${groupDigits(g.damaged)} DAMAGED', style: const TextStyle(color: damagedColor)),
+            ]),
+            style: T.mono(size: 10, color: C.text3),
+          ),
+        ])),
+        ConsoleButton('-', key: ValueKey('fm-minus-${cls.wire}'), small: true, onPressed: n > 0 ? () => set(n - _step) : null, reason: 'None picked'),
+        SizedBox(width: 44, child: Text(groupDigits(n), key: Key('fm-count-${cls.wire}'), textAlign: TextAlign.center, style: T.mono(size: 11, color: n > 0 ? C.a300 : C.text3))),
+        ConsoleButton('+', key: ValueKey('fm-plus-${cls.wire}'), small: true, onPressed: n < g.count ? () => set(n + _step) : null, reason: 'All picked'),
+        const SizedBox(width: 4),
+        ConsoleButton('All', key: ValueKey('fm-all-${cls.wire}'), small: true, active: n == g.count, onPressed: () => set(n == g.count ? 0 : g.count)),
       ]),
     );
   }
@@ -693,18 +729,19 @@ class _FleetManagePanelState extends State<FleetManagePanel> {
   Widget _mergeRow(ui.FleetState p) => Padding(
         padding: const EdgeInsets.only(top: 4),
         child: Row(children: [
-          Expanded(child: Text('${p.name.toUpperCase()} - ${p.shipCount} SHIP${p.shipCount == 1 ? '' : 'S'}', style: T.mono(size: 11, color: C.text2))),
+          Expanded(child: Text('${p.name.toUpperCase()} - ${shipsOf(p.shipCount).toUpperCase()}', style: T.mono(size: 11, color: C.text2))),
           ConsoleButton('Merge', key: ValueKey('fm-merge-${p.id}'), small: true, onPressed: () => c.mergeFleet(p.id)),
         ]),
       );
 
   void _split(ui.FleetState fleet) {
-    final ids = <int>[];
-    for (final g in fleet.ships) {
-      ids.addAll(g.ids.take(_pick[g.shipClass] ?? 0));
-    }
+    final ships = [
+      for (final g in fleet.ships)
+        if ((_pick[g.shipClass] ?? 0) > 0) proto.ShipCount(shipClass: g.shipClass, count: _pick[g.shipClass]!),
+    ];
+    final damagedFirst = _damagedFirst;
     setState(_pick.clear);
-    c.splitShipIds(ids);
+    c.splitFleet(ships, damagedFirst: damagedFirst);
   }
 }
 

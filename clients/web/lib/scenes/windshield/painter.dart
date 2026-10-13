@@ -64,6 +64,7 @@ class ArenaPainter extends CustomPainter {
     _derelict(t);
     _hostiles(t);
     _ownShips(t);
+    _scale();
     _beams(t);
     _shots(t);
     _scan(t);
@@ -421,17 +422,19 @@ class ArenaPainter extends CustomPainter {
     final cc = fl > .3 ? const Color(0xFFFFF0DC) : col;
     Draw.symbol(c, def, o.dx, o.dy, s, rot: rot, color: cc, lw: 1.3 + fl * .9, alpha: math.min(1.0, .92 + fl) * alphaMul, bloom: bloom && alphaMul == 1);
     if (alphaMul != 1) return;
-    if (u.shieldMax > 0 && u.shield > 0 && (sim.combat || fl > 0)) {
-      Draw.dashedPath(c, Path()..addOval(Rect.fromCircle(center: o, radius: s * 1.35)), Draw.line(_cyan, 1, .18 + .6 * fl), 3, 4);
+    if (u.screen > .05) {
+      Draw.dashedPath(c, Path()..addOval(Rect.fromCircle(center: o, radius: s * 1.35)), Draw.line(_cyan, 1, .8 * u.screen), 3, 4);
     }
-    if (sim.combat && !u.dead) {
-      final w = s * 1.7, hy = o.dy - s * 1.5;
-      c.drawRect(Rect.fromLTWH(o.dx - w / 2, hy, w, 4), Draw.line(col, 1, .45));
-      c.drawRect(Rect.fromLTWH(o.dx - w / 2 + 1, hy + 1, (w - 2) * math.max(0, u.hull / math.max(1, u.hullMax)).clamp(0, 1), 2), Paint()..color = col.withValues(alpha: .9));
-      if (u.shieldMax > 0) {
-        c.drawRect(Rect.fromLTWH(o.dx - w / 2 + 1, hy - 3, (w - 2) * math.max(0, u.shield / u.shieldMax).clamp(0, 1), 1.4), Paint()..color = _cyan.withValues(alpha: .9));
-      }
-    }
+  }
+
+  /// What a mark stands for, said once under the fleet while it is more
+  /// than a ship: the list beside the scope has the counts.
+  void _scale() {
+    if (sim.scale <= 1 || sim.warp != null) return;
+    final lead = sim.own.where((u) => !u.gone).firstOrNull;
+    if (lead == null) return;
+    final o = wp(lead.tx, lead.ty - .1);
+    Draw.text(c, 'EACH MARK: ${sim.scale} SHIPS', o.dx, o.dy, T.mono(size: 9.5, color: const Color(0xB3BFA370), spacing: .6), anchor: .5);
   }
 
   void _hostiles(double t) {
@@ -545,6 +548,7 @@ class ArenaPainter extends CustomPainter {
     }
     for (final f in sim.floats) {
       final p = (sim.now - f.t0) / 1.1;
+      if (p < 0) continue;
       final o = wp(f.x, f.y);
       Draw.text(c, f.text, o.dx, o.dy - p * 30, T.mono(size: 12, color: f.color.withValues(alpha: math.max(0, 1 - p)), weight: FontWeight.w500), anchor: .5);
     }
