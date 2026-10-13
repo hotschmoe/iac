@@ -518,6 +518,13 @@ impl ClientState {
         Some(Command::Unload { fleet_id: self.active_fleet()?.id })
     }
 
+    /// The fleet panel's refine order. It is sent whatever the state shows:
+    /// a refusal is the server's sentence.
+    pub fn fleet_panel_refine(&self) -> Option<Command> {
+        self.fleet_panel.as_ref()?;
+        Some(Command::Refine { fleet_id: self.active_fleet()?.id })
+    }
+
     // ── Exchange ─────────────────────────────────────────────────────
 
     /// Whether `at` is a hub sector that offers the exchange.

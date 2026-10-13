@@ -694,6 +694,8 @@ def fleet_rows(fs):
             row["cargo_blocked"] = True
         if f.get("laden"):
             row["laden"] = True
+        if f.get("refine"):
+            row["refine"] = {k: round(v, 1) for k, v in f["refine"].items()}
         sec = sectors.get(tuple(loc))
         if sec:
             row["exits"] = [DIRS.get((c["q"] - loc[0], c["r"] - loc[1]), "?") + f"->{c['q']},{c['r']}" for c in sec.get("connections") or []]
@@ -1000,7 +1002,8 @@ def summarize(fs, doc, odds):
         print(f"\nFleet {f['id']} at {loc[0]},{loc[1]}  {f['state']}  policy={orders_words(f)}  cooldown={f.get('cooldown_remaining', 0)}"
               f"  power {f.get('power', 0):.0f}  range {f.get('range_hops', 0)} hops out and back"
               + ("  CARGO BLOCKED: stockpile full, spend something" if f.get("cargo_blocked") else "")
-              + ("  LADEN: loaded by hand, stays aboard at the dock (unload puts it back)" if f.get("laden") else ""))
+              + ("  LADEN: loaded by hand, stays aboard at the dock (unload puts it back)" if f.get("laden") else "")
+              + (f"  REFINE: {f['refine']['deuterium']:.1f} deuterium in the hold makes {f['refine']['fuel']:.1f} fuel" if f.get("refine") else ""))
         print(f"  ships: " + ", ".join(f"{n}x {c}" for c, n in classes.items())
               + f"  hull {hull:.0f}/{hull_max:.0f}  fuel {f['fuel']:.0f}/{f['fuel_max']:.0f}"
               + f"  cargo {cargo:.0f}/{f['cargo_capacity']:.0f} ({res(f.get('cargo'))})")

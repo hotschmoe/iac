@@ -39,6 +39,18 @@ const dockVoiceLaden = 'A DOCKED FLEET REFUELS, AND NOTHING IN THE FIELD REACHES
     'HOLD LADEN: IT STAYS ABOARD UNTIL THE FLEET HAS BEEN AWAY.\n'
     'A RAID THAT BREAKS THROUGH STILL DESTROYS SOME DOCKED SHIPS AND TAKES ITS SHARE OF THE HOLD.';
 
+/// What refining is, for the control that orders it while it is greyed.
+const refineRule = 'Refining turns the deuterium in the hold into fuel, ${proto.refineLossPct}% less of it than a dock gives. '
+    'It takes deuterium aboard and room in the tank, and is not done in a fight or while a jump charges.';
+
+String _tenths(double v) {
+  final t = (v * 10).round() / 10;
+  return t == t.roundToDouble() ? t.toStringAsFixed(0) : t.toStringAsFixed(1);
+}
+
+/// "20 DE MAKES 212.5 FUEL": what the server says a refine order would do.
+String refineLine(proto.Refining r) => '${_tenths(r.deuterium)} DE MAKES ${_tenths(r.fuel)} FUEL';
+
 ui.ShipState? groupOf(ui.FleetState f, proto.ShipClass c) {
   for (final g in f.ships) {
     if (g.shipClass.toLowerCase() == c.label.toLowerCase()) return g;
@@ -244,8 +256,12 @@ class StatusPanel extends StatelessWidget {
 
   /// The hold its standing orders last announced, while it still stands.
   final PolicyAct? holding;
+
+  /// Orders the fleet to refine; the control is lit while the state carries
+  /// what that would do.
+  final VoidCallback? onRefine;
   final Widget? footer;
-  const StatusPanel({super.key, required this.f, required this.shieldFrac, required this.atHome, this.holding, this.footer});
+  const StatusPanel({super.key, required this.f, required this.shieldFrac, required this.atHome, this.holding, this.onRefine, this.footer});
 
   /// What a fleet under orders keeps free under its Orders row for the
   /// reason of a hold, four lines of it, so that a hold that starts or ends
@@ -296,6 +312,15 @@ class StatusPanel extends StatelessWidget {
               const TextSpan(text: '  '),
               TextSpan(text: 'De ${f.cargo.deut}', style: const TextStyle(color: C.deut)),
             ]), style: T.mono(size: 10)),
+            const SizedBox(height: 6),
+            Row(children: [
+              ConsoleButton('Refine',
+                  key: const ValueKey('status-refine'), small: true, onPressed: f.refine == null ? null : onRefine, reason: refineRule),
+              const SizedBox(width: 8),
+              Expanded(
+                  child: Text(switch (f.refine) { null => 'NOTHING TO REFINE', final r => refineLine(r) },
+                      key: const Key('status-refine-yield'), textAlign: TextAlign.right, style: T.mono(size: 10, color: C.text3))),
+            ]),
             const SizedBox(height: 7),
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
               const Lbl('Shield', size: 10),

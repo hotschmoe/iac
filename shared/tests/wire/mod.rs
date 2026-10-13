@@ -18,10 +18,11 @@ use serde_json::{Value, json};
 
 use iac_shared::Resources;
 use iac_shared::constants::{
-    Density, EXPLORE_DURATION_TICKS, LANE_SEARCH_HOPS, OUTPOST_MAX_RING, OUTPOST_MIN_RING,
+    Density, EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, LANE_SEARCH_HOPS, OUTPOST_MAX_RING, OUTPOST_MIN_RING,
     POLICY_CARGO_RETURN_PCT_MAX, POLICY_CARGO_RETURN_PCT_MIN, POLICY_ENGAGE_RATIO_X10_MAX,
     POLICY_ENGAGE_RATIO_X10_MIN, POLICY_FUEL_UNBOUNDED_PCT, POLICY_MIN_FUEL_PCT_MAX, POLICY_RANGE_MAX,
-    POLICY_RANGE_MIN, ResourceKind, SCAN_BASE_RANGE, SCAN_COOLDOWN, SCAN_SCOUT_RANGE, ShipClass, TerrainType, Zone,
+    POLICY_RANGE_MIN, REFINE_LOSS, ResourceKind, SCAN_BASE_RANGE, SCAN_COOLDOWN, SCAN_SCOUT_RANGE, ShipClass,
+    TerrainType, Zone,
 };
 use iac_shared::protocol::{
     BOT_NAME_PREFIX, ClientMessage, ErrorCode, ExchangeMeter, MAX_ODDS_SECTORS, NAME_MAX_LEN, PolicyParams,
@@ -163,6 +164,8 @@ pub fn extras(model: &Model) -> Extras {
         POLICY_ENGAGE_RATIO_X10_MIN,
         POLICY_ENGAGE_RATIO_X10_MAX,
         POLICY_FUEL_UNBOUNDED_PCT,
+        FUEL_DEUT_PER_UNIT,
+        REFINE_LOSS,
     ];
     let rust_defaults = BTreeMap::from([
         rust_default::<Resources>(),

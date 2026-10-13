@@ -125,6 +125,7 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<StandingOr
         laden: false,
         at_outpost: false,
         outpost_fuel: None,
+        refine: None,
         policy,
     }
 }
@@ -565,6 +566,7 @@ fn command_name(c: &Command) -> &'static str {
         Command::ExchangeQuote { .. } => "exchange_quote",
         Command::Load { .. } => "load",
         Command::Unload { .. } => "unload",
+        Command::Refine { .. } => "refine",
         Command::FoundOutpost { .. } => "found_outpost",
         Command::OutpostSurvey { .. } => "outpost_survey",
         Command::UpgradeOutpost => "upgrade_outpost",
@@ -720,6 +722,7 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("", Command::Load { fleet_id: 3, resource: ResourceKind::Metal, amount: Some(1200.5) }),
         ("all_that_fits", Command::Load { fleet_id: 3, resource: ResourceKind::Deuterium, amount: None }),
         ("", Command::Unload { fleet_id: 3 }),
+        ("", Command::Refine { fleet_id: 3 }),
         ("", Command::FoundOutpost { fleet_id: 7 }),
         ("", Command::OutpostSurvey { fleet_id: 7, sector: Some(h(10, -2)) }),
         ("own_sector", Command::OutpostSurvey { fleet_id: 7, sector: None }),
@@ -840,7 +843,12 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                         preset: PolicyPreset::PatrolHome,
                         params: PolicyParams::default(),
                     })),
-                    FleetState { laden: true, ..sample_fleet(2, h(4, -2), FleetStatus::Docked, None) },
+                    FleetState {
+                        laden: true,
+                        cargo: res(12.5, 3.0, 20.0),
+                        refine: Some(Refining { deuterium: 20.0, fuel: 212.5 }),
+                        ..sample_fleet(2, h(4, -2), FleetStatus::Docked, None)
+                    },
                 ],
                 sector_updates: Some(vec![rich_sector(), bare_sector()]),
                 homeworld_update: Some(sample_homeworld()),

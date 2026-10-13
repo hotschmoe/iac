@@ -1649,8 +1649,56 @@ class DemoWorld {
         rangeHops: f.fuel ~/ _jump(f.ships),
         cargoBlocked: f.cargoBlocked,
         laden: f.laden,
+        refine: _refining(f),
         policy: f.policy,
       );
+  }
+
+  /// The engine's `refining`: what a refine order would do for [f] now,
+  /// null where the engine refuses it.
+  static Refining? _refining(FleetState f) {
+    if (f.state == FleetStatus.inCombat || f.state == FleetStatus.moving) return null;
+    final aboard = f.cargo.deuterium;
+    final room = f.fuelMax - f.fuel;
+    if (aboard <= 0 || room <= 0) return null;
+    const rate = (1 - refineLoss) / fuelDeutPerUnit;
+    final fuel = aboard * rate;
+    return fuel <= room ? Refining(deuterium: aboard, fuel: fuel) : Refining(deuterium: room / rate, fuel: room);
+  }
+
+  /// The engine's `fuel_words`: tenths, and none for a whole number.
+  static String _tenths(double v) {
+    final t = (v * 10).round() / 10;
+    return t == t.roundToDouble() ? t.toStringAsFixed(0) : t.toStringAsFixed(1);
+  }
+
+  /// The server's `refine`, with its refusal sentences.
+  List<ServerMessage> _refine(int fleetId) {
+    final f = _find(fleetId);
+    if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
+    final offer = _refining(f);
+    if (offer == null) {
+      return [
+        switch (f.state) {
+          FleetStatus.inCombat => _err(ErrorCode.onCooldown, 'fleet $fleetId is in combat; nothing is refined in a fight'),
+          FleetStatus.moving => _err(ErrorCode.onCooldown, 'fleet $fleetId is charging a jump; it can refine once it has arrived'),
+          _ when f.cargo.deuterium <= 0 => _err(ErrorCode.noResources, 'the hold of fleet $fleetId carries no deuterium to refine'),
+          _ => _err(ErrorCode.invalidCommand,
+              'the tank of fleet $fleetId is full (${_tenths(f.fuel)} of ${_tenths(f.fuelMax)} fuel); refining would add nothing'),
+        },
+      ];
+    }
+    final left = max(0.0, f.cargo.deuterium - offer.deuterium);
+    final fuel = offer.fuel >= f.fuelMax - f.fuel ? f.fuelMax : f.fuel + offer.fuel;
+    _setFleet(_copy(f, fuel: fuel, cargo: Resources(metal: f.cargo.metal, crystal: f.cargo.crystal, deuterium: left)));
+    final hold = left > 0 ? '${_tenths(left)} deuterium is left in the hold' : 'the hold has no deuterium left';
+    _ev(AlertEvent(
+        level: AlertLevel.info,
+        message: 'fleet $fleetId refined ${_tenths(offer.deuterium)} deuterium into ${_tenths(offer.fuel)} fuel: '
+            'the tank stands at ${_tenths(fuel)} of ${_tenths(f.fuelMax)}, and $hold',
+        fleetId: fleetId,
+        sector: f.location));
+    return [_tickUpdate()];
   }
 
   FleetState _copy(
@@ -2660,6 +2708,8 @@ class DemoWorld {
         return _abandonOutpost();
       case LoadCommand(:final fleetId, :final resource, :final amount):
         return _load(fleetId, resource, amount);
+      case RefineCommand(:final fleetId):
+        return _refine(fleetId);
       case UnloadCommand(:final fleetId):
         final f = _find(fleetId);
         if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];

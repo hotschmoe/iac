@@ -6246,3 +6246,94 @@ them: a harvest caught in a fight keeps its timer (read, not run), the bots
 price a candidate sector's way home by straight distance, the scripted test
 world still moves a fleet at once, and the ratio gauge's captions wait for the
 OGame work.
+
+## 2026-10-13: fuel from the hold, the `refine` order
+
+The first step of the order of work the owner set with "defaults": item 10 of
+the OGame study's questions, section 8.5 of `docs/design/ogame.md`. Built in a
+worktree on master `d87f440`, for a reviewer to merge.
+
+**Read first.** Section 8.5 and the decision. In `sim/src/engine.rs`: the two
+docks (`refuel_fleet`, `refuel_at_outpost`), `load`, `unload` and `laden`,
+`fleet_is_free`, the stranded reserve, `handle_move`, `handle_harvest`, and how
+`commands.rs` words a refusal by asking the engine again. One thing learned on
+the way and left alone: the home dock fills the tank of a fleet that is
+charging a jump out of it, so the first jump from home is paid by the
+stockpile at the dock's rate and the fleet arrives one hop out with a full
+tank.
+
+**The rule as built.** `refine` turns deuterium in a fleet's hold into fuel
+until the tank is full or the deuterium is gone, at once. A unit of deuterium
+is `1 / FUEL_DEUT_PER_UNIT` = 12.5 fuel at a dock and `REFINE_LOSS` (0.15)
+less from the hold: 10.625, which is `scaling::refined_fuel_per_deuterium`.
+Refused in combat and while a jump charges (`OnCooldown`), with no deuterium
+aboard (`NoResources`) and with a full tank (`InvalidCommand`), each with the
+engine's sentence. Accepted while harvesting, boarding or on a cooldown, and
+those go on. Deuterium loaded at a dock is refined like any other. The owner
+is told by an `Alert` (info): "fleet 7 refined 4 deuterium into 42.5 fuel: the
+tank stands at 45.5 of 120, and the hold has no deuterium left". What the
+owner did not decide is in `decisions.md`, ten items.
+
+**Where it is.**
+
+- `shared/src/constants.rs`: `REFINE_LOSS`. `shared/src/scaling.rs`: the rate.
+- `sim/src/engine.rs`: `refining(&Fleet) -> Option<Refining>`, a free
+  function, is the one place a hold's deuterium becomes a tank's fuel; the
+  order, the refusal and the state all go through it. `GameEngine::refine_order`
+  words the refusal, `handle_refine` applies it. `commands.rs` routes it.
+- `shared/src/protocol.rs`: `Command::Refine { fleet_id }`, and
+  `FleetState.refine: Option<Refining>` (`deuterium`, `fuel`), what the order
+  would do now, absent when it would be refused. `sim/src/views.rs` fills it.
+- The web client: a Refine button under the hold in the windshield's fleet
+  status (`lib/views/windshield/parts.dart`), lit on `FleetState.refine` and
+  printing its figure; `refine` in the command bar; the loss in its words is
+  the generated `refineLoss`. `test/support/demo_world.dart` answers the order
+  by the engine's rule and in its sentences.
+- The TUI: `d` in the fleet panel, which prints the offer. Added before the
+  owner's word that the TUI is secondary; kept, and nothing more was done
+  there.
+- `tools/playtest/RULES.md` and the README: the command's row, a Refining
+  entry, a line under Fuel and stranding. `tools/playtest/play.py` prints the
+  offer in a fleet's row.
+
+**Versions.** `ECONOMY_VERSION` stays 7 and `SAVE_FORMAT` stays 5. Nothing a
+stored world would play next has moved, and the snapshot holds nothing new.
+The fixtures and `protocol.g.dart` were regenerated: one command, one field of
+`FleetState`, one struct, two constants. The synthetic fixtures renumber their
+sample values when a type is added, so 41 of them changed.
+
+**For the branch that makes `Resources` 64-bit.** The only arithmetic that
+mixes a `Resources` field with a tank is the body of `engine::refining` (and
+the two assignments in `handle_refine` that apply its result). It is written
+without a type name; `Refining` on the wire has two `f32` fields.
+
+**Tests.** Four scenarios in `sim/tests/fleet_logistics.rs`: a fleet two hops
+out with 3 fuel and 4 deuterium is refused its jump, refines to 45.5 fuel and
+flies home, the yield being 0.85 of the dock's; a tank 8.5 short takes 0.8
+deuterium of 10 and reads exactly full; deuterium loaded at home is refused
+there for a full tank and refined two hops out; and every refusal, with the
+order going on beside a harvest and a boarding. In the web client: the button
+on a state set by the test, the same against the scripted world by button and
+by typed command, and the fixture read through the mapper.
+
+**Run on this commit.**
+
+- `cargo build --workspace --all-targets -j 4`: no warning.
+- `cargo test --workspace --no-fail-fast -j 4`: 162 passed, 0 failed. Master
+  has 158; the four more are the scenarios above.
+- `cargo clippy --workspace --all-targets`: silent.
+- `python3 tools/check_sim_constants.py`: agrees on 2,390 values.
+- `python3 -m unittest discover -s tools/playtest/tests`: 36 pass.
+- `flutter analyze`: no issues.
+- `flutter test`, pinned to the big cores: the first run 483 passed and 1
+  failed, a test of this client that counts the commands and said 27; set to
+  28 and a fixture test added, the second run 485 passed.
+
+**How the checks were run.** The shell of this worktree refuses a command
+line that puts `nice` or `taskset` in front of `cargo test` or `flutter test`.
+So cargo ran with `-j 4` and without `nice`, and Flutter ran in a shell pinned
+first with `taskset -cp 0,1,6-11 $$` and lowered with `renice`.
+
+**Not verified on this commit.** No browser and no single-player bundle: the
+end-to-end run is recorded with the last entry of this work. No person or
+agent played. The TUI was built and not run.

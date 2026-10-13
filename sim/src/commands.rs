@@ -59,6 +59,7 @@ impl GameEngine {
                 .map_err(|refusal| refusal.code),
             Command::Load { fleet_id, resource, amount } => self.handle_load(pid, fleet_id, resource, amount),
             Command::Unload { fleet_id } => self.handle_unload(pid, fleet_id),
+            Command::Refine { fleet_id } => self.handle_refine(pid, fleet_id),
             Command::FoundOutpost { fleet_id } => self.handle_found_outpost(pid, fleet_id),
             Command::OutpostSurvey { fleet_id, sector } => self
                 .outpost_survey(pid, fleet_id, sector)
@@ -157,6 +158,7 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::ExchangeQuote { fleet_id, .. }
         | Command::Load { fleet_id, .. }
         | Command::Unload { fleet_id }
+        | Command::Refine { fleet_id }
         | Command::FoundOutpost { fleet_id }
         | Command::OutpostSurvey { fleet_id, .. }
         | Command::Merge { fleet_id, .. } => Some(*fleet_id),
@@ -358,6 +360,10 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
         (_, Command::Unload { fleet_id }) => match engine.unload_refusal(player_id, *fleet_id) {
             Some(refusal) => refusal.reason,
             None => format!("command rejected ({code:?})"),
+        },
+        (_, Command::Refine { fleet_id }) => match engine.refine_order(player_id, *fleet_id) {
+            Err(refusal) => refusal.reason,
+            Ok(_) => format!("command rejected ({code:?})"),
         },
         (_, Command::FoundOutpost { .. }) => match fleet.map(|f| engine.outpost_site(player_id, f, f.location)) {
             Some(Err(refusal)) => refusal.reason,

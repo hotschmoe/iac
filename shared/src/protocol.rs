@@ -243,6 +243,17 @@ pub enum Command {
     /// for a hold that was not loaded by hand.
     #[serde(rename = "unload")]
     Unload { fleet_id: u64 },
+    /// Turn deuterium in the hold of `fleet_id` into fuel, until the tank is
+    /// full or the deuterium is gone. It is done at once, anywhere, and at
+    /// a loss: a unit of deuterium fills `REFINE_LOSS` less of the tank than
+    /// it does at a dock. `FleetState.refine` says beforehand what the order
+    /// would turn into what. Deuterium loaded at a dock counts as any other.
+    /// The answer is an `Alert` (info) event with both figures. Refused,
+    /// with nothing changed, while the fleet is in combat or charging a
+    /// jump (`OnCooldown`), when its hold carries no deuterium
+    /// (`NoResources`) or its tank is full (`InvalidCommand`).
+    #[serde(rename = "refine")]
+    Refine { fleet_id: u64 },
     /// Found the player's outpost in the sector `fleet_id` stands in, paid
     /// from its hold (`OutpostSurvey.cost`). The fleet must stand idle
     /// there and fly no standing orders; the sector must lie in rings 9 to
@@ -1024,10 +1035,22 @@ pub struct FleetState {
     /// outpost is in service, which is when it fills a tank.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub outpost_fuel: Option<f32>,
+    /// What a `refine` order would do right now. Absent when it would be
+    /// refused.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub refine: Option<Refining>,
     /// Standing orders currently flying this fleet, if any: the doctrine
     /// with its settings, so the two cannot be told apart or disagree.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub policy: Option<StandingOrders>,
+}
+
+/// One `refine` order: the deuterium that leaves the hold and the fuel the
+/// tank gains for it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Refining {
+    pub deuterium: f32,
+    pub fuel: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

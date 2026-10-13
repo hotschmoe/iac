@@ -147,6 +147,7 @@ sealed class Command {
       'exchange_quote' => ExchangeQuoteCommand.fromJson(json),
       'load' => LoadCommand.fromJson(json),
       'unload' => UnloadCommand.fromJson(json),
+      'refine' => RefineCommand.fromJson(json),
       'found_outpost' => FoundOutpostCommand.fromJson(json),
       'outpost_survey' => OutpostSurveyCommand.fromJson(json),
       'upgrade_outpost' => const UpgradeOutpostCommand(),
@@ -623,6 +624,29 @@ class UnloadCommand extends Command {
 
   @override
   Json toJson() => {'action': 'unload', 'fleet_id': fleetId};
+}
+
+/// Turn deuterium in the hold of `fleet_id` into fuel, until the tank is
+/// full or the deuterium is gone. It is done at once, anywhere, and at
+/// a loss: a unit of deuterium fills `REFINE_LOSS` less of the tank than
+/// it does at a dock. `FleetState.refine` says beforehand what the order
+/// would turn into what. Deuterium loaded at a dock counts as any other.
+/// The answer is an `Alert` (info) event with both figures. Refused,
+/// with nothing changed, while the fleet is in combat or charging a
+/// jump (`OnCooldown`), when its hold carries no deuterium
+/// (`NoResources`) or its tank is full (`InvalidCommand`).
+class RefineCommand extends Command {
+  final int fleetId;
+
+  const RefineCommand({required this.fleetId});
+
+  factory RefineCommand.fromJson(Object? json) {
+    final m = _obj(json);
+    return RefineCommand(fleetId: _int(m['fleet_id']));
+  }
+
+  @override
+  Json toJson() => {'action': 'refine', 'fleet_id': fleetId};
 }
 
 /// Found the player's outpost in the sector `fleet_id` stands in, paid
@@ -2078,6 +2102,10 @@ class FleetState {
   /// outpost is in service, which is when it fills a tank.
   final double? outpostFuel;
 
+  /// What a `refine` order would do right now. Absent when it would be
+  /// refused.
+  final Refining? refine;
+
   /// Standing orders currently flying this fleet, if any: the doctrine
   /// with its settings, so the two cannot be told apart or disagree.
   final StandingOrders? policy;
@@ -2102,6 +2130,7 @@ class FleetState {
     this.laden = false,
     this.atOutpost = false,
     this.outpostFuel,
+    this.refine,
     this.policy,
   });
 
@@ -2127,6 +2156,7 @@ class FleetState {
       laden: _opt(m['laden'], _bool) ?? false,
       atOutpost: _opt(m['at_outpost'], _bool) ?? false,
       outpostFuel: _opt(m['outpost_fuel'], _double),
+      refine: _opt(m['refine'], Refining.fromJson),
       policy: _opt(m['policy'], StandingOrders.fromJson),
     );
   }
@@ -2151,8 +2181,25 @@ class FleetState {
     'laden': laden,
     'at_outpost': atOutpost,
     'outpost_fuel': ?outpostFuel,
+    'refine': ?refine?.toJson(),
     'policy': ?policy?.toJson(),
   };
+}
+
+/// One `refine` order: the deuterium that leaves the hold and the fuel the
+/// tank gains for it.
+class Refining {
+  final double deuterium;
+  final double fuel;
+
+  const Refining({required this.deuterium, required this.fuel});
+
+  factory Refining.fromJson(Object? json) {
+    final m = _obj(json);
+    return Refining(deuterium: _double(m['deuterium']), fuel: _double(m['fuel']));
+  }
+
+  Json toJson() => {'deuterium': deuterium, 'fuel': fuel};
 }
 
 enum FleetStatus {
@@ -4872,3 +4919,13 @@ const policyEngageRatioX10Max = 100;
 /// At or above this `fuel_budget_pct` the fleet refuels without a bound; it
 /// is also the most the setting can be.
 const policyFuelUnboundedPct = 100;
+
+/// Deuterium paid per fuel unit topped up at the homeworld. Not scaled by
+/// pace: fuel is the price of range, not an economy timer.
+const double fuelDeutPerUnit = 0.07999999821186066;
+
+/// The share of the dock's rate that `refine` loses: deuterium turned into
+/// fuel from a fleet's hold yields `scaling::refined_fuel_per_deuterium`.
+/// Provisional, and the owner's ("like 15%"): it trades the reach of a fleet
+/// with cargo ships against the worth of the docks as places to fill up.
+const double refineLoss = 0.15000000596046448;

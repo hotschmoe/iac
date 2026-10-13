@@ -90,8 +90,11 @@ proto.ThreatInfo _threatOf(List<proto.NpcFleetInfo>? groups) {
   return proto.ThreatInfo(rating: rating, estPower: power, basis: proto.ThreatBasis.observed);
 }
 
-ui.FleetState fleet(int id, List<(String, int)> groups, {proto.Hex at = here, ui.FleetStatus status = ui.FleetStatus.idle, int fuel = 80, proto.StandingOrders? orders}) => ui.FleetState(
+ui.FleetState fleet(int id, List<(String, int)> groups,
+        {proto.Hex at = here, ui.FleetStatus status = ui.FleetStatus.idle, int fuel = 80, proto.StandingOrders? orders, proto.Refining? refine}) =>
+    ui.FleetState(
       orders: orders,
+      refine: refine,
       id: id,
       name: 'F$id',
       sector: at,
@@ -718,6 +721,58 @@ void main() {
     expect(c.state.holds[101]!.crystal, 0);
     c.handleCommand('trade metal metal');
     expect(c.state.events.first.message, 'trade: give and want are both metal');
+    expect(tester.takeException(), isNull);
+    await endShell(tester, c);
+  });
+
+  testWidgets('the status panel offers to refine exactly what the state says a refine order would do, and is greyed without it', (tester) async {
+    final c = await pumpFake(tester, calm());
+    ConsoleButton button() => tester.widget<ConsoleButton>(find.byKey(const ValueKey('status-refine')));
+    String line() => tester.widget<Text>(find.byKey(const Key('status-refine-yield'))).data!;
+    expect(button().onPressed, isNull, reason: 'the state carries no offer');
+    expect(line(), 'NOTHING TO REFINE');
+    expect(button().reason, startsWith('Refining turns the deuterium in the hold into fuel, 15% less of it than a dock gives.'));
+
+    c.push(calm().copyWith(fleets: [
+      fleet(1, [('Scout', 1), ('Corvette', 2)], refine: const proto.Refining(deuterium: 0.8, fuel: 8.5)),
+      fleet(2, [('Hauler', 1)], at: home),
+    ]));
+    await tester.pump();
+    expect(line(), '0.8 DE MAKES 8.5 FUEL');
+    await tester.tap(find.byKey(const ValueKey('status-refine')));
+    await tester.pump();
+    expect(c.commands.whereType<proto.RefineCommand>().map((r) => r.fleetId), [1]);
+    await finish(tester, c);
+  });
+
+  testWidgets('refine by the panel and by typed command is answered by the scripted world as the engine answers (demo)', (tester) async {
+    final c = DemoController()..startDemo();
+    c.place(101, proto.Hex.origin, const proto.Resources(metal: 7, deuterium: 1.6));
+    await pumpShell(tester, screen: Screen.windshield, controller: c);
+    String line() => tester.widget<Text>(find.byKey(const Key('status-refine-yield'))).data!;
+    expect(c.currentFleet.fuel, 96);
+    expect(line(), '1.6 DE MAKES 17 FUEL', reason: 'the dock would give 20 for it');
+
+    await tester.tap(find.byKey(const ValueKey('status-refine')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.state.events.map((e) => e.message),
+        contains('fleet 101 refined 1.6 deuterium into 17 fuel: the tank stands at 113 of 120, and the hold has no deuterium left'));
+    expect((c.currentFleet.fuel, c.state.holds[101]!.deuterium, c.state.holds[101]!.metal), (113, 0, 7));
+    expect(line(), 'NOTHING TO REFINE');
+    expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('status-refine'))).onPressed, isNull);
+
+    c.handleCommand('refine');
+    expect(c.state.events.first.message, endsWith('the hold of fleet 101 carries no deuterium to refine'));
+    c.handleCommand('refine all');
+    expect(c.state.events.first.message, startsWith('refine: takes no argument'));
+
+    c.place(101, proto.Hex.origin, const proto.Resources(deuterium: 40));
+    c.handleCommand('refine');
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(c.currentFleet.fuel, 120, reason: 'the tank is full');
+    expect(c.state.holds[101]!.deuterium, closeTo(40 - 7 / 10.625, 1e-6), reason: 'and the rest stays aboard');
+    c.handleCommand('refine');
+    expect(c.state.events.first.message, endsWith('the tank of fleet 101 is full (120 of 120 fuel); refining would add nothing'));
     expect(tester.takeException(), isNull);
     await endShell(tester, c);
   });

@@ -3,6 +3,67 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-13 (fuel from the hold: what building `refine` had to settle)
+
+The owner's decision is item 10 of the entry below: by an order, not in a
+fight, at a loss of 15 percent. `REFINE_LOSS` is 0.15 in
+`shared/src/constants.rs`, provisional and his. Building it meant choosing the
+rest. None of these is the owner's; each says what he would change to reverse
+it.
+
+1. **Refused in two states and no others: in combat and while a jump
+   charges.** Those are the study's two. A fleet that is harvesting or
+   boarding a derelict refines and goes on with its work, and so does one
+   whose cooldown is running after a scan. The order takes no time, so a
+   cooldown, which says when a fleet takes its next act, has nothing of it to
+   time; and a miner that had to stop mining to refine would pay a tick of ore
+   for nothing.
+   *To reverse:* the first line of `engine::refining`, which names the two
+   states. `fleet_is_free` there would make it an order for idle fleets only.
+2. **No rule of its own at a dock.** At home the dock keeps the tank full, so
+   the order is refused there as it is anywhere with a full tank. A docked
+   fleet whose tank is not full (a dry stockpile, a breached outpost) may
+   refine what is in its hold, at the loss.
+   *To reverse:* a refusal by place in `GameEngine::refine_order`.
+3. **A fleet under standing orders takes the order by hand**, as it takes
+   every fleet order but `load`. What it refines is not charged to its fuel
+   budget: the budget is a share of the homeworld's deuterium income, and this
+   deuterium is in a hold.
+   *To reverse:* refuse it in `refine_order` as `load_at_dock` refuses, or
+   charge `FleetPolicy::fuel_credit` in `handle_refine`.
+4. **All of it or a full tank, with no amount.** The study's words. A player
+   who wants to keep deuterium for the stockpile cannot say how much.
+   *To reverse:* an optional `amount` on the command, as `load` has.
+5. **Nothing is rounded and nothing is slack.** A hold with any deuterium and
+   a tank with any room refine. A tank that is filled reads exactly its size,
+   and a hold that is emptied exactly zero.
+6. **The state says what the order would do** (`FleetState.refine`: the
+   deuterium and the fuel), and leaves it out when the order would be
+   refused. A client lights its control on that and prints the figure; it
+   does not multiply. The reason for a refusal is not in the state: the
+   control says the rule in general, and the refused order is answered with
+   the engine's sentence.
+   *To reverse:* nothing to reverse; a `refusal` sentence beside it is the
+   addition if a client should say which of the four it is.
+7. **The answer is an `Alert` (info)**, as for `load` and `unload`, not a new
+   kind of event.
+8. **`REFINE_LOSS` is not in `numbers.json`.** The planning simulation flies
+   no fleet on its hold. Two constants are handed to the web client
+   (`shared/tests/wire/mod.rs`): `REFINE_LOSS`, which its words quote, and
+   `FUEL_DEUT_PER_UNIT`, which only the scripted test world uses to keep to
+   the engine's rule.
+9. **The versions stand: `ECONOMY_VERSION` 7, `SAVE_FORMAT` 5.** No cost,
+   time, formula or payment moment moved, and a stored world plays on exactly
+   as it would have until somebody gives the new order. The snapshot holds
+   nothing new. The built-in bots do not refine.
+10. **Where the clients put it.** The web client: a Refine button under the
+    hold in the windshield's fleet status, always there and greyed without an
+    offer, and `refine` in the command bar. No key and no tile in the dock
+    row: it is offered where the hold and the tank are shown, and a tile
+    there was not tried against the phone layout. The TUI: `d` in the fleet panel,
+    which shows the offer. `tools/playtest/play.py` prints the offer in the
+    fleet row.
+
 ## 2026-10-13 (the OGame study's eleven questions: the defaults)
 
 The owner was shown the eleven questions of `docs/design/ogame.md`, section 14,

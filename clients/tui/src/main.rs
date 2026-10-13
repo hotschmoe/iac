@@ -332,6 +332,12 @@ async fn run(
                             let _ = cmd_tx.send(ClientMessage::Command(cmd));
                         }
                     }
+                    input::InputAction::FleetPanelRefine => {
+                        let cmd = state.lock().await.fleet_panel_refine();
+                        if let Some(cmd) = cmd {
+                            let _ = cmd_tx.send(ClientMessage::Command(cmd));
+                        }
+                    }
                     input::InputAction::ToggleExchangePanel => {
                         let cmd = state.lock().await.toggle_exchange_panel();
                         if let Some(cmd) = cmd {

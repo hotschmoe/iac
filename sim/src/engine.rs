@@ -44,7 +44,7 @@ use iac_shared::scaling::{
 };
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, ChartMark, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
-    MovePreview, OreReserve, ResourceEta, SectorOdds, SectorState, ThreatBasis, ThreatInfo, TileReserve,
+    MovePreview, OreReserve, Refining, ResourceEta, SectorOdds, SectorState, ThreatBasis, ThreatInfo, TileReserve,
     StorageFullEvent, StorageNearCapEvent, StorageState,
     ExchangeMeter, ExchangeTerms, ExchangedEvent,
     OutpostCompletedEvent, OutpostSurvey, PowerRange, SectorResources, SurveySite,
@@ -4261,6 +4261,58 @@ impl GameEngine {
         fleet.cargo = fleet.cargo.sub(moved);
     }
 
+    /// What `refine` would turn into what for `fleet_id` right now, or why
+    /// the order is refused.
+    pub fn refine_order(&self, player_id: u64, fleet_id: u64) -> Result<Refining, Refusal> {
+        let fleet = self.owned_fleet(player_id, fleet_id)
+            .map_err(|code| Refusal::new(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
+        refining(fleet).ok_or_else(|| match (fleet.state, fleet.move_target) {
+            (FleetStatus::InCombat, _) => Refusal::new(
+                ErrorCode::OnCooldown,
+                format!("fleet {fleet_id} is in combat; nothing is refined in a fight"),
+            ),
+            (FleetStatus::Moving, Some(target)) => Refusal::new(
+                ErrorCode::OnCooldown,
+                format!("fleet {fleet_id} is charging a jump to {target}; it can refine once it has arrived"),
+            ),
+            (FleetStatus::Moving, None) => Refusal::new(
+                ErrorCode::OnCooldown,
+                format!("fleet {fleet_id} is charging a jump; it can refine once it has arrived"),
+            ),
+            _ if fleet.cargo.deuterium <= 0.0 => Refusal::new(
+                ErrorCode::NoResources,
+                format!("the hold of fleet {fleet_id} carries no deuterium to refine"),
+            ),
+            _ => Refusal::new(ErrorCode::InvalidCommand, format!(
+                "the tank of fleet {fleet_id} is full ({} of {} fuel); refining would add nothing",
+                fuel_words(fleet.fuel), fuel_words(fleet.fuel_max),
+            )),
+        })
+    }
+
+    /// Turn deuterium in the hold into fuel, as `refine_order` quotes it, and
+    /// tell the owner both figures. It takes no time and changes nothing
+    /// else: a harvest or a boarding goes on.
+    pub fn handle_refine(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+        let Refining { deuterium, fuel } = self.refine_order(player_id, fleet_id).map_err(|refusal| refusal.code)?;
+        let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
+        let missing = fleet.fuel_max - fleet.fuel;
+        fleet.cargo.deuterium = (fleet.cargo.deuterium - deuterium).max(0.0);
+        fleet.fuel = if fuel >= missing { fleet.fuel_max } else { fleet.fuel + fuel };
+        let (left, sector) = (fleet.cargo.deuterium, fleet.location);
+        let hold = if left > 0.0 {
+            format!("{} deuterium is left in the hold", fuel_words(left))
+        } else {
+            "the hold has no deuterium left".to_string()
+        };
+        let message = format!(
+            "fleet {fleet_id} refined {} deuterium into {} fuel: the tank stands at {} of {}, and {hold}",
+            fuel_words(deuterium), fuel_words(fuel), fuel_words(fleet.fuel), fuel_words(fleet.fuel_max),
+        );
+        self.push_alert(AlertLevel::Info, fleet_id, sector, message);
+        Ok(())
+    }
+
     /// Fuel an emergency jump home would burn: the per-hop cost over the
     /// straight distance, doubled. All-or-nothing: a fleet with less than
     /// this does not move at all.
@@ -6663,6 +6715,25 @@ fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f32 {
     total_fuel
         * scaling::fuel_capacity_modifier(player.research.extended_fuel_tanks)
         * scaling::fuel_depot_modifier(player.buildings.fuel_depot)
+}
+
+/// What `refine` would turn into what for `fleet` right now: all the
+/// deuterium in its hold, or as much of it as fills the tank, at the dock's
+/// rate less `REFINE_LOSS`. None when the order would be refused: in a fight,
+/// charging a jump, no deuterium aboard or no room in the tank. A hold's
+/// deuterium becomes a tank's fuel here and nowhere else.
+pub fn refining(fleet: &Fleet) -> Option<Refining> {
+    if matches!(fleet.state, FleetStatus::InCombat | FleetStatus::Moving) { return None; }
+    let aboard = fleet.cargo.deuterium;
+    let room = fleet.fuel_max - fleet.fuel;
+    if aboard <= 0.0 || room <= 0.0 { return None; }
+    let rate = scaling::refined_fuel_per_deuterium();
+    let fuel = aboard * rate;
+    Some(if fuel <= room {
+        Refining { deuterium: aboard, fuel }
+    } else {
+        Refining { deuterium: room / rate, fuel: room }
+    })
 }
 
 /// The ships a fleet brings to a fight.

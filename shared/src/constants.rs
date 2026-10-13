@@ -468,6 +468,12 @@ pub const FUEL_RATE_PER_MASS: f32 = 0.1;
 /// pace: fuel is the price of range, not an economy timer.
 pub const FUEL_DEUT_PER_UNIT: f32 = 0.08;
 
+/// The share of the dock's rate that `refine` loses: deuterium turned into
+/// fuel from a fleet's hold yields `scaling::refined_fuel_per_deuterium`.
+/// Provisional, and the owner's ("like 15%"): it trades the reach of a fleet
+/// with cargo ships against the worth of the docks as places to fill up.
+pub const REFINE_LOSS: f32 = 0.15;
+
 pub const NPC_PATROL_INTERVAL: u16 = 15;
 
 /// Active scan: hops revealed from the scanning fleet's position.
