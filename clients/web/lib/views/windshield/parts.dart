@@ -1020,7 +1020,7 @@ String doctrineLine(proto.PolicyPreset p) => switch (p) {
       proto.PolicyPreset.prospect => 'Scans and charts the sectors in range. Home when none is left.',
       proto.PolicyPreset.mineAndReturn => 'Strips the seams that repay their fuel. Home with the ore when the hold fills.',
       proto.PolicyPreset.salvageAndSites => 'Scoops wreckage, boards derelicts, nearest first. Home when the board is clear.',
-      proto.PolicyPreset.patrolHome => 'Hunts hostiles in range at its least odds or better. Docks when the beat is clear.',
+      proto.PolicyPreset.patrolHome => 'Hunts hostiles in range at its least odds, scoops wreckage. Home when the hold fills.',
     };
 
 String _hexes(int n) => '$n HEX${n == 1 ? '' : 'ES'}';

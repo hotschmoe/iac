@@ -252,9 +252,17 @@ Presets:
   tiles to refill.
 - `salvage_and_sites` scoops wreckage that repays its fuel and boards
   derelicts, nearest first.
-- `patrol_home` hunts the nearest hostile group inside `max_range` of home
-  that the fleet rates at `engage_ratio_x10`, scoops what the kill leaves, and
-  waits at the dock when the beat is clear.
+- `patrol_home` hunts the hostile groups inside `max_range` of home that the
+  fleet rates at `engage_ratio_x10`, and between fights collects wreckage
+  there: what its kill leaves and any other pile that repays its fuel, the
+  nearest contact or pile first. It brings the hold home when it reaches
+  `cargo_return_pct`, when the next pile would not fit the room left
+  ("returning to unload the salvage: the hold has room for 40 of the 900
+  units of wreckage at [5,-3]"), and when nothing is left in range to fight
+  or collect; there it unloads, is mended and goes out again, and with the
+  beat clear it waits at the dock. A Small Cargo merged into the patrol
+  adds its hold and slows the fleet to its own speed; near home a few
+  Light Fighters already carry what a kill leaves.
 
 What every doctrine does:
 - No doctrine moves a fleet into a sector where its odds (as `preview_move`
@@ -286,7 +294,9 @@ What every doctrine does:
   (metal 1, crystal 1.5, deuterium 2); a sector with under 3 units of ore
   counts as stripped. Derelicts always count.
 - A fleet whose cargo your full stockpile cannot take stays docked until it
-  has unloaded.
+  has unloaded. One that docks with a hold says what it unloaded ("unload":
+  "unloaded 500 metal and 120 crystal into the stockpile") and what stays
+  aboard for want of room.
 - Heading home it takes a lane that meets `engage_ratio_x10`; if there is
   none, the mildest there is, down to RISKY, and says so. It does not jump
   into DEADLY odds: it holds where it is ("cut off from home") and you get a

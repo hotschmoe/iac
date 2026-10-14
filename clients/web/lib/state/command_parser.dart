@@ -196,7 +196,7 @@ final helpLines = [
   '        prospect  scans, then charts the sectors in range',
   '        mine      strips the seams that repay their fuel and brings the ore home',
   '        salvage   scoops wreckage and boards derelicts, nearest first',
-  '        patrol    hunts the hostiles it rates at its engage ratio, in range of home',
+  '        patrol    hunts the hostiles it rates at its engage ratio, in range of home, and brings their wreckage home',
   '        manual    clears the orders (also: off); policy with no name steps to the next doctrine',
   '        settings, after the name, or alone to change the orders in force:  range=<hexes from home, $_rangeBounds>  engage=<least odds ratio, $_engageBounds>',
   '                  fuel=<% of deuterium income it may burn, $policyFuelUnboundedPct = no bound>  cargo=<% of the hold that sends it home, $_cargoBounds>',

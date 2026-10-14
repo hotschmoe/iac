@@ -663,7 +663,7 @@ fn a_mauled_fleet_under_orders_goes_home_to_be_mended_before_it_does_anything_el
 }
 
 #[test]
-fn a_patrol_hunts_out_to_its_range_scoops_what_its_kills_leave_and_waits_at_the_dock() {
+fn a_patrol_hunts_out_to_its_range_brings_home_what_its_kills_leave_and_waits_at_the_dock() {
     let (mut engine, pid, fid, home) = delegate("Hunter", PolicyPreset::PatrolHome, 4);
     let contacts = ring_around(home, 4)
         .into_iter()
@@ -685,18 +685,30 @@ fn a_patrol_hunts_out_to_its_range_scoops_what_its_kills_leave_and_waits_at_the_
     assert!(!fought_at.is_empty(), "{actions:?}");
     assert!(fought_at.iter().all(|at| Hex::distance(at, &home) <= 4), "{fought_at:?}");
     assert!(fought_at.iter().any(|at| Hex::distance(at, &home) > 2), "the hunt reaches past two hexes: {fought_at:?}");
-    assert!(actions.iter().any(|(a, _)| a == "salvage"), "kills leave wreckage and the patrol takes it");
+    assert!(
+        actions.iter().any(|(a, why)| a == "salvage" && why == "scooping the wreckage of the kill"),
+        "kills leave wreckage and the patrol takes it: {actions:?}",
+    );
+    assert!(
+        actions.iter().any(|(a, why)| a == "unload" && why.starts_with("unloaded ") && why.ends_with(" into the stockpile")),
+        "and brings it home: {actions:?}",
+    );
     let wandering: Vec<&str> = moves(&actions)
         .into_iter()
-        .filter(|why| !why.starts_with("intercepting") && !why.starts_with("returning"))
+        .filter(|why| {
+            !why.starts_with("intercepting") && !why.starts_with("collecting the wreckage at ") && !why.starts_with("returning")
+        })
         .collect();
     assert!(wandering.is_empty(), "every jump has a purpose: {wandering:?}");
     assert!(engine.players[&pid].combat_points > 0.0);
     assert!(
-        holds(&actions).iter().any(|why| why.starts_with("no contact within 4 hops of home")),
-        "with the beat cleared it waits at the dock: {:?}",
+        holds(&actions).iter().any(|why| {
+            why.starts_with("no contact within 4 hops of home") && why.ends_with(", and no wreckage that repays the fuel")
+        }),
+        "with the beat cleared and its wreckage collected it waits at the dock: {:?}",
         holds(&actions),
     );
+    assert_eq!((engine.fleets[&fid].location, engine.fleets[&fid].cargo.total()), (home, 0.0), "with an empty hold");
 }
 
 fn orders_flown(engine: &mut iac_sim::GameEngine, pid: u64, fid: u64) -> Vec<(String, String)> {
