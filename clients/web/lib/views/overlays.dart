@@ -12,6 +12,7 @@ import '../design/lens.dart';
 import '../design/panel.dart';
 import '../design/tokens.dart';
 import '../models/game_state.dart';
+import '../scenes/battle/field_painter.dart' show marksRule;
 
 Color _toneColor(ToastTone t) => switch (t) {
       ToastTone.amber => C.a500,
@@ -215,6 +216,12 @@ class HelpOverlay extends StatelessWidget {
                         _row('Enter', 'Map: engage route'),
                         _row('Esc', 'Cancel or close'),
                         _row('M', 'Sound on or off'),
+                        _rule(),
+                        const Lbl('The scope'),
+                        const SizedBox(height: 4),
+                        Text(marksRule, key: const Key('help-marks'), style: T.mono(size: 10, color: C.text3, height: 1.4)),
+                        const WhyText('A round a tick is fire between the marks: the volleys that did the most as beams, the rest a haze. A beam that stops short of '
+                            'its mark was taken by the shield. A count falls when the fire has landed, by what the round destroyed.'),
                       ]);
                     },
                   ),

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert' show jsonEncode;
 import 'dart:math' as math;
 
 import 'dart:ui' as ui show PictureRecorder;
@@ -946,7 +947,8 @@ void main() {
         expect(find.byKey(const Key('battle-view')), findsOneWidget);
         debugPrint('COST ${size.width.round()} wide, ${perClass * flying.length} a side in ${flying.length} classes, $points points on the scope: '
             'scope tick and paint ${paint.toStringAsFixed(2)} ms a frame (worst ${(worst / 1000).toStringAsFixed(2)}) over $frames frames with a round every 60; '
-            'the frame that takes a new round of ${round.fleets.volleys.length + round.hostiles.volleys.length} volleys: '
+            'the frame that takes a new round of ${round.fleets.volleys.length + round.hostiles.volleys.length} volleys '
+            '(${jsonEncode(round.toJson()).length} bytes of JSON): '
             '${shut.toStringAsFixed(1)} ms with the battle view shut (worst ${shutWorst.toStringAsFixed(1)}), '
             '${open.toStringAsFixed(1)} ms with it open (worst ${openWorst.toStringAsFixed(1)}), over $rounds rounds each');
         expect(paint, lessThan(8), reason: 'half a frame at sixty a second, in a debug build');
@@ -1148,6 +1150,8 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100));
       }
       expectTextFits(tester, find.byKey(const Key('pursuit-panel')), reason: 'the pursuit panel at ${size.width.round()}');
+      await tester.pump(const Duration(milliseconds: 1500));
+      await tester.pump(const Duration(milliseconds: 1500));
       await shot(tester, 'ws-pursuit-${size.width.round()}');
       expect(sim.pursuitLane?.name, 'S', reason: 'the lane the pack comes down is marked on the scope, from the state\'s pursued_by');
       expect(scope.theirs, isEmpty);
@@ -1206,10 +1210,14 @@ void main() {
       expect((sim.stamp?.round, sim.stamp?.verdict), (raidRoundOf(0), c.state.raidAtHome!.raid!.odds.label.label));
       await shot(tester, 'ws-raid-arrived-${size.width.round()}');
 
-      await tester.pump(const Duration(seconds: 1));
+      for (var i = 0; i < 40 && !scope.firing; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
       expect(c.state.raidAtHome!.round, isNotNull);
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(scope.beams.any((b) => b.from.battery) && scope.beams.any((b) => b.to.battery), isTrue, reason: 'the defences fire and are fired on');
       await shot(tester, 'ws-raid-fire-${size.width.round()}');
-      await tester.pump(const Duration(milliseconds: 900));
+      await tester.pump(const Duration(milliseconds: 600));
       final fight = c.state.raidAtHome!;
       expect((fight.over, sim.stamp?.round), (false, raidRoundOf(fight.rounds)), reason: 'the scope says the round of the most the raid is fought for');
       final battery = fight.round!.fleets.groups.singleWhere((g) => g.battery);

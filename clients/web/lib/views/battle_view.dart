@@ -720,11 +720,15 @@ class BattleScopeState extends State<BattleScope> with SingleTickerProviderState
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTapUp: (d) => pick(d.localPosition),
-          child: RepaintBoundary(
-            child: CustomPaint(
-              key: const Key('battle-scope'),
-              painter: ScopePainter(field, _frame, ours: ours.toUpperCase(), theirs: theirs.toUpperCase(), bloom: widget.bloom, hover: _hover),
-              size: Size.infinite,
+          child: Semantics(
+            image: true,
+            label: 'The fight as a picture: $theirs above, $ours below, a mark a kind of unit. The tables have its figures.',
+            child: RepaintBoundary(
+              child: CustomPaint(
+                key: const Key('battle-scope'),
+                painter: ScopePainter(field, _frame, ours: ours.toUpperCase(), theirs: theirs.toUpperCase(), bloom: widget.bloom, hover: _hover),
+                size: Size.infinite,
+              ),
             ),
           ),
         ),
@@ -824,26 +828,28 @@ class BattleViewState extends State<BattleView> {
 
   @override
   Widget build(BuildContext context) => Positioned.fill(
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: widget.onClose,
-          child: ColoredBox(
-            color: const Color(0xE6050308),
-            child: LayoutBuilder(builder: (context, box) {
-              final narrow = box.maxWidth < _beside;
-              return Padding(
-                padding: EdgeInsets.all(narrow ? 6 : 22),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 1260),
-                    child: GestureDetector(
-                      onTap: () {},
-                      child: ListenableBuilder(listenable: widget.con.game, builder: (context, _) => _panel(context, narrow: narrow)),
+        child: BlockSemantics(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onClose,
+            child: ColoredBox(
+              color: const Color(0xE6050308),
+              child: LayoutBuilder(builder: (context, box) {
+                final narrow = box.maxWidth < _beside;
+                return Padding(
+                  padding: EdgeInsets.all(narrow ? 6 : 22),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1260),
+                      child: GestureDetector(
+                        onTap: () {},
+                        child: ListenableBuilder(listenable: widget.con.game, builder: (context, _) => _panel(context, narrow: narrow)),
+                      ),
                     ),
                   ),
-                ),
-              );
-            }),
+                );
+              }),
+            ),
           ),
         ),
       );
@@ -926,7 +932,7 @@ class BattleViewState extends State<BattleView> {
               Padding(
                 padding: const EdgeInsets.only(right: 6),
                 child: ConsoleButton(
-                    '${other.sector.q}, ${other.sector.r}  ${other.over ? '${clockFmt(math.max(0, tick - other.endedTick))} AGO' : 'NOW'}',
+                    '${other.isRaid ? 'RAID ' : ''}${other.sector.q}, ${other.sector.r}  ${other.over ? '${clockFmt(math.max(0, tick - other.endedTick))} AGO' : 'NOW'}',
                     key: ValueKey('bv-fight-${other.id}'),
                     small: true,
                     active: other.id == widget.fight,

@@ -755,6 +755,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
             child: MouseRegion(
               cursor: sim.hoverT != null ? SystemMouseCursors.click : SystemMouseCursors.basic,
               onHover: (e) => _pick(e.localPosition, g),
+              onExit: (_) => sim.hoverMark = null,
               child: GestureDetector(
                 key: const ValueKey('arena'),
                 behavior: HitTestBehavior.opaque,
@@ -841,7 +842,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
             key: const ValueKey('banner'),
             left: 0,
             right: narrow && _sheet && size.width > _sheetWidth + 16 ? _sheetWidth + 8 : 0,
-            top: narrow ? 90 : size.height * .21,
+            top: narrow ? 90 : underFire ? math.max(8.0, g.cy - g.rh * .866 - 104) : size.height * .21,
             child: IgnorePointer(child: Center(child: _BannerBox(c: _banner, h: _bannerH, p: _bannerP, red: _bannerRed)))),
         if (narrow && _sheet)
           Positioned(

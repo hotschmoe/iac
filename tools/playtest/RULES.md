@@ -591,11 +591,13 @@ What every doctrine does:
   One `BattleRound` event a round takes the place of a message a shot:
   `round`, and for `fleets` and `hostiles` the `groups` as they stand after
   it (`fleet_id`, `owner`, `label`, `mine`, `fleeing` for a fleet that is
-  leaving and did not fire, and by class `count`, `damaged`,
+  leaving and did not fire, and by class `entered`, how many stood in the
+  round when it began, `count`, how many stand after it, `damaged`,
   `at_risk`, `hull`, `hull_max` and `lost` this round), the `volleys` they
   fired by class of firing ship and of target (`shots`, `bounced`, `wasted`
   on a ship already destroyed, `absorbed` by shields, `hull_damage`,
-  `destroyed`), and their sums with `power`, the attack of every shot, and
+  `destroyed`), and their sums with `power`, the attack of every shot,
+  `entered`, the units the side stood in the round with, and
   `standing`, the units the side has left. It
   is the same size for five ships as for five thousand. `CombatEnded` says
   how it ended (`outcome`: `hostiles_destroyed`, `fleets_destroyed`,

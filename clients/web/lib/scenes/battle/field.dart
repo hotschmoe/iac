@@ -629,7 +629,7 @@ class BattleField {
       final r = t.shape.glyph * 1.5;
       _burst(t.lead + Offset(math.cos(toward) * r, math.sin(toward) * r), const Color(0xFF7FD4FF), 2 + (b.bounced * 5).round(), .5);
     }
-    onCue?.call('hit');
+    if (b.alpha > .8) onCue?.call('hit');
   }
 
   void _arrange({bool snap = false}) {
@@ -661,6 +661,7 @@ class BattleField {
   /// handful of marks on a wide ground, and [dense] once whole blocks and
   /// labels no longer fit.
   static const _sizes = [
+    (2.0, false),
     (1.5, false),
     (1.25, false),
     (1.0, false),
