@@ -3,6 +3,187 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-14 (the score is what an empire has built and keeps; the knobs a playtest found wrong)
+
+The playtest of 2026-10-14 (`docs/playtests/2026-10-14/README.md`) was won by
+the player who never left home: charts filled the 25% cap early, kills
+barely scored, raids scored nothing, and a fleet in the field was core not
+built. Asked how combat and exploration should score, the owner first chose
+"Rebalance + soften cap" (kills worth more, charts a third, points past the
+cap counting at a falling rate), then said:
+
+> i kinda want kills to not count, but give more resources, so the
+> resources turn into points back at home? i think ogame scored 0 for
+> defense (disensenctive turtling) but scored per ship in your fleet. so you
+> score was basically buildings+research+fleet. but fleets could be
+> destroyed which would drop your score a lot. i LIKE 0 points or half on
+> defense, if we went 0 poitns on defense BUT raids give good ressources it
+> would encourage some defense building so you can acquire materials that
+> turn into points via building/research/fleet creation. explore those
+> avenues as well
+
+On the jump law, the owner's words: "users may make large, fast ship fleets
+for guerilla warfare type battling".
+
+**The decision as built.**
+
+- *The score* is `buildings + research + fleet + outpost + defence`
+  (`sim/src/score.rs`), recomputed from state: the cost of every finished
+  building and research level, of the ships the empire has now (Solar
+  Satellites among them), of the outpost's finished levels, and of its
+  defences at `DEFENCE_SHARE`, which is **0**. A fleet destroyed takes its
+  ships out of the score. There are no combat or exploration points, no cap,
+  no `EXTRA_CAP`, `KILL_SHARE`, kill pay factor, `BOARD_VALUE_SHARE`,
+  `DISCOVERY_POINTS`, chart points or `RELIC_POINTS`; `Player.combat_points`
+  and `explore_points` and the combat's `peak_power` are gone, and
+  `Snapshot.credited` is `Snapshot.charted` (a first boarding is no longer
+  remembered: nothing pays for it). The board's row is the parts
+  (`LeaderboardEntry`: `score`, `buildings`, `research`, `fleet`, `outpost`,
+  `defence`).
+- *Kills pay in wreckage*: `WRECK_VALUE_K` 0.57 to **1.71** (three times).
+  The farm heat stays on wreckage (`FARM_DECAY`, `FARM_HALF_LIFE_RESPAWNS`):
+  it still bounds one sector as a tap.
+- *Raids pay well*: `RAID_DEFENSE_SALVAGE_FRACTION` stays **0.30** (the
+  owner's earlier halving to 0.15 was for a world in which defences scored).
+- *Exploration pays in resources and scores nothing*, as kills do (the
+  builder's recommendation; the owner did not say). A chart delivered to a
+  dock pays `chart_value(T) = 50 + 50 x T^1.5` units of loot into the
+  stockpile for each sector new to the empire, at any pace and as far as the
+  caps allow (`CHART_VALUE_*`; since the merge with master a `Stockpile` event of cause `Charts`); a first boarding pays
+  its loot as any boarding does; a relic makes a site pay `RELIC_LOOT_MULT`
+  (6) times its loot.
+- *The jump law* is linear: `max(1, ceil(JUMP_SPEED_REF / speed))` with
+  `JUMP_SPEED_REF` **25,000** (was `sqrt(50,000 / speed)`). A Light Fighter
+  keeps its 2 ticks, a Cruiser 2 until Impulse Drive 4 and 1 from it; a
+  Small Cargo takes 5, a Large Cargo 4, a Recycler 13, a Deathstar 81 on
+  Hyperspace Drive 7. Pirates jump by the same law.
+- *The pirates' clock* (a destroyed group's return, a wounded one's
+  mending and the farm heat's half-life) is a finds timer, P^0.5
+  (`scaling::npc_respawn_ticks`; `NPC_HEAL_SHARE` is classed Finds): a group
+  is whole again 4 to 9 minutes after a fight at blitz, 26 to 66 at season.
+- *Pirates past ring 8 are packs*: a group flies the heaviest of
+  `NPC_LADDER` (Light Fighter, Heavy Fighter, Cruiser, Battleship) of which
+  its ring's power makes `NPC_MIN_PACK` (3) ships. Power per ring is
+  unchanged; Light Fighters to ring 15 (3 to 8 of them), Heavy Fighters to
+  ring 20 (3 to 7), Cruisers to 25, Battleships beyond. `NPC_CRUISER_RING`
+  and `NPC_BATTLECRUISER_RING` are gone. `WORLDGEN_VERSION` is 5.
+- *The deuterium opening*: `STARTING_RESOURCES` deuterium 100 to **800**,
+  what Robotics Factory 2 and the Research Lab ask of it. A starting
+  Deuterium Synthesizer 1 was the other candidate; the starting stock is
+  the smaller change (one number, no energy and no production moved).
+- *Pace*: no preset moved. `tools/playtest/README.md` says an hour of
+  agents wants `IAC_PACE=1200` and a person `IAC_PACE=300`.
+- `ECONOMY_VERSION` is 15, `WORLDGEN_VERSION` 5, `SAVE_FORMAT` 13 (the
+  player row and the combat lost fields, the bots' memory lost its standing).
+
+**Measured beside it.** Bot worlds of `sim-run`, seeds 1, 2 and 3, against
+master at 1b2197e: `--pace season --days 7`, `--pace blitz --days 1`,
+`--pace blitz --hours 1 --seat all:all`, `--pace 1200 --hours 1 --seat
+all:hands-on`; every variant one change on the branch, its diff kept with the
+runs. Hands-on medians; flyers are the raider, explorer and mixed bots.
+
+| variant | season 7 d: turtle / flyers | blitz 1 d: turtle / flyers | blitz 1 h | pace 1200, 1 h | raid wreckage, season week, all bots |
+|---|---|---|---|---|---|
+| master (old score, capped extras) | 9264 / 9870 | 16503 / 24046 | 1336 / 1523 | 4444 / 4972 | 14423 |
+| **as built** | 8644 / 9129 (1.06) | 15607 / 20022 (1.28) | 1136 / 1645 (1.45) | 4159 / 5102 (1.23) | 15672 |
+| wreckage x2 | 8648 / 8657 (1.00) | 15607 / 20039 | 1136 / 1575 | 4159 / 4742 (1.14) | 15472 |
+| wreckage x4 | 8097 / 8895 (1.10) | 15607 / 20098 | 1136 / 1993 (1.75) | 4159 / 5234 | 15974 |
+| raid wreckage 0.15 | 7890 / 8060 (1.02) | 15607 / 18760 (1.20) | | | 7385 |
+| raid wreckage 0.20 | 9155 / 8469 (0.93) | 15607 / 18784 (1.20) | | | 10418 |
+| raid wreckage 0.45 | 10504 / 9796 (0.93) | 15679 / 21249 | | | 25621 |
+| exploration in points, soft cap (A) | 8648 / 9403 (1.09) | 15607 / 22633 (1.45) | 1136 / 2120 (1.87) | 4159 / 6069 (1.46) | 14694 |
+| defences at half (same runs as built) | 9014 / 9384 | 16454 / 20936 | | | |
+| deuterium 100 at the start | 8648 / 8773 | | 1303 / 1665 | 4302 / 5089 | 15105 |
+
+What decided each value, and the rest of the numbers, are in
+`docs/journal.md` (2026-10-14, the score rework). In short: at x3 a hunt
+pays its fuel several times over at a fast pace (at pace 1200 the flyers'
+wreckage is 1,921 points against 255 of fuel, about a twelfth of what the
+mines made) and does not beat the mines; at season wreckage stays a few
+percent of an empire's income at any multiplier tried, because loot grows
+with P^0.5 and the economy with P. At 0.30 a season week's raid wreckage is
+13.5% of what the mines made and the turtle and the flyers end level; at
+0.45 it is 21% and the turtle wins, at 0.20 9.2% and at 0.15 6.7% (the
+turtle against the flyers is a median of three bots and moves by a tenth
+from seed to seed, so the ratio is a direction, not a measurement). Exploration in
+points under a soft cap gave the flyers the most (1.45x a turtle in a blitz
+hour against 1.28x) and keeps a second currency the owner's model has no
+place for; exploration in resources is the one rule for everything the
+field pays.
+
+**What undoes each.**
+
+- The score: `score::score_of` and `Score::total`; kill points come back
+  with a `credit_kill` in `end_combat`, chart and boarding points with the
+  two `explore_points` lines, and they need the player row's fields back
+  (`SAVE_FORMAT`). The exploration-in-points variant is
+  `scratchpad/tuning/patches/exploreA.py` of the builder's run (not in the
+  repository): it is not reachable in `sim-run`, because it needs state the
+  engine no longer keeps.
+- Defences at half: `score::DEFENCE_SHARE` 0.5; `sim-run --defence-share
+  0.5` scores any run so without changing the game.
+- Wreckage: `scaling::WRECK_VALUE_K`. Raids: `RAID_DEFENSE_SALVAGE_FRACTION`.
+  Charts: `scaling::CHART_VALUE_*`; a chart that pays nothing is
+  `CHART_VALUE_BASE` and `CHART_VALUE_THREAT` 0. Relics: `RELIC_LOOT_MULT` 1.
+- The jump law: `scaling::jump_ticks` and `JUMP_SPEED_REF`.
+- The pirates' clock: `scaling::npc_respawn_ticks` and
+  `npc_heal_step_ticks` back to `econ_ticks`, the `NPC_HEAL_SHARE` class.
+- The packs: `scaling::npc_class` and `NPC_LADDER`, `NPC_MIN_PACK`.
+- The opening: `STARTING_RESOURCES`.
+
+**What the builder decided within it.** None of it was put to the owner.
+
+- *Charts pay at any pace.* A fleet charts as many sectors in an hour at
+  any pace, and a probe charts one every tick or two; a chart priced as loot
+  (P^0.5) paid an explorer 13,700 points in a blitz hour in the first try.
+  Undo: `.scale(finds_mult())` in `deliver_charts`.
+- *A chart pays the homeworld's stockpile*, also when it is delivered at the
+  outpost: it is information sold, not cargo.
+- *A relic multiplies the site's loot* rather than paying a fixed sum; its
+  roll moved before the hold is filled, with no draw moved.
+- *The board shows `defence`* although it is 0 today, so the parts always
+  add up to the score if the share moves.
+- *At the merge with master's playtest fixes* (3dae48e) the bonus room
+  (`LeaderboardReply.bonus`, `BonusRoom`; master's entry below) went with the
+  cap, and the play tool's `Standing:` line says the leader and the gap, in
+  all and by part (`score.leader.gap_by_part`). A delivered chart's pay is a
+  `Stockpile` event of cause `Charts` (worded "delivered charts, paid into
+  the stockpile") and no longer `ChartDelivered.paid`. A boarding's loot and
+  a relic's go into the hold, so they send none.
+- *The bots* (`sim/src/bot/`, the other agent's ground): the smallest change
+  that compiles. With no cap there is nothing for a wing to stop for:
+  `Brief.points_wanted`, `has_work`, `Bot::under`, the bot's `rule`, its
+  remembered `Standing` and its leaderboard request, and `Style::ignore_cap`
+  are gone. Every wing now flies whenever it has work.
+- *`sim-run`* lost `--cap`, `--meter` and `--ignore-cap` and gained
+  `--defence-share`, a flight table by the kind of fleet, the share of fights
+  begun against a group that had not mended, and what charts paid.
+- *The outposts' platforms were not retuned.* Against packs a level-2
+  platform holds through ring 13 (it held through the middle of the Outer
+  Ring against a lone Cruiser or Battlecruiser) and level 3 to ring 20; the
+  forecast table of `sim/tests/outposts.rs` was measured again and the
+  season week's post at ring 14 is level 3.
+
+**Unsure of.**
+
+- At season wreckage is a few percent of income at x2, x3 or x4: fighting
+  near home is income a player notices at a fast pace and not at season.
+  That is the finds class (P^0.5) against the economy (P), and a constant
+  cannot mend it.
+- The bots build defences for the half that scored, and in a blitz day the
+  check-in and hybrid flyers, whose walls are largest, fall to 0.6 to 0.8 of
+  a turtle at zero (0.9 to 1.2 at half). The bots' rewrite should build against
+  what raids leave, not against a score.
+- Bots almost never leave a fight (2 to 20 flights a world), so "a group is
+  fought again while hurt" was counted 0 to 3 times a world: the clock's
+  change is measured in tests, not in bot play.
+- The planning simulation says flying styles lose under the new rule (in a
+  blitz hour the explorer 64% of the builder, the raider 61%; at season 87%
+  and 78%), where the bots say they lead; its field model pays less than the
+  bots fly for.
+- In a blitz hour the hands-on turtle scored 13% less with 800 deuterium
+  than with 100 (its opening goes to the lab first); the season week moved 2%.
+
 ## 2026-10-14 (a patrol brings the salvage home)
 
 `patrol_home` hunted the groups in range of home, scooped the wreckage of

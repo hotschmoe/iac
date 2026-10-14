@@ -18,7 +18,6 @@ use iac_shared::protocol::{
 use iac_shared::scaling::{ratio_label, ship_tank, RatioLabel, ResearchLevels};
 use iac_shared::world::{self, NpcBehaviorType};
 use iac_sim::engine::{template_npc_id, Errand, FleetStatus, SectorOverride, Ships};
-use iac_sim::snapshot::ExploreCredit;
 use iac_sim::GameEngine;
 
 fn alerts_since(e: &Empire, mark: usize) -> Vec<AlertEvent> {
@@ -324,7 +323,7 @@ fn charted_prospector(engage_ratio_x10: u8) -> (Empire, u64) {
                 let h = Hex { q: home.q + dq, r: home.r + dr };
                 if Hex::distance(&h, &home) <= 2 {
                     s.explored.insert((pid, h.to_key()));
-                    s.credited.insert((pid, h.to_key(), ExploreCredit::Charted));
+                    s.charted.insert((pid, h.to_key()));
                 }
             }
         }
@@ -441,7 +440,7 @@ fn a_prospector_whose_nearest_uncharted_sector_is_beyond_its_fuel_stays_home_and
         for at in iac_shared::hex::hex_spiral(home, d) {
             if at != target {
                 s.explored.insert((pid, at.to_key()));
-                s.credited.insert((pid, at.to_key(), ExploreCredit::Charted));
+                s.charted.insert((pid, at.to_key()));
             }
         }
         let fleet = s.fleets.get_mut(&fid).unwrap();
@@ -1464,21 +1463,23 @@ fn a_jump_takes_the_ticks_the_fleet_reports() {
     let fighters: Classes = &[(S::LightFighter, 2)];
     let with_a_heavy: Classes = &[(S::LightFighter, 1), (S::HeavyFighter, 1)];
     // The drives as (Combustion, Impulse, Hyperspace). A fleet jumps at the
-    // speed of its slowest ship: max(1, ceil(sqrt(50,000 / speed))) ticks.
-    let cases: [(Classes, (u8, u8, u8), u16); 13] = [
+    // speed of its slowest ship: max(1, ceil(25,000 / speed)) ticks.
+    let cases: [(Classes, (u8, u8, u8), u16); 15] = [
         (fighters, (0, 0, 0), 2),
         (fighters, (9, 0, 0), 2),
         (with_a_heavy, (0, 0, 0), 3),
         (with_a_heavy, (0, 2, 0), 2),
         (&[(S::EspionageProbe, 2)], (0, 0, 0), 1),
-        (&[(S::SmallCargo, 1)], (0, 0, 0), 4),
-        (&[(S::SmallCargo, 1)], (2, 0, 0), 3),
+        (&[(S::SmallCargo, 1)], (0, 0, 0), 5),
+        (&[(S::SmallCargo, 1)], (2, 0, 0), 5),
+        (&[(S::SmallCargo, 1)], (5, 0, 0), 4),
         (&[(S::SmallCargo, 1)], (2, 5, 0), 2),
-        (&[(S::Recycler, 1), (S::Cruiser, 3)], (6, 4, 0), 4),
-        (&[(S::Cruiser, 3)], (0, 4, 0), 2),
+        (&[(S::Recycler, 1), (S::Cruiser, 3)], (6, 4, 0), 8),
+        (&[(S::Cruiser, 3)], (0, 3, 0), 2),
+        (&[(S::Cruiser, 3)], (0, 4, 0), 1),
         (&[(S::Battleship, 1)], (0, 0, 4), 2),
         (&[(S::Bomber, 1)], (0, 6, 8), 2),
-        (&[(S::Deathstar, 1)], (0, 0, 7), 13),
+        (&[(S::Deathstar, 1)], (0, 0, 7), 81),
     ];
     for (classes, drives, ticks) in cases {
         let mut e = Empire::join(world("test"), "Jumper");

@@ -5,7 +5,7 @@
 // score split at every sample point, and a running tally of what the field
 // paid them, counted from the engine's own events.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use iac_shared::constants::{
     Density, ResourceKind, Resources, TerrainType, FUEL_DEUT_PER_UNIT, OUTPOST_MAX_LEVEL, OUTPOST_MAX_RING, OUTPOST_MIN_RING,
@@ -21,39 +21,34 @@ use serde::Serialize;
 
 use crate::engine::{FleetStatus, GameEngine, Outpost, OutpostJob, OutpostTask, Player, RaidState};
 use crate::host::{self, Phase, TickError, Watch};
-use crate::score::{self, ExtraRule, Meter, Score};
+use crate::score::{self, Score};
 use crate::script::{ScriptedPlayer, Seat, Want};
 use crate::{queue, views};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub struct ScoreBreakdown {
-    pub econ: f32,
+    pub buildings: f32,
+    pub research: f32,
     pub fleet: f32,
-    pub defence: f32,
     /// The finished levels of the player's outpost.
     pub outpost: f32,
-    pub core: f32,
-    /// Raw combat points, before the cap.
-    pub combat: f32,
-    /// Raw exploration points, before the cap.
-    pub explore: f32,
-    /// What combat and exploration add to the score once capped.
-    pub extra: f32,
+    /// What the standing defences cost, and the part of it the run's
+    /// share of a defence counts.
+    pub defences: f32,
+    pub defence: f32,
     pub total: f32,
 }
 
 impl ScoreBreakdown {
-    fn under(s: Score, rule: ExtraRule) -> ScoreBreakdown {
+    fn with(s: Score, defence_share: f32) -> ScoreBreakdown {
         ScoreBreakdown {
-            econ: s.econ,
+            buildings: s.buildings,
+            research: s.research,
             fleet: s.fleet,
-            defence: s.defence,
             outpost: s.outpost,
-            core: s.core(),
-            combat: s.combat,
-            explore: s.explore,
-            extra: s.total_under(rule) - s.core(),
-            total: s.total_under(rule),
+            defences: s.defences,
+            defence: defence_share * s.defences,
+            total: s.total_with(defence_share),
         }
     }
 }
@@ -67,6 +62,8 @@ pub struct FieldTally {
     pub derelict_loot: f32,
     /// Wreckage of repelled raids scooped at the homeworld.
     pub raid_salvage: f32,
+    /// What delivered charts paid into the stockpile.
+    pub chart_pay: f32,
     pub kills: u32,
     pub sites_boarded: u32,
     pub sectors_charted: u32,
@@ -84,6 +81,10 @@ pub struct FieldTally {
     /// one gave it up.
     pub pursuits: u32,
     pub pursuits_abandoned: u32,
+    /// Fights begun against pirates, and the part of them begun against a
+    /// group that had fought before and had not mended.
+    pub fights_begun: u32,
+    pub fights_on_hurt: u32,
     /// Rounds a fleet of the player's stood in without firing.
     pub rounds_fleeing: u32,
     /// Rounds fought, and the most ships one fleet took into a round.
@@ -148,10 +149,6 @@ pub struct FieldTally {
     pub outpost_ticks_behind_build: u64,
     /// Hours spent away from home, summed over fleets.
     pub fleet_hours: f32,
-    /// The part of `fleet_hours` flown while one more combat or exploration
-    /// point would not have counted; an hour in which it would have counted
-    /// for half is half an hour here.
-    pub unpaid_hours: f32,
 }
 
 impl FieldTally {
@@ -361,28 +358,17 @@ pub struct OutpostSummary {
     pub mine_payback_hours: f32,
 }
 
-/// What a daily allowance of `share` of core (`score::Meter`) would have made
-/// of the player's combat and exploration points.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub struct MeterReading {
-    pub share: f32,
-    /// What the points added to the score: `core + bonus` is the total.
-    pub bonus: f32,
-    /// As `FieldTally::unpaid_hours`, by the meter instead of the run's rule.
-    pub unpaid_hours: f32,
-}
-
-/// A meter kept beside a player's run.
-#[derive(Debug, Clone, Copy)]
-struct Metered {
-    meter: Meter,
-    unpaid_hours: f32,
-}
-
-impl Metered {
-    fn reading(&self) -> MeterReading {
-        MeterReading { share: self.meter.share, bonus: self.meter.banked(), unpaid_hours: self.unpaid_hours }
-    }
+/// What happened to the player's fleets in flight, by the kind of fleet:
+/// its most numerous class and the ticks one jump takes it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct Flight {
+    /// Rounds it stood in without firing, charging a jump out of a fight.
+    pub rounds_fleeing: u32,
+    /// Pursuits begun after it, pursuits that jumped on after it, and
+    /// pursuits given up.
+    pub pursued: u32,
+    pub pursuit_hops: u32,
+    pub pursuits_abandoned: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -399,9 +385,6 @@ pub struct Sample {
     pub mined: f32,
     pub spilled: f32,
     pub ships: usize,
-    /// One reading per `Headless::meter` asked for.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub meters: Vec<MeterReading>,
 }
 
 /// One player's run, for the report.
@@ -425,8 +408,8 @@ pub struct PlayerSummary {
     pub orders_refused: u64,
     /// Every order that paid, in the order they did.
     pub orders_paid: Vec<Paid>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub meters: Vec<MeterReading>,
+    /// Flight and pursuit by the kind of fleet.
+    pub flights: BTreeMap<String, Flight>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outpost: Option<OutpostSummary>,
 }
@@ -442,10 +425,7 @@ struct Entry {
     mined: Mined,
     extracted: Extracted,
     paid: Vec<Paid>,
-    meters: Vec<Metered>,
-    /// Combat plus exploration points and core as the meters last saw them.
-    points_seen: f32,
-    core_seen: f32,
+    flights: BTreeMap<String, Flight>,
     samples: Vec<Sample>,
 }
 
@@ -464,10 +444,9 @@ pub struct Headless {
     pub engine: GameEngine,
     seats: Seats,
     entries: Vec<Entry>,
-    /// The rule the report scores by. The engine keeps the game's own.
-    rule: ExtraRule,
-    /// Shares of core to keep a `score::Meter` at for every player seated.
-    meters: Vec<f32>,
+    /// The share of their cost defences count for in the report. The
+    /// engine keeps the game's own.
+    defence_share: f32,
 }
 
 impl Headless {
@@ -476,21 +455,14 @@ impl Headless {
             engine: GameEngine::new(world_seed, pace),
             seats: Vec::new(),
             entries: Vec::new(),
-            rule: ExtraRule::GAME,
-            meters: Vec::new(),
+            defence_share: score::DEFENCE_SHARE,
         }
     }
 
-    /// Report scores under `rule` instead of the game's. Bots have to be
-    /// seated under the same rule (`Bot::under`) to play to it.
-    pub fn score_under(&mut self, rule: ExtraRule) {
-        self.rule = rule;
-    }
-
-    /// Also report what a daily allowance of `share` of core would count,
-    /// for every player seated after this call.
-    pub fn meter(&mut self, share: f32) {
-        self.meters.push(share);
+    /// Report scores with defences at `share` of their cost instead of the
+    /// game's share. Nothing in the world reads it.
+    pub fn score_defences_at(&mut self, share: f32) {
+        self.defence_share = share;
     }
 
     /// Register the player's account and seat them; returns the player id.
@@ -512,9 +484,7 @@ impl Headless {
             mined: Mined::default(),
             extracted: Extracted::default(),
             paid: Vec::new(),
-            meters: self.meters.iter().map(|&share| Metered { meter: Meter::new(share), unpaid_hours: 0.0 }).collect(),
-            points_seen: 0.0,
-            core_seen: 0.0,
+            flights: BTreeMap::new(),
             samples: Vec::new(),
         });
         Ok(player_id)
@@ -608,10 +578,9 @@ impl Headless {
     pub fn step(&mut self) -> Result<(), TickError> {
         let mut counting = Counting {
             entries: &mut self.entries,
-            rule: self.rule,
-            metered: !self.meters.is_empty(),
             tanks: Vec::new(),
             stores: Vec::new(),
+            hurt: BTreeSet::new(),
         };
         host::step(&mut self.engine, &mut self.seats, &mut counting, |_, _| {})?;
         Ok(())
@@ -649,7 +618,7 @@ impl Headless {
         let player = self.engine.players.get(&entry.player_id)?;
         Some(Sample {
             tick,
-            score: ScoreBreakdown::under(score::score_of(&self.engine, player), self.rule),
+            score: ScoreBreakdown::with(score::score_of(&self.engine, player), self.defence_share),
             field: entry.tally,
             idle: entry.slots.into(),
             idle_why: entry.why,
@@ -657,7 +626,6 @@ impl Headless {
             mined: entry.mined.made as f32,
             spilled: entry.mined.spilled as f32,
             ships: self.ships_of(player.id),
-            meters: entry.meters.iter().map(Metered::reading).collect(),
         })
     }
 
@@ -714,7 +682,7 @@ impl Headless {
                     name: player.name.clone(),
                     style: entry.style.clone(),
                     player_id: player.id,
-                    score: ScoreBreakdown::under(score::score_of(&self.engine, player), self.rule),
+                    score: ScoreBreakdown::with(score::score_of(&self.engine, player), self.defence_share),
                     field: entry.tally,
                     idle: entry.slots.into(),
                     idle_why: entry.why,
@@ -728,7 +696,7 @@ impl Headless {
                     orders_accepted: seat.accepted(),
                     orders_refused: seat.refused(),
                     orders_paid: entry.paid.clone(),
-                    meters: entry.meters.iter().map(Metered::reading).collect(),
+                    flights: entry.flights.clone(),
                     outpost: self.outpost_of(player),
                 })
             })
@@ -740,14 +708,14 @@ impl Headless {
 /// have had their turns, and again when the tick is simulated.
 struct Counting<'a> {
     entries: &'a mut [Entry],
-    rule: ExtraRule,
-    /// Whether any meter is kept.
-    metered: bool,
     /// Every fleet before the tick: its fuel, and whether it was moving.
     tanks: Vec<(u64, f64, bool)>,
     /// Every outpost before the tick: its store, and whether a raid arriving
     /// in the tick finds it breached.
     stores: Vec<(u64, Resources, bool)>,
+    /// Every pirate group before the tick that is out of a fight and not
+    /// whole: one that has fought and not mended.
+    hurt: BTreeSet<u64>,
 }
 
 impl Watch<Seats> for Counting<'_> {
@@ -764,12 +732,12 @@ impl Watch<Seats> for Counting<'_> {
                         (*owner, o.store, o.breached && !mended)
                     })
                     .collect();
+                self.hurt = engine.npc_fleets.values().filter(|g| !g.in_combat && !g.whole()).map(|g| g.id).collect();
             }
             Phase::Tick => {
                 self.count_refuelling(engine);
                 self.count_outposts(engine);
                 self.count_slots(engine);
-                self.run_meters(engine);
                 if engine.current_tick().is_multiple_of(PROBE_EVERY) {
                     self.probe(engine, seats);
                 }
@@ -781,31 +749,6 @@ impl Watch<Seats> for Counting<'_> {
 }
 
 impl Counting<'_> {
-    /// A tick of every meter: it drains, and takes in the points its player
-    /// earned this tick. The core is read again when points come in and at
-    /// every look; between two looks an allowance is the one of the last.
-    fn run_meters(&mut self, engine: &GameEngine) {
-        if !self.metered {
-            return;
-        }
-        let look = engine.current_tick().is_multiple_of(PROBE_EVERY);
-        for entry in self.entries.iter_mut() {
-            let Some(player) = engine.players.get(&entry.player_id) else { continue };
-            let points = player.combat_points + player.explore_points;
-            let earned = points - entry.points_seen;
-            if earned > 0.0 || look || entry.core_seen == 0.0 {
-                entry.core_seen = score::score_of(engine, player).core();
-            }
-            for metered in &mut entry.meters {
-                metered.meter.drain(entry.core_seen);
-                if earned > 0.0 {
-                    metered.meter.earn(earned, entry.core_seen);
-                }
-            }
-            entry.points_seen = points;
-        }
-    }
-
     fn count_slots(&mut self, engine: &GameEngine) {
         let pace = engine.pace();
         for entry in self.entries.iter_mut() {
@@ -831,11 +774,10 @@ impl Counting<'_> {
         }
     }
 
-    /// One look at every player: how many fleets are out and whether a
-    /// point they earn would count; then every empty slot, which order it is
-    /// waiting for and why, or what its owner's planner would do with it.
+    /// One look at every player: how many fleets are out; then every empty
+    /// slot, which order it is waiting for and why, or what its owner's
+    /// planner would do with it.
     fn probe(&mut self, engine: &GameEngine, seats: &Seats) {
-        let rule = self.rule;
         let tick = engine.current_tick();
         let pace = engine.pace();
         for (entry, seat) in self.entries.iter_mut().zip(seats) {
@@ -843,13 +785,7 @@ impl Counting<'_> {
             let Some(player) = engine.players.get(&id) else { continue };
 
             let out = engine.fleets.values().filter(|f| f.owner_id == id && f.location != player.homeworld).count();
-            let score = score::score_of(engine, player);
-            let hours = out as f32 * PROBE_EVERY as f32 / 3600.0;
-            entry.tally.fleet_hours += hours;
-            entry.tally.unpaid_hours += hours * (1.0 - rule.next_point(score.combat + score.explore, score.core()));
-            for metered in &mut entry.meters {
-                metered.unpaid_hours += hours * (1.0 - metered.meter.next_point(score.core()));
-            }
+            entry.tally.fleet_hours += out as f32 * PROBE_EVERY as f32 / 3600.0;
 
             let Some(outlook) = views::full_state(engine, id).and_then(|state| seat.player().outlook(&state)) else {
                 continue;
@@ -962,6 +898,11 @@ impl Counting<'_> {
         let entries = &mut *self.entries;
         let flying = |fleet_id: u64| engine.fleets.get(&fleet_id).map(|f| f.owner_id);
         let named = |name: &str| engine.players.values().find(|p| p.name == name).map(|p| p.id);
+        let kind = |fleet_id: u64| {
+            let fleet = engine.fleets.get(&fleet_id)?;
+            let (class, _) = fleet.ships.counts().max_by_key(|&(_, count)| count)?;
+            Some(format!("{} {}t", class.label(), engine.hop_ticks(fleet)))
+        };
 
         for event in events {
             match &event.kind {
@@ -978,6 +919,11 @@ impl Counting<'_> {
                 EventKind::Stockpile(e) if e.cause == StockpileCause::Wreckage => {
                     if let Some(t) = tally_of(entries, Some(e.player_id)) {
                         t.raid_salvage += scaling::resource_weight(&e.amount);
+                    }
+                }
+                EventKind::Stockpile(e) if e.cause == StockpileCause::Charts => {
+                    if let Some(t) = tally_of(entries, Some(e.player_id)) {
+                        t.chart_pay += scaling::resource_weight(&e.amount);
                     }
                 }
                 EventKind::SiteExplored(e) => {
@@ -1008,21 +954,43 @@ impl Counting<'_> {
                     }
                 }
                 EventKind::BattleRound(e) if !e.raid => {
+                    let on_hurt = e.hostiles.groups.iter().any(|g| self.hurt.contains(&g.fleet_id));
+                    let mut began: Vec<u64> = Vec::new();
                     for group in &e.fleets.groups {
-                        if let Some(t) = tally_of(entries, group.owner.as_deref().and_then(named)) {
-                            let lost = group.units.iter().map(|u| u.lost).sum::<u32>();
-                            let left = group.units.iter().map(|u| u.count).sum::<u32>();
-                            t.ships_lost += lost;
-                            t.rounds += 1;
-                            t.rounds_fleeing += u32::from(group.fleeing);
-                            t.largest_fleet = t.largest_fleet.max(left + lost);
+                        let owner = group.owner.as_deref().and_then(named);
+                        let Some(entry) = entry_of(entries, owner) else { continue };
+                        let t = &mut entry.tally;
+                        let lost = group.units.iter().map(|u| u.lost).sum::<u32>();
+                        let left = group.units.iter().map(|u| u.count).sum::<u32>();
+                        t.ships_lost += lost;
+                        t.rounds += 1;
+                        t.rounds_fleeing += u32::from(group.fleeing);
+                        t.largest_fleet = t.largest_fleet.max(left + lost);
+                        if e.round == 1 && !began.contains(&entry.player_id) {
+                            began.push(entry.player_id);
+                            t.fights_begun += 1;
+                            t.fights_on_hurt += u32::from(on_hurt);
+                        }
+                        if group.fleeing
+                            && let Some(kind) = kind(group.fleet_id)
+                        {
+                            entry.flights.entry(kind).or_default().rounds_fleeing += 1;
                         }
                     }
                 }
                 EventKind::Pursuit(e) => {
-                    if let Some(t) = tally_of(entries, named(&e.owner)) {
+                    if let Some(entry) = entry_of(entries, named(&e.owner)) {
+                        let t = &mut entry.tally;
                         t.pursuits += u32::from(e.phase == PursuitPhase::Began);
                         t.pursuits_abandoned += u32::from(e.phase == PursuitPhase::Abandoned);
+                        if let Some(kind) = kind(e.fleet_id) {
+                            let flight = entry.flights.entry(kind).or_default();
+                            match e.phase {
+                                PursuitPhase::Began => flight.pursued += 1,
+                                PursuitPhase::Continued => flight.pursuit_hops += 1,
+                                PursuitPhase::Abandoned => flight.pursuits_abandoned += 1,
+                            }
+                        }
                     }
                 }
                 EventKind::ShipsLost(e) => {

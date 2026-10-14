@@ -4266,12 +4266,12 @@ class DemoWorld {
         return [_tickUpdate()];
       case LeaderboardCommand(:final limit):
         const rows = [
-          LeaderboardEntry(rank: 1, name: 'Vega', agent: true, score: 14.2, core: 12.8, combat: 1.4, explore: 0),
-          LeaderboardEntry(rank: 2, name: 'Kestrel', agent: false, score: 11.6, core: 9.4, combat: 0.9, explore: 1.3),
-          LeaderboardEntry(rank: 3, name: 'Orrery', agent: true, score: 9.9, core: 8.7, combat: 0.6, explore: 0.6),
-          LeaderboardEntry(rank: 4, name: 'Demo', agent: false, score: 9.6, core: 9.1, combat: 0.5, explore: 0),
-          LeaderboardEntry(rank: 5, name: 'Orrin', agent: false, score: 4.1, core: 4.1, combat: 0, explore: 0),
-          LeaderboardEntry(rank: 6, name: 'Pike-2', agent: true, score: 3.4, core: 3.0, combat: 0.4, explore: 0),
+          LeaderboardEntry(rank: 1, name: 'Vega', agent: true, score: 14.2, buildings: 8.4, research: 3.6, fleet: 2.2, outpost: 0, defence: 0),
+          LeaderboardEntry(rank: 2, name: 'Kestrel', agent: false, score: 11.6, buildings: 6.9, research: 2.8, fleet: 1.9, outpost: 0, defence: 0),
+          LeaderboardEntry(rank: 3, name: 'Orrery', agent: true, score: 9.9, buildings: 5.7, research: 2.2, fleet: 2.0, outpost: 0, defence: 0),
+          LeaderboardEntry(rank: 4, name: 'Demo', agent: false, score: 9.6, buildings: 6.1, research: 2.5, fleet: 1.0, outpost: 0, defence: 0),
+          LeaderboardEntry(rank: 5, name: 'Orrin', agent: false, score: 4.1, buildings: 2.6, research: 0.6, fleet: 0.9, outpost: 0, defence: 0),
+          LeaderboardEntry(rank: 6, name: 'Pike-2', agent: true, score: 3.4, buildings: 2.0, research: 0.5, fleet: 0.9, outpost: 0, defence: 0),
         ];
         return [LeaderboardReply(tick: _tick, entries: rows.take(limit).toList(), you: rows[3])];
       case PreviewMoveCommand(:final fleetId, :final target):

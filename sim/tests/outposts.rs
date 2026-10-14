@@ -21,7 +21,7 @@ use iac_shared::pace::Pace;
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, BattleOutcome, BattleRoundEvent, ChartMark, Command, ErrorCode, EventKind, OutpostState,
     OutpostSurvey, OutpostWork, PolicyPreset, RaidIncomingEvent, RaidLabel, RaidResolvedEvent, ServerMessage, ThreatBasis,
-    UnitCount,
+    StockpileCause, UnitCount,
 };
 use iac_shared::scaling::{self, DefenceKind, RatioLabel, ShipyardItem};
 use iac_shared::world::{NpcBehaviorType, SectorTemplate};
@@ -266,7 +266,7 @@ fn a_convoy_carries_an_outpost_to_a_lair_and_founds_it_on_the_sector_it_won() {
         said(&e, mark),
     );
 
-    let respawn = e.engine.pace().econ_ticks(f64::from(scaling::npc_respawn_hours(10)) * 3600.0);
+    let respawn = scaling::npc_respawn_ticks(10, &e.engine.pace());
     assert!(quote.build_ticks > respawn, "the lair's return is overdue: it took {respawn} ticks");
     assert!(e.engine.pending_template_npc(target).is_none(), "no group lives where an outpost stands");
     let seen = chart(&e.engine, pid)[&target.to_key()].clone();
@@ -549,7 +549,7 @@ fn the_extractor_makes_what_the_survey_said_at_every_pace() {
 }
 
 #[test]
-fn a_convoy_round_trip_makes_nothing_but_the_yield() {
+fn a_convoy_round_trip_makes_nothing_but_the_yield_and_the_charts_it_delivers() {
     let mut e = Empire::join(world("season"), "Carrier");
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
@@ -581,15 +581,20 @@ fn a_convoy_round_trip_makes_nothing_but_the_yield() {
     };
     let jump = e.fleet().jump_fuel;
     assert_eq!((jump, e.fleet().fuel, e.fleet().fuel_max), (20.0, 240.0, 240.0), "10 fuel a jump each, and a tank of twelve jumps");
-    let (before, started, home_stock) = (owned(&e), e.engine.current_tick(), e.stockpile().metal);
+    let (before, started, home_stock, trip) = (owned(&e), e.engine.current_tick(), e.stockpile().metal, e.mark());
 
     e.order(Command::Load { fleet_id: fid, resource: Metal, amount: None }).expect("load the yield");
     let carried = e.fleet().cargo.metal;
     assert!(carried > 0.0 && !e.fleet().laden, "the hold is the fleet's own business at the outpost");
+    let mark = e.mark();
     sweep(&mut e.engine, &back);
     e.travel(home);
     e.run(2);
-    let at_home = home_stock + natural.metal * (e.engine.current_tick() - started) as f64;
+    let charts: f64 = e.since(mark, |k| match k {
+        EventKind::Stockpile(s) if s.cause == StockpileCause::Charts => Some(s.amount.metal),
+        _ => None,
+    }).iter().sum();
+    let at_home = home_stock + charts + natural.metal * (e.engine.current_tick() - started) as f64;
     assert!((e.stockpile().metal - carried - at_home).abs() < 0.01, "the home dock unloads the yield: {:?}", e.stockpile());
     assert_eq!(e.fleet().fuel, 240.0, "and fills the tank from the stockpile");
 
@@ -601,7 +606,11 @@ fn a_convoy_round_trip_makes_nothing_but_the_yield() {
     assert_eq!(e.fleet().fuel, 240.0, "the outpost fills the tank from what the convoy brought");
 
     let burned = jump * (out.len() + back.len()) as f64;
-    let made = rate.add(natural).scale((e.engine.current_tick() - started) as f64);
+    let charted = e.since(trip, |k| match k {
+        EventKind::Stockpile(s) if s.cause == StockpileCause::Charts => Some(s.amount),
+        _ => None,
+    });
+    let made = rate.add(natural).scale((e.engine.current_tick() - started) as f64).add(charted.iter().fold(Resources::default(), |sum, r| sum.add(*r)));
     let after = owned(&e);
     let spent = res(0.0, 0.0, burned * FUEL_DEUT_PER_UNIT);
     assert!(
@@ -759,29 +768,28 @@ fn an_outpost_scores_its_finished_levels_and_nothing_it_holds() {
     let before = e.score_row();
 
     e.order(Command::FoundOutpost { fleet_id: fid }).expect("found");
-    assert_eq!(e.score_row().core, before.core, "an outpost under construction scores nothing");
+    assert_eq!(e.score_row().score, before.score, "an outpost under construction scores nothing");
     e.run(build_ticks(&e, 1));
     let one = e.score_row();
-    assert!((one.core - before.core - 6.45).abs() < 1e-3, "level 1 is 3000 + 1.5 x 1500 + 2 x 600 a thousand: {}", one.core - before.core);
+    assert!((one.score - before.score - 6.45).abs() < 1e-3, "level 1 is 3000 + 1.5 x 1500 + 2 x 600 a thousand: {}", one.score - before.score);
 
     stow(&mut e, fid, res(15_000.0, 9000.0, 3000.0));
     e.order(Command::Unload { fleet_id: fid }).expect("unload at the outpost");
     e.run(500);
     e.order(Command::Load { fleet_id: e.fid, resource: Crystal, amount: Some(100.0) }).expect("load from the store");
-    assert_eq!(e.score_row().core, one.core, "the store, the yield, load and unload score nothing");
+    assert_eq!(e.score_row().score, one.score, "the store, the yield, load and unload score nothing");
 
     e.order(Command::UpgradeOutpost).expect("level 2");
-    assert_eq!(e.score_row().core, one.core, "a level scores when it is finished, not when it is paid");
+    assert_eq!(e.score_row().score, one.score, "a level scores when it is finished, not when it is paid");
     e.run(build_ticks(&e, 2));
     let two = e.score_row();
-    assert!((two.core - one.core - 16.125).abs() < 1e-3, "level 2 adds 16.125: {}", two.core - one.core);
-    assert_eq!((two.combat, two.explore), (before.combat, before.explore));
+    assert!((two.score - one.score - 16.125).abs() < 1e-3, "level 2 adds 16.125: {}", two.score - one.score);
 
     let pid = e.pid;
     let estimate = |e: &Empire| e.state().homeworld.next_raid_estimate_power;
     let raid = estimate(&e);
     e.order(Command::AbandonOutpost).expect("abandon");
-    assert_eq!(e.score_row().core, before.core, "its score goes with it");
+    assert_eq!(e.score_row().score, before.score, "its score goes with it");
     assert_eq!(estimate(&e), raid, "an outpost never sized the raids on the homeworld");
     assert!(!e.engine.outposts.contains_key(&pid));
 }
@@ -954,7 +962,7 @@ fn an_abandoned_outpost_leaves_its_store_as_wreckage_and_the_lair_comes_back() {
     found(&mut e, at);
     e.run(build_ticks(&e, 1) + 400);
     deliver(&mut e, at, res(0.0, 75.0, 20.0));
-    let respawn = e.engine.pace().econ_ticks(f64::from(scaling::npc_respawn_hours(ring)) * 3600.0);
+    let respawn = scaling::npc_respawn_ticks(ring, &e.engine.pace());
     assert!(e.engine.sector_overrides[&at.to_key()].npc_cleared_tick.is_none(), "the lair's own delay ran out long ago");
     assert!(e.engine.pending_template_npc(at).is_none() && chart(&e.engine, pid)[&at.to_key()].hostiles.is_none());
 
@@ -1055,7 +1063,7 @@ fn a_platform_that_outguns_its_ring_destroys_the_raid_and_stands_whole_again() {
     assert_eq!((post.level, post.platform_power, post.defence_power), (2, PLATFORM[1], PLATFORM[1]), "nobody is home but the platform");
     assert_eq!(post.platform, platform_of(2), "eight Rocket Launchers and four Light Lasers");
     let expected = post.raid.clone().expect("a finished outpost has a raid to expect");
-    assert!(expected.arrival_tick.is_none() && expected.ships == counts(&[(ShipClass::Cruiser, 1)]), "{expected:?}");
+    assert!(expected.arrival_tick.is_none() && expected.ships == counts(&[(ShipClass::LightFighter, 6)]), "{expected:?}");
     assert_eq!(expected.odds.label, RaidLabel::Repelled, "the platform of level 2 destroys the raid of ring 10 every time it is played");
     let estimate = e.state().homeworld.next_raid_estimate_power;
 
@@ -1070,7 +1078,7 @@ fn a_platform_that_outguns_its_ring_destroys_the_raid_and_stands_whole_again() {
     assert_eq!(forecast.arrival_tick, told + e.engine.pace().raid_warning_ticks(), "the homeworld's warning");
     let base = 2.0 * scaling::npc_group_power(10);
     assert!((base * 0.80..=base * 1.15).contains(&forecast.est_power), "{} against a base of {base}", forecast.est_power);
-    assert_eq!((forecast.threat.as_str(), &forecast.ships), ("light", &expected.ships), "one Cruiser of its ring, and the fight is the platform's");
+    assert_eq!((forecast.threat.as_str(), &forecast.ships), ("light", &expected.ships), "six Light Fighters of its ring, and the fight is the platform's");
     assert_eq!(forecast.odds.map(|odds| odds.label), Some(RaidLabel::Repelled));
 
     let rounds = rounds_since(&e, mark);
@@ -1082,7 +1090,7 @@ fn a_platform_that_outguns_its_ring_destroys_the_raid_and_stands_whole_again() {
     assert!(first.fleets.groups.len() == 1 && battery.battery && battery.label == "outpost platform" && battery.fleet_id == 0);
     let stood: Vec<UnitCount> = battery.units.iter().map(|u| UnitCount { unit: u.unit, count: u.count + u.lost }).collect();
     assert_eq!(stood, platform_of(2), "the platform is the defences of its level, and they fire");
-    assert!(first.fleets.shots == 12 && first.hostiles.groups[0].label == "raid of 1 Cruiser");
+    assert!(first.fleets.shots == 12 && first.hostiles.groups[0].label == "raid of 6 Light Fighter");
 
     assert_eq!((outcome.outpost, outcome.defended, outcome.breached), (Some(at), true, false));
     assert_eq!(outcome.outcome, Some(BattleOutcome::HostilesDestroyed));
@@ -1122,8 +1130,8 @@ fn a_lost_raid_destroys_what_stood_there_takes_a_quarter_above_the_floor_and_bre
     assert_eq!(post.platform, platform_of(1), "four Rocket Launchers");
     assert_eq!(
         post.raid.as_ref().map(|raid| (raid.ships.clone(), raid.odds.label)),
-        Some((counts(&[(ShipClass::Battlecruiser, 1)]), RaidLabel::Lost)),
-        "four Rocket Launchers and two Light Fighters do not stand six rounds of a Battlecruiser",
+        Some((counts(&[(ShipClass::HeavyFighter, 7)]), RaidLabel::Lost)),
+        "four Rocket Launchers and two Light Fighters do not stand six rounds of seven Heavy Fighters",
     );
     let floor = res(REPAIR, 0.0, 0.0);
     assert_eq!(post.protected, floor, "750 metal, 375 crystal and 150 deuterium at par, in metal while the store has it");
@@ -1336,7 +1344,7 @@ fn thirty_days_of_raids_never_destroy_an_undefended_outpost() {
     muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 1)], home);
     stow(&mut e, fid, Resources::default());
     let estimate = e.state().homeworld.next_raid_estimate_power;
-    let core = e.score_row().core;
+    let core = e.score_row().score;
 
     let mark = e.mark();
     let (mut breached, mut lowest) = (0u64, f64::MAX);
@@ -1362,7 +1370,7 @@ fn thirty_days_of_raids_never_destroy_an_undefended_outpost() {
     }
 
     assert_eq!(e.state().homeworld.next_raid_estimate_power, estimate, "the outpost never sized a raid on the homeworld");
-    assert_eq!(e.score_row().core, core, "and its level still counts");
+    assert_eq!(e.score_row().score, core, "and its level still counts");
 }
 
 #[test]
@@ -1423,7 +1431,7 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
     held.run(6000).unwrap();
     let report = held.summaries().remove(0);
     let post = &held.engine.outposts[&keeper];
-    assert!((report.score.outpost - 22.575).abs() < 1e-3 && report.score.core >= report.score.econ + report.score.fleet + 22.5);
+    assert!((report.score.outpost - 22.575).abs() < 1e-3 && report.score.total >= report.score.buildings + report.score.research + report.score.fleet + 22.5);
     assert!(report.field.outpost_raids_repelled >= 2, "{:?}", report.field);
     assert_eq!((report.field.outpost_raids_lost, report.field.outpost_ticks_breached, report.field.outpost_raided), (0, 0, 0.0));
     assert_eq!((report.field.raids_repelled, report.field.raids_lost), (0, 0), "the homeworld's raids are counted apart");
@@ -1495,8 +1503,8 @@ fn forecast_of(world: &Headless, pid: u64) -> iac_shared::protocol::RaidForecast
 
 /// What a platform holds alone, by level and ring: the forecast of each of
 /// these outposts against the typical raid of its ring, nobody standing
-/// there. Level 1 holds nowhere, level 2 through the middle of the Outer
-/// Ring, level 3 to its edge. It is the fight that says so; the platforms
+/// there. Level 1 holds nowhere, level 2 through ring 13, level 3 to the
+/// Outer Ring's edge. It is the fight that says so; the platforms
 /// are the study's starting values and none was tuned to this table.
 #[test]
 fn the_forecast_says_what_each_level_of_platform_holds_alone() {
@@ -1504,8 +1512,8 @@ fn the_forecast_says_what_each_level_of_platform_holds_alone() {
     let table: [(u16, [&[RaidLabel]; 3]); 6] = [
         (9, [&[AtRisk, Lost], &[Repelled], &[Repelled]]),
         (12, [&[Lost], &[Repelled], &[Repelled]]),
-        (14, [&[Lost], &[Repelled], &[Repelled]]),
-        (16, [&[Lost], &[Repelled, Held], &[Repelled]]),
+        (14, [&[Lost], &[AtRisk, Lost], &[Repelled]]),
+        (16, [&[Lost], &[AtRisk, Lost], &[Repelled]]),
         (18, [&[Lost], &[AtRisk, Lost], &[Repelled]]),
         (20, [&[Lost], &[AtRisk, Lost], &[Repelled, Held]]),
     ];
@@ -1530,7 +1538,7 @@ fn the_forecast_says_what_each_level_of_platform_holds_alone() {
 fn a_season_week_of_raids_takes_nothing_from_an_outpost_whose_platform_holds_its_ring() {
     let weight = |r: Resources| scaling::resource_weight(&r);
     let mut world = Headless::new(SEED, Pace::parse("season").unwrap());
-    let posts: [Post; 6] = [(9, 2, &[]), (12, 2, &[]), (14, 2, &[]), (16, 3, &[]), (18, 3, &[]), (20, 3, &[])];
+    let posts: [Post; 6] = [(9, 2, &[]), (12, 2, &[]), (14, 3, &[]), (16, 3, &[]), (18, 3, &[]), (20, 3, &[])];
     let keepers: Vec<u64> = posts.iter().map(|&(ring, level, garrison)| stand(&mut world, ring, level, garrison)).collect();
     for (pid, (ring, level, _)) in keepers.iter().zip(posts) {
         let odds = forecast_of(&world, *pid).odds;
@@ -1568,7 +1576,7 @@ fn story(ticks: u64, stops: &[u64]) -> (u64, Vec<&'static str>, Vec<u64>) {
     let mut e = Empire::join(world("blitz"), "Teller");
     let fid = e.fid;
     let at = in_outer_ring(&e.engine, |at, t| {
-        at.dist_from_origin() == 15
+        at.dist_from_origin() == 12
             && open_ground(t)
             && t.metal_density != Density::None
             && e.engine.world_gen.connected_neighbors(at).slice().iter().any(|n| open_ground(&e.engine.world_gen.generate_sector(*n)))

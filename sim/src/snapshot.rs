@@ -25,15 +25,6 @@ pub struct WorldMeta {
     pub worldgen_version: u32,
 }
 
-/// What an explore credit was paid for: it is paid once per player and sector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum ExploreCredit {
-    /// First successful boarding of the derelict here.
-    Boarded = 0,
-    /// The sector's chart was delivered to a dock.
-    Charted = 1,
-}
-
 /// One sector of one player's chart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnownRow {
@@ -66,7 +57,8 @@ pub struct Snapshot {
     pub outposts: BTreeMap<u64, Outpost>,
     pub pending_events: Vec<GameEvent>,
     pub explored: BTreeSet<(u64, u32)>,
-    pub credited: BTreeSet<(u64, u32, ExploreCredit)>,
+    /// (player, sector key): charts delivered and paid for.
+    pub charted: BTreeSet<(u64, u32)>,
     pub known: Vec<KnownRow>,
 }
 
@@ -93,7 +85,7 @@ impl Snapshot {
             outposts: BTreeMap::new(),
             pending_events: Vec::new(),
             explored: BTreeSet::new(),
-            credited: BTreeSet::new(),
+            charted: BTreeSet::new(),
             known: Vec::new(),
         }
     }

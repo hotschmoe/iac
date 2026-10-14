@@ -541,20 +541,20 @@ fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
         format!("this save is economy version 4, this build runs version {ECONOMY_VERSION}; start a new game"),
     );
 
-    let other_generator = text.replacen("\"worldgen_version\":4", "\"worldgen_version\":2", 1);
+    let other_generator = text.replacen("\"worldgen_version\":5", "\"worldgen_version\":2", 1);
     let (_, reply) = load(T0, other_generator.as_bytes());
-    assert!(reply["refused"].as_str().unwrap().contains("worldgen version 2, this build runs version 4"), "{reply}");
+    assert!(reply["refused"].as_str().unwrap().contains("worldgen version 2, this build runs version 5"), "{reply}");
 
-    assert_eq!(SAVE_FORMAT, 13);
-    let before_a_hold_was_told_once = text.replacen("\"format\":13", "\"format\":12", 1);
-    let (_, reply) = load(T0, before_a_hold_was_told_once.as_bytes());
+    assert_eq!(SAVE_FORMAT, 14);
+    let before_kills_and_charts_paid_in_resources = text.replacen("\"format\":14", "\"format\":13", 1);
+    let (_, reply) = load(T0, before_kills_and_charts_paid_in_resources.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert_eq!(reply["refused"], "this save is format 12, this build reads format 13; start a new game");
+    assert_eq!(reply["refused"], "this save is format 13, this build reads format 14; start a new game");
 
-    let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":14", 1);
+    let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":15", 1);
     let (_, reply) = load(T0, other_format.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert!(reply["refused"].as_str().unwrap().contains(&format!("format 14, this build reads format {SAVE_FORMAT}")), "{reply}");
+    assert!(reply["refused"].as_str().unwrap().contains(&format!("format 15, this build reads format {SAVE_FORMAT}")), "{reply}");
 
     let (_, reply) = load(T0, &document[..document.len() - 40]);
     assert_eq!(reply["refused"], "this save cannot be read: its contents do not match its checksum");

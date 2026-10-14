@@ -219,25 +219,21 @@ class State(unittest.TestCase):
 
     def test_score_row_and_headline(self):
         fs = fresh()
-        board = {"tick": fs["tick"], "entries": [{"rank": 1, "name": "Other", "agent": True, "score": 90, "core": 80, "combat": 10, "explore": 0},
-                                                 {"rank": 2, "name": fs["player"]["name"], "agent": True, "score": 40.04, "core": 30, "combat": 20, "explore": 0}],
-                 "bonus": {"banked": 20.0, "cap": 7.5, "room": -12.5, "core_to_count": 80.0}}
+        row = lambda rank, name, score, b, r, f: {"rank": rank, "name": name, "agent": True, "score": score, "buildings": b,
+                                                  "research": r, "fleet": f, "outpost": 0, "defence": 0}
+        board = {"tick": fs["tick"], "entries": [row(1, "Other", 90, 60, 20, 10), row(2, fs["player"]["name"], 40.04, 25.04, 10, 5)]}
         s = play.score_of(fs, board)
-        self.assertEqual((s["rank"], s["of"], s["score"]), (2, 2, 40.0))
-        self.assertTrue(s["bonus_capped"], "the server's room is below zero")
-        self.assertEqual(s["bonus"], {"banked": 20.0, "cap": 7.5, "room": -12.5, "core_to_count": 80.0})
-        self.assertEqual(s["leader"], {"name": "Other", "score": 90, "gap": 50.0})
+        self.assertEqual((s["rank"], s["of"], s["score"], s["fleet"]), (2, 2, 40.0, 5))
+        self.assertEqual(s["leader"], {"name": "Other", "score": 90, "gap": 50.0,
+                                       "gap_by_part": {"buildings": 35.0, "research": 10.0, "fleet": 5.0}})
+        self.assertNotIn("bonus", s)
         doc = play.build_state(fs, board, 5)
         head = play.headline("x", doc)
-        self.assertIn("SCORE 40.0 rank 2/2", head)
-        self.assertIn("CAPPED", head)
-        self.assertIn("leader Other 90.0, 50.0 ahead of you", head)
-        self.assertIn("12.5 over; another combat or explore point scores only once core passes 80.0", head)
+        self.assertIn("SCORE 40.0 rank 2/2 (buildings 25.0, research 10.0, fleet 5.0)", head)
+        self.assertIn("Standing: leader Other 90.0, 50.0 ahead of you (buildings +35.0, research +10.0, fleet +5.0)", head)
         self.assertIn("IDLE QUEUES", head)
         self.assertIn("Unspent stock scores 0", head)
-        under = dict(board, bonus={"banked": 5.0, "cap": 7.5, "room": 2.5, "core_to_count": 20.0})
-        self.assertFalse(play.score_of(fs, under)["bonus_capped"])
-        self.assertIn("2.5 more combat or explore points still score", play.headline("x", play.build_state(fs, under, 5)))
+        self.assertIn("Defences score 0", head)
 
     def test_next_items_say_what_is_short(self):
         fs = fresh()

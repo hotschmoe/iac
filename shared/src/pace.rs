@@ -18,11 +18,12 @@ pub const PACE_MAX: f64 = 20_000.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaceClass {
     /// Economy timers: divided by P (production, build, research, ship times,
-    /// regeneration, respawns).
+    /// regeneration).
     Economy,
     /// Attention timers and caps: P^0.75 (storage caps, raid cadence).
     Attention,
-    /// Finds: P^0.5 (loot value, derelict respawn, raid warning).
+    /// Finds: P^0.5 (loot value, derelict respawn, a pirate group's return
+    /// and mending, raid warning).
     Finds,
     /// Real time: never scaled (cooldowns, combat, fuel, boarding).
     RealTime,
@@ -49,7 +50,7 @@ pub const TIMER_CLASSES: &[(&str, PaceClass)] = &[
     ("REPAIR_TICKS", PaceClass::RealTime),
     ("STRANDED_RECOVERY_TICKS", PaceClass::RealTime),
     ("FLEE_MIN_ROUNDS", PaceClass::RealTime),
-    ("NPC_HEAL_SHARE", PaceClass::Economy),
+    ("NPC_HEAL_SHARE", PaceClass::Finds),
     ("SCAN_REVEAL_TICKS", PaceClass::RealTime),
     ("RAID_ROLL_INTERVAL", PaceClass::Attention),
     ("RAID_ROUNDS", PaceClass::RealTime),
@@ -71,13 +72,13 @@ pub fn timer_class(name: &str) -> Option<PaceClass> {
 
 /// Named multipliers; any positive number in range is also accepted.
 pub const PRESETS: &[Preset] = &[
-    Preset { name: "persistent", pace: 1.0, first_cruiser_s: 1_956_600, endgame_s: 5_172_900 },
-    Preset { name: "fortnight", pace: 5.0, first_cruiser_s: 435_000, endgame_s: 1_084_800 },
-    Preset { name: "season", pace: 10.0, first_cruiser_s: 215_640, endgame_s: 566_070 },
-    Preset { name: "sprint", pace: 70.0, first_cruiser_s: 26_880, endgame_s: 73_690 },
-    Preset { name: "dev", pace: 100.0, first_cruiser_s: 18_855, endgame_s: 50_080 },
-    Preset { name: "blitz", pace: 600.0, first_cruiser_s: 3_231, endgame_s: 8_482 },
-    Preset { name: "test", pace: 8000.0, first_cruiser_s: 264, endgame_s: 667 },
+    Preset { name: "persistent", pace: 1.0, first_cruiser_s: 1_779_300, endgame_s: 4_806_300 },
+    Preset { name: "fortnight", pace: 5.0, first_cruiser_s: 414_780, endgame_s: 1_062_480 },
+    Preset { name: "season", pace: 10.0, first_cruiser_s: 204_420, endgame_s: 544_920 },
+    Preset { name: "sprint", pace: 70.0, first_cruiser_s: 25_685, endgame_s: 72_630 },
+    Preset { name: "dev", pace: 100.0, first_cruiser_s: 18_150, endgame_s: 46_340 },
+    Preset { name: "blitz", pace: 600.0, first_cruiser_s: 3_236, endgame_s: 8_355 },
+    Preset { name: "test", pace: 8000.0, first_cruiser_s: 252, endgame_s: 642 },
 ];
 
 /// A named pace with the simulation's milestone estimates for a competent

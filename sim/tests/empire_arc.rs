@@ -15,7 +15,6 @@ use iac_shared::protocol::{
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 use iac_shared::world::NpcBehaviorType;
 use iac_sim::engine::{template_npc_id, AuthError};
-use iac_sim::score;
 
 fn recruit(name: &str) -> Empire {
     let mut engine = world("test");
@@ -45,25 +44,35 @@ fn chart_the_neighbourhood(e: &mut Empire) {
         .find(|&h| quiet(h) && !rivals.contains(&h))
         .expect("a quiet neighbour");
 
+    let delivered = |e: &Empire, mark: usize| {
+        e.since(mark, |k| match k {
+            EventKind::ChartDelivered(d) => Some(d.sectors),
+            _ => None,
+        })
+    };
+    let paid_for_charts = |e: &Empire, mark: usize| {
+        e.since(mark, |k| match k {
+            EventKind::Stockpile(s) if s.cause == StockpileCause::Charts => Some(s.amount),
+            _ => None,
+        })
+    };
+    let before = e.score_row();
     let mark = e.mark();
     e.travel(out);
-    assert_eq!(e.engine.players[&e.pid].explore_points, 0.0, "nothing is credited in the field");
+    assert!(delivered(e, mark).is_empty(), "nothing is paid in the field");
+    let stock = e.engine.players[&e.pid].resources;
     e.travel(home);
-    let delivered = e.since(mark, |k| match k {
-        EventKind::ChartDelivered(d) => Some(d.clone()),
-        _ => None,
-    });
-    assert_eq!(delivered.len(), 1);
-    let paid = e.engine.players[&e.pid].explore_points;
-    assert!(paid > 0.0 && (paid - delivered[0].points).abs() < 1e-5);
+    assert_eq!(delivered(e, mark), [1], "one sector charted");
+    let rating = scaling::threat_rating(scaling::npc_power(out.dist_from_origin()));
+    let paid = paid_for_charts(e, mark);
+    assert_eq!(paid, [scaling::split_loot(scaling::chart_value(rating))], "the chart pays its value in resources");
+    assert!(e.engine.players[&e.pid].resources.metal >= stock.metal + paid[0].metal, "into the stockpile");
+    assert_eq!(e.score_row().score, before.score, "and scores nothing until it is built into something");
 
-    let row = e.score_row();
-    assert!(row.explore > score::EXTRA_CAP * row.core, "the chart outweighs a new empire's core");
-    assert!((row.score - row.core * (1.0 + score::EXTRA_CAP)).abs() < 1e-4, "extras are capped at a quarter of the core");
-
+    let mark = e.mark();
     e.travel(out);
     e.travel(home);
-    assert_eq!(e.engine.players[&e.pid].explore_points, paid, "the same sector never pays twice");
+    assert!(delivered(e, mark).is_empty() && paid_for_charts(e, mark).is_empty(), "the same sector never pays twice");
 }
 
 const HALF: f64 = scaling::CANCEL_REFUND_FRACTION;
@@ -378,9 +387,7 @@ fn hunt_pirates(e: &mut Empire, lair: Hex) {
     let home = e.engine.players[&pid].homeworld;
 
     let mut piles = Vec::new();
-    let mut points = Vec::new();
     for round in 0..4 {
-        let before = e.engine.players[&pid].combat_points;
         let mark = e.mark();
         if round == 0 {
             e.travel(lair);
@@ -395,18 +402,29 @@ fn hunt_pirates(e: &mut Empire, lair: Hex) {
         let (pile, _) = pile_of(&e.log[mark..]);
         assert!(e.log[mark..].iter().any(|ev| matches!(&ev.kind, EventKind::CombatEnded(c) if c.player_victory && c.mine)));
         piles.push(pile.total());
-        points.push(e.engine.players[&pid].combat_points - before);
+        let row = e.score_row();
+        assert_eq!(
+            row.score,
+            row.buildings + row.research + row.fleet + row.outpost + row.defence,
+            "a kill adds nothing to the score: it pays its wreckage",
+        );
 
+        let fleet = e.fleet();
+        let mut room = fleet.cargo_capacity - fleet.cargo.total();
+        let mut take = |amount: f64| {
+            let taken = amount.min(room);
+            room -= taken;
+            taken
+        };
+        let fits = Resources { metal: take(pile.metal), crystal: take(pile.crystal), deuterium: take(pile.deuterium) };
         e.order(Command::CollectSalvage { fleet_id: fid }).expect("scoop the wreckage");
         let collected = e.since(mark, |k| match k {
             EventKind::SalvageCollected(c) => Some(c.resources),
             _ => None,
         });
-        assert_eq!(collected.last(), Some(&pile), "the hold takes exactly what was advertised");
+        assert_eq!(collected.last(), Some(&fits), "the hold takes what was advertised, as far as it has room");
     }
-    assert!(points[0] > 0.0);
     assert!(piles.windows(2).all(|w| w[1] < w[0]), "each repeat kill leaves less: {piles:?}");
-    assert!(points.windows(2).all(|w| w[1] < w[0]), "and pays less: {points:?}");
 
     let stock = e.state().player.resources;
     e.travel(home);
@@ -479,15 +497,18 @@ fn settle_the_score(e: &mut Empire) {
         .flat_map(|f| &f.ships)
         .map(|s| s.count as f32 * scaling::resource_weight(&s.ship_class.build_cost()))
         .sum();
-    let core = scaling::econ_points(&buildings, &research) + fleet;
-
     let row = e.score_row();
-    assert!((row.core - core).abs() < 1e-3 * core, "core {} vs what the empire holds {core}", row.core);
-    let player = &e.engine.players[&e.pid];
-    assert_eq!((row.combat, row.explore), (player.combat_points, player.explore_points));
-    assert!(row.combat > 0.0 && row.explore > 0.0);
-    let expected = core + (row.combat + row.explore).min(score::EXTRA_CAP * core);
-    assert!((row.score - expected).abs() < 1e-3 * expected, "{} vs {expected}", row.score);
+    let built = scaling::building_points(&buildings) + scaling::research_points(&research);
+    assert!(
+        (row.buildings + row.research - built).abs() < 1e-3 * built,
+        "buildings and research {} + {} vs what the empire holds {built}",
+        row.buildings,
+        row.research,
+    );
+    assert!((row.fleet - fleet).abs() < 1e-3 * fleet, "fleet {} vs the ships it has {fleet}", row.fleet);
+    assert_eq!((row.outpost, row.defence), (0.0, 0.0));
+    let expected = built + fleet;
+    assert!((row.score - expected).abs() < 1e-3 * expected, "{} vs {expected}: what the empire has built and keeps", row.score);
 
     let outcome = e.engine.execute(e.pid, Command::Leaderboard { limit: 10 });
     let Some(ServerMessage::Leaderboard(table)) = outcome.reply else { panic!("no table") };

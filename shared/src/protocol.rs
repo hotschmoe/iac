@@ -703,11 +703,15 @@ pub struct ExchangeQuote {
     pub refusal: Option<String>,
 }
 
-/// The score table: one ranking for every player, human or agent.
-/// `score = core + min(combat + explore, 0.25 * core)`, where `core` counts
-/// completed building and research levels, living ships and half of the
-/// defence structures, each at its cost weighted 1 : 1.5 : 2 for
-/// metal : crystal : deuterium, per thousand.
+/// The score table: one ranking for every player, human or agent. A score
+/// is what an empire has built and keeps:
+/// `score = buildings + research + fleet + outpost + defence`, each part
+/// the cost of what stands, weighted 1 : 1.5 : 2 for
+/// metal : crystal : deuterium, per thousand. `fleet` is the ships the
+/// empire has now, its Solar Satellites among them, so a fleet destroyed
+/// leaves the score; `defence` is the defence structures at the share of
+/// their cost the score gives them (`iac_sim::score::DEFENCE_SHARE`, none
+/// today). Kills, charts and derelicts score nothing: they pay in resources.
 ///
 /// Built-in bots are part of the world but not of the ranking: they are
 /// never in `entries` and take no rank there. They are listed in `bots`,
@@ -725,26 +729,6 @@ pub struct LeaderboardReply {
     /// The world's built-in bots, best first; absent when it has none.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub bots: Vec<LeaderboardEntry>,
-    /// Where the asking player's combat and exploration points stand
-    /// against the share of core they may add.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub bonus: Option<BonusRoom>,
-}
-
-/// Combat and exploration points against the cap on what they add to a
-/// score.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct BonusRoom {
-    /// Combat plus exploration points earned, before the cap.
-    pub banked: f32,
-    /// The most they add to the score now: their share of core.
-    pub cap: f32,
-    /// `cap` less `banked`: the points still to be earned before the cap
-    /// is reached, below zero by as many as it is overrun.
-    pub room: f32,
-    /// The core at which all the points banked count, past which another
-    /// point earned would count as well.
-    pub core_to_count: f32,
 }
 
 /// Start of every built-in bot's account name, reserved for them
@@ -768,11 +752,12 @@ pub struct LeaderboardEntry {
     pub name: String,
     pub agent: bool,
     pub score: f32,
-    pub core: f32,
-    /// Raw combat points, before the 25 percent cap.
-    pub combat: f32,
-    /// Raw exploration points, before the 25 percent cap.
-    pub explore: f32,
+    pub buildings: f32,
+    pub research: f32,
+    pub fleet: f32,
+    /// The finished levels of the empire's outpost, while it stands.
+    pub outpost: f32,
+    pub defence: f32,
 }
 
 /// Answer to `preview_move`: what a jump costs and what waits at the far end.
@@ -1551,7 +1536,7 @@ pub struct SectorState {
     pub live: bool,
 }
 
-/// A sector's chart is made by entering it and pays explore points once.
+/// A sector's chart is made by entering it and pays once, in resources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChartMark {
@@ -2592,34 +2577,29 @@ pub struct SiteExploredEvent {
     pub fleet_id: u64,
     pub sector: Hex,
     pub tier: u8,
-    /// Loot taken aboard (cargo-capped; overflow drops as sector salvage).
+    /// Loot taken aboard, a relic's worth included (cargo-capped; overflow
+    /// drops as sector salvage).
     pub resources: Resources,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub recovered_ship: Option<ShipClass>,
     /// Instant tech level granted by a recovered data core.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tech_cache: Option<ResearchType>,
-    /// An ancient relic came aboard (worth 25 explore points; no other use yet).
+    /// An ancient relic came aboard: the loot of the site is worth
+    /// `RELIC_LOOT_MULT` times more for it.
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub relic: bool,
-    /// Explore points this boarding earned (0 when the site was boarded before).
-    #[serde(skip_serializing_if = "is_zero", default)]
-    pub points: f32,
-}
-
-fn is_zero(v: &f32) -> bool {
-    *v == 0.0
 }
 
 /// A fleet docked at the homeworld, or arrived at its owner's finished
-/// outpost, and handed over the sectors it charted.
+/// outpost, and handed over the sectors it charted. What they paid into
+/// the stockpile is a `StockpileEvent` of cause `Charts`; what a full store
+/// has no room for is lost.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChartDeliveredEvent {
     pub fleet_id: u64,
     /// Sectors newly credited to the empire.
     pub sectors: u32,
-    /// Explore points they earned.
-    pub points: f32,
 }
 
 /// Whatever killed the crew is still aboard.
@@ -2955,15 +2935,18 @@ pub struct CombatEndedEvent {
 /// Resources went into the stockpile, or came out of it, other than by
 /// production and by paying for an order, a repair or fuel: what a fleet's
 /// hold put into it at the home dock, what `load` took from it into a hold,
-/// and wreckage lying on the homeworld that a docked fleet scooped into it.
+/// wreckage lying on the homeworld that a docked fleet scooped into it, and
+/// what the charts a fleet delivered paid.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockpileEvent {
     pub player_id: u64,
     /// The fleet whose hold it came from or went to; for `Wreckage`, the
-    /// docked fleet that scooped it.
+    /// docked fleet that scooped it; for `Charts`, the fleet that delivered
+    /// them.
     pub fleet_id: u64,
     pub cause: StockpileCause,
-    /// What went in (`Unloaded`, `Wreckage`) or came out (`Loaded`).
+    /// What went in (`Unloaded`, `Wreckage`, `Charts`) or came out
+    /// (`Loaded`).
     pub amount: Resources,
 }
 
@@ -2979,6 +2962,9 @@ pub enum StockpileCause {
     Loaded,
     /// Wreckage on the homeworld, mostly a repelled raid's.
     Wreckage,
+    /// Charts delivered to a dock: `scaling::chart_value` for each sector
+    /// new to the empire, as far as the caps allow.
+    Charts,
 }
 
 impl StockpileCause {
@@ -2989,6 +2975,7 @@ impl StockpileCause {
             StockpileCause::Unloaded => "unloaded into the stockpile",
             StockpileCause::Loaded => "loaded from the stockpile",
             StockpileCause::Wreckage => "scooped wreckage at home into the stockpile",
+            StockpileCause::Charts => "delivered charts, paid into the stockpile",
         }
     }
 }

@@ -15,9 +15,7 @@
 //
 // The home planner (`home.rs`) is the same for every attention pattern; only
 // how often it runs and how far ahead it queues differ. Fleet handling
-// (`field.rs`) either assigns doctrines or pilots. A bot reads its own row
-// of the leaderboard, and the wings that fly for points stay home once
-// combat and exploration have filled the score cap.
+// (`field.rs`) either assigns doctrines or pilots.
 //
 // Everything a bot carries from one turn to the next is its `Memory`. With
 // its `Style` that is a `BotRecord`, which the engine keeps per bot account
@@ -35,7 +33,6 @@ use std::collections::BTreeMap;
 use iac_shared::protocol::{Command, GameState, ServerMessage};
 use serde::{Deserialize, Serialize};
 
-use crate::score::ExtraRule;
 use crate::script::{Order, Outlook, ScriptedPlayer};
 
 pub use roster::Roster;
@@ -51,9 +48,6 @@ pub const DEFAULT_SESSIONS_PER_DAY: u64 = 4;
 pub const MAX_SESSIONS_PER_DAY: u64 = 24;
 /// How often a present player revisits the homeworld queues.
 const PLAN_PERIOD: u64 = 20;
-/// Points are chased until they exceed the cap by this factor: the cap
-/// rises with the empire, so a little is banked ahead.
-const CAP_HEADROOM: f32 = 1.2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -115,14 +109,11 @@ pub struct Style {
     pub attention: Attention,
     /// Look-ins per day of the check-in and hybrid patterns.
     pub sessions_per_day: u64,
-    /// Fly for combat and exploration points whatever the score cap says.
-    /// Measures what the map offers; a bot that heeds the cap stops short.
-    pub ignore_cap: bool,
 }
 
 impl Style {
     pub fn new(personality: Personality, attention: Attention) -> Style {
-        Style { personality, attention, sessions_per_day: DEFAULT_SESSIONS_PER_DAY, ignore_cap: false }
+        Style { personality, attention, sessions_per_day: DEFAULT_SESSIONS_PER_DAY }
     }
 
     /// "explorer/check-in".
@@ -169,17 +160,8 @@ pub struct Memory {
     /// Deuterium of the unit the shipyard wanted at the last plan and could
     /// not pay for; the pilot does not fly it away.
     yard_deuterium: f64,
-    /// The bot's own row of the leaderboard, as last asked.
-    standing: Option<Standing>,
     /// The lanes each fleet is following, by fleet id.
     routes: BTreeMap<u64, field::Route>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-struct Standing {
-    core: f32,
-    /// Combat plus exploration points, before the cap.
-    extra: f32,
 }
 
 /// A bot account as the world stores it.
@@ -212,9 +194,6 @@ pub struct Bot {
     memory: Memory,
     /// Asked and answered within a turn, so never part of the record.
     odds: field::Odds,
-    /// The score rule of the world it plays in: the world's, not the bot's,
-    /// so not part of the record either.
-    rule: ExtraRule,
 }
 
 impl Bot {
@@ -232,13 +211,7 @@ impl Bot {
             player_id: 0,
             memory: record.memory,
             odds: field::Odds::new(),
-            rule: ExtraRule::GAME,
         }
-    }
-
-    /// The same bot in a world scored by `rule`, for a run that measures one.
-    pub fn under(self, rule: ExtraRule) -> Bot {
-        Bot { rule, ..self }
     }
 
     pub fn record(&self) -> BotRecord {
@@ -249,23 +222,12 @@ impl Bot {
         self.style
     }
 
-    /// Whether more combat or exploration points would still raise the
-    /// score. Under a rule with no hard cap every point does.
-    fn points_wanted(&self) -> bool {
-        self.style.ignore_cap
-            || self.memory.standing.is_none_or(|s| match self.rule {
-                ExtraRule::Cap(share) => s.extra < CAP_HEADROOM * share * s.core,
-                ExtraRule::Soft(_) | ExtraRule::Uncapped => true,
-            })
-    }
-
     /// What the admiral is told for the turn at `turn`.
     fn brief(&self, turn: u64) -> field::Brief {
         let away_for = (self.style.attention != Attention::HandsOn).then(|| self.absence(turn));
         field::Brief {
             personality: self.style.personality,
             away_for,
-            points_wanted: self.points_wanted(),
             yard_deuterium: self.memory.yard_deuterium,
         }
     }
@@ -373,7 +335,6 @@ impl ScriptedPlayer for Bot {
             let before = orders.len();
             let yard_saving = home::plan(state, self.style.personality, away_for, orders);
             let placed = orders.len() > before;
-            orders.push(Order::Command(Command::Leaderboard { limit: 1 }));
             // A player who stays queues one order at a time: once one is
             // placed it looks again at once, in case the next can follow.
             let again = if placed && away_for.is_none() { 1 } else { PLAN_PERIOD };
@@ -396,18 +357,9 @@ impl ScriptedPlayer for Bot {
     }
 
     fn hear(&mut self, reply: &ServerMessage) {
-        match reply {
-            ServerMessage::Leaderboard(board) => {
-                let rows = board.entries.iter().chain(&board.bots).chain(&board.you);
-                if let Some(row) = rows.into_iter().find(|row| row.name == self.name) {
-                    self.memory.standing = Some(Standing { core: row.core, extra: row.combat + row.explore });
-                }
-            }
-            ServerMessage::Odds(answer) => {
-                let rated = answer.sectors.iter().map(|s| ((answer.fleet_id, s.sector.to_key()), s.ratio));
-                self.odds.extend(rated);
-            }
-            _ => {}
+        if let ServerMessage::Odds(answer) = reply {
+            let rated = answer.sectors.iter().map(|s| ((answer.fleet_id, s.sector.to_key()), s.ratio));
+            self.odds.extend(rated);
         }
     }
 

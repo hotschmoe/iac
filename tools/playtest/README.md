@@ -15,11 +15,20 @@ python3 -m unittest discover -s tools/playtest/tests    # tests for the CLI's pa
 - Grok agents run with `rm`, `git`, `kill`, `pkill`, `killall` and `cargo` denied.
 - `IAC_PORT` defaults to 7777; pick another when something else holds it.
 - `IAC_PACE` sets the world pace for the new world (a number or a preset:
-  persistent, fortnight, season, sprint, dev, blitz, test). One hour of play
-  wants `blitz` (x600: the endgame in about two and a half hours of play, the
-  first Cruiser in about 54 minutes); `test` (x8000) plays the arc in 11 minutes.
-  Unset means `persistent` (x1), where nothing finishes within an hour. The
-  pace is fixed for the life of the world.
+  persistent, fortnight, season, sprint, dev, blitz, test). An hour of agents
+  wants `IAC_PACE=1200`: the hands-on bots order their first Cruiser at 32 to
+  33 minutes there (three seeds, 2026-10-14), which leaves half the hour for
+  Cruisers, flight and the outer ring; at `blitz` (x600) the first Cruiser
+  comes at 54 to 60 minutes in two seeds of three and the hour ends on Light
+  and Heavy Fighters. A person reading the rules and playing the web client
+  wants a slower world: by the planning simulation `IAC_PACE=300` puts the second Shipyard level and the
+  first Light Fighter at about 24 minutes and the first Cruiser past the hour;
+  at `blitz` a mine finishes while a person reads its price, and the web
+  account of the 2026-10-14 playtest never left its start. A table of agents
+  and people is a choice between the two; no preset is either of them.
+  `test` (x8000) plays the arc in 11 minutes. Unset means `persistent` (x1),
+  where nothing finishes within an hour. The pace is fixed for the life of the
+  world.
 - Players are declared agents (`agent: true` at login), so the leaderboard
   marks them; `./play score` shows it.
 - Kinds: `grok`, `pi` (supervised CLI agents), `manual` (you drive it, e.g. Claude subagents told to
@@ -34,8 +43,8 @@ about 0.1 s.
 
 | command | what it does |
 |---------|--------------|
-| `state [--pretty] [--keys a,b]` | One compact JSON document: `stock`, `cap`, `per_s` (income), `levels`, `queues` (`build`/`research`/`ship`, each with `slots`, `depth`, `running`, `waiting` with `short` shortfall and `covered_in_s`, `room`, `open`, and `note` when a free slot starts nothing: a `reserve` holding it, or every waiting order short, with the time to cover the first, read from the server's `waiting_on`), `idle`, `next` (cost, seconds, `ok`/`locked` per catalog entry, and `short` by resource with `covered_in_s` when not payable), `fleets` (position, state, policy, fuel, range, power, cargo, exits, hostiles), `docked`, `defence`, `score` (rank, core, combat, explore, `bonus` as the server sends it: `banked`, `cap`, `room`, `core_to_count`; `bonus_capped`; `leader` with the `gap`), `score_rule`, `minutes_left`, `alerts`, `world`. `--keys` prints only the top-level keys named. |
-| `status [--brief]` | Headline (score, rank, minutes left, idle queues, a `Standing:` line with the leader, the gap and the bonus room, the scoring rule), then stock and queues with waiting items shown under their queue with shortfall, income cover time and the queue's note, fleets and sectors. `--brief` is the headline plus one line per queue and fleet. |
+| `state [--pretty] [--keys a,b]` | One compact JSON document: `stock`, `cap`, `per_s` (income), `levels`, `queues` (`build`/`research`/`ship`, each with `slots`, `depth`, `running`, `waiting` with `short` shortfall and `covered_in_s`, `room`, `open`, and `note` when a free slot starts nothing: a `reserve` holding it, or every waiting order short, with the time to cover the first, read from the server's `waiting_on`), `idle`, `next` (cost, seconds, `ok`/`locked` per catalog entry, and `short` by resource with `covered_in_s` when not payable), `fleets` (position, state, policy, fuel, range, power, cargo, exits, hostiles), `docked`, `defence`, `score` (rank, buildings, research, fleet, outpost, defence; `leader` with the `gap`, in all and by part), `score_rule`, `minutes_left`, `alerts`, `world`. `--keys` prints only the top-level keys named. |
+| `status [--brief]` | Headline (score with its parts, rank, minutes left, idle queues, a `Standing:` line with the leader and the gap, in all and by part, the scoring rule), then stock and queues with waiting items shown under their queue with shortfall, income cover time and the queue's note, fleets and sectors. `--brief` is the headline plus one line per queue and fleet. |
 | `costs [section]` | Next 3 levels per upgrade (levels past the first are extrapolated along the cost curve and marked `~`), time, what each level unlocks, and for mines the extra output per second and payback. |
 | `do '<json>' ['<json>' ...]` | Commands in order (several arguments, one JSON array, or newline-separated). One result line each: `ok ... -> started, done in 3s`, `queued [i] waiting for ...`, or `ERR ...`; then new events and a `queues:` line. The server's errors carry no command id, so every order is followed by a fence, `odds` for a fleet in no sector (fleet 0, refused, when there is none): the server answers one player's messages in order, so what comes back between an order and its fence's answer is that order's own. By default the next order is sent only once the last was answered and not refused, so the batch stops at the first refusal and lists what it did not send (`NOT SENT`); an order takes up to a tick. `--keep-going` sends every order behind its fence at once, answered in one tick. `--fast` sends without fences and returns after 0.15 s without confirmation. `{"action":"policy_update",...}` is sent as the message `{"type":"policy_update",...}`. |
 | `wait [secs] [--until idle\|event\|done] [--mine]` | Default 45 s, never more than 60 s (it says so). Returns early when a queue gets a free slot or an idle queue becomes payable, a manual fleet arrives or stops, a fleet is lost or blocked, or an alert fires. `idle`: queues and alerts only. `event`: also any completion, arrival or fight. `done`: queues empty and fleets idle. Prints the reasons, the collapsed events and a `queues:` line. |

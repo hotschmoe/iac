@@ -22,14 +22,17 @@ WEIGHT = {"metal": 1.0, "crystal": 1.5, "deuterium": 2.0}
 WAIT_DEFAULT, WAIT_MAX = 45, 60
 SEND_GAP = 0.25
 ACK_CAP = 1.6
-SCORE_RULE = ("score = core + min(combat + explore, 25% of core); core = built levels, living ships and half of "
-              "defences at cost (metal 1: crystal 1.5: deut 2). Unspent stock scores 0: spend it. Kills pay in full "
-              "up to 4x your strength and less above; repeat kills in one sector pay less; charts pay when a fleet "
-              "docks with them; derelicts pay on first boarding.")
+SCORE_RULE = ("score = what your empire has built and keeps: buildings + research + the ships you have now "
+              "(Solar Satellites included) + outpost levels, each at cost (metal 1: crystal 1.5: deut 2). Defences "
+              "score 0. A fleet destroyed leaves the score. Unspent stock scores 0: spend it. Kills, charts and "
+              "derelicts score nothing themselves: they pay in resources (a kill's wreckage, worth scooping and "
+              "bringing home; a repelled raid's wreckage at home; charts paid into the stockpile when a fleet docks "
+              "with them; a derelict's loot), which score once you build with them.")
 QUEUE_NAMES = {"build": "Building", "research": "Research", "ship": "Ship"}
+SCORE_PARTS = ("buildings", "research", "fleet", "outpost", "defence")
 ALERT_LEVELS = ("Warning", "Critical")
-CHART_MARKS = {"aboard": "aboard one of your fleets; it scores when that fleet docks at home alive",
-               "delivered": "delivered (already scored; no need to visit again)"}
+CHART_MARKS = {"aboard": "aboard one of your fleets; it pays when that fleet docks at home or your outpost alive",
+               "delivered": "delivered (already paid; no need to visit again)"}
 NOTABLE = {"BuildingCompleted", "ResearchCompleted", "ShipBuilt", "DefenceBuilt", "FleetArrived", "CombatStarted",
            "CombatEnded", "ShipsLost", "FleetDestroyed", "RaidIncoming", "RaidResolved", "SiteExplored", "SiteAmbush",
            "SalvageCollected", "ChartDelivered", "ScanCompleted", "Exchanged", "Stockpile"}
@@ -416,7 +419,8 @@ def event_text(e):
 
 
 STOCKPILE_PHRASES = {"unloaded": "unloaded into the stockpile", "loaded": "loaded from the stockpile",
-                     "wreckage": "scooped wreckage at home into the stockpile"}
+                     "wreckage": "scooped wreckage at home into the stockpile",
+                     "charts": "delivered charts, paid into the stockpile"}
 
 
 def stockpile_words(e):
@@ -952,8 +956,8 @@ def recent_alerts(name, tick, window=300):
 
 
 def score_of(fs, board):
-    """Own row of the cached leaderboard, with rank out of the players listed, the bonus room the server
-    sent for this player, and the leader with the gap to them."""
+    """Own row of the cached leaderboard, with rank out of the players listed, its parts, and the leader
+    with the gap to them, in all and by part."""
     if not board:
         return None
     me = fs["player"]["name"]
@@ -962,38 +966,26 @@ def score_of(fs, board):
     if not mine:
         return None
     total = max([e["rank"] for e in rows] or [0])
-    out = {"score": round(mine["score"], 1), "rank": mine["rank"], "of": total, "core": round(mine["core"], 1),
-           "combat": round(mine["combat"], 1), "explore": round(mine["explore"], 1),
+    out = {"score": round(mine["score"], 1), "rank": mine["rank"], "of": total,
+           **{part: round(mine[part], 1) for part in SCORE_PARTS},
            "age_s": max(fs["tick"] - board.get("tick", fs["tick"]), 0)}
-    room = board.get("bonus")
-    if room:
-        out["bonus"] = {k: round(room[k], 1) for k in ("banked", "cap", "room", "core_to_count")}
-        out["bonus_capped"] = room["room"] < 0
     lead = next((e for e in board.get("entries") or [] if e["rank"] == 1), None)
     if lead:
-        out["leader"] = {"name": lead["name"], "score": round(lead["score"], 1), "gap": round(lead["score"] - mine["score"], 1)}
+        out["leader"] = {"name": lead["name"], "score": round(lead["score"], 1), "gap": round(lead["score"] - mine["score"], 1),
+                         "gap_by_part": {part: round(lead[part] - mine[part], 1) for part in SCORE_PARTS
+                                         if round(lead[part] - mine[part], 1)}}
     return out
 
 
-def bonus_words(s):
-    """What the bonus room says: banked against the cap, by how much, and the core at which points score again."""
-    b = s.get("bonus")
-    if not b:
-        return ""
-    if b["room"] < 0:
-        return (f"bonus OVER the cap: {b['banked']:.1f} banked against a cap of {b['cap']:.1f}, {-b['room']:.1f} over; "
-                f"another combat or explore point scores only once core passes {b['core_to_count']:.1f}")
-    return (f"bonus {b['banked']:.1f} banked against a cap of {b['cap']:.1f}: {b['room']:.1f} more combat or explore "
-            f"points still score")
-
-
 def leader_words(s):
+    """The leader, how far ahead, and in which parts of the score."""
     lead = s.get("leader")
     if not lead:
         return ""
     if s["rank"] == 1:
         return "you lead"
-    return f"leader {lead['name']} {lead['score']:.1f}, {lead['gap']:.1f} ahead of you"
+    parts = ", ".join(f"{part} {gap:+.1f}" for part, gap in lead.get("gap_by_part", {}).items())
+    return f"leader {lead['name']} {lead['score']:.1f}, {lead['gap']:.1f} ahead of you" + (f" ({parts})" if parts else "")
 
 
 def build_state(fs, board=None, left=None, alerts=None):
@@ -1135,11 +1127,12 @@ def wait_reasons(base, cur, events, until="any"):
 
 def headline(name, doc):
     s = doc["score"]
-    sc = (f"SCORE {s['score']:.1f} rank {s['rank']}/{s['of']} (core {s['core']:.1f}, combat {s['combat']:.1f}, explore {s['explore']:.1f}"
-          + (", bonus CAPPED" if s.get("bonus_capped") else "") + ")") if s else "SCORE unknown yet"
+    sc = (f"SCORE {s['score']:.1f} rank {s['rank']}/{s['of']} ("
+          + ", ".join(f"{part} {s[part]:.1f}" for part in SCORE_PARTS if s[part] or part in ("buildings", "research", "fleet"))
+          + ")") if s else "SCORE unknown yet"
     idle = ", ".join(doc["idle"]) if doc["idle"] else "none"
     left = doc["minutes_left"]
-    standing = "; ".join(w for w in (leader_words(s), bonus_words(s)) if w) if s else ""
+    standing = leader_words(s) if s else ""
     return (f"{sc} | {'' if left is None else '%.0f min left | ' % left}IDLE QUEUES: {idle}\n"
             + (f"Standing: {standing}\n" if standing else "")
             + f"Scoring: {doc['score_rule']}")
@@ -1454,14 +1447,15 @@ def cmd_score(name, limit=10):
     if not board:
         print("No answer from the server yet. Try again shortly.")
         return
-    print("rank  name                  score    core  combat  explore   (one table for humans and AI agents)")
+    parts = lambda e: " ".join(f"{e[part]:>9.1f}" for part in SCORE_PARTS)
+    print("rank  name                    score buildings  research     fleet   outpost   defence   (one table for humans and AI agents)")
     for e in board["entries"] + ([board["you"]] if board.get("you") else []):
         tag = "AI " if e["agent"] else "   "
-        print(f"{e['rank']:>4}  {e['name']:<20} {tag}{e['score']:>7.1f} {e['core']:>7.1f} {e['combat']:>7.1f} {e['explore']:>8.1f}")
+        print(f"{e['rank']:>4}  {e['name']:<20} {tag}{e['score']:>7.1f} {parts(e)}")
     if board.get("bots"):
         print("built-in bots (names start BOT-; they play by your rules and are not ranked with you):")
         for e in board["bots"]:
-            print(f" BOT  {e['name']:<20}    {e['score']:>7.1f} {e['core']:>7.1f} {e['combat']:>7.1f} {e['explore']:>8.1f}")
+            print(f" BOT  {e['name']:<20}    {e['score']:>7.1f} {parts(e)}")
     print(board.get("rule") or SCORE_RULE)
 
 
@@ -1975,7 +1969,7 @@ USAGE = """usage: play <command>
   state [--pretty] [--keys a,b,...]
                          ONE compact JSON document, returns at once: stock, caps, income, levels, queues (running,
                          waiting, shortfalls, a note when a free slot starts nothing), idle queues, next costs (with
-                         what is short), fleets, score (rank, bonus room against the cap, the leader and the gap),
+                         what is short), fleets, score (rank, its parts, the leader and the gap),
                          minutes left, alerts; --keys prints only those top-level keys, e.g. --keys stock,queues,score
   status [--brief]       readable view: headline (score, rank, time, idle queues, scoring rule), stock, queues with
                          their waiting items and shortfalls, fleets and their sector; --brief is the short form

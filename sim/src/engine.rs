@@ -2,7 +2,7 @@
 // Ported from Zig engine.zig.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -58,10 +58,9 @@ use iac_shared::protocol::{
 use crate::auth::{self, TokenHash};
 use crate::bot::BotRecord;
 use crate::combat::{self, Squad, Troop};
-use crate::score;
 use crate::intel::KnownSectors;
 use crate::odds::{self, Force};
-use crate::snapshot::{ExploreCredit, Snapshot, WorldMeta};
+use crate::snapshot::{Snapshot, WorldMeta};
 
 // ── Core Data Types ───────────────────────────────────────────────
 
@@ -458,9 +457,6 @@ pub struct Player {
     /// Self-declared when the account was created; labels the leaderboard
     /// and nothing else.
     pub agent: bool,
-    /// Score from kills and from exploration, before the 25 percent cap.
-    pub combat_points: f32,
-    pub explore_points: f32,
     /// Ancient relics found; reserved for the item system.
     pub relics: u32,
     /// The exchange meter as it read at `exchange_tick`, in weight units. It
@@ -610,8 +606,6 @@ pub struct Combat {
     pub npc_fleet_ids: Vec<u64>,
     /// Rounds fought.
     pub round: u32,
-    /// The most power the players' side has brought to bear, for scoring.
-    pub peak_power: f32,
     /// Rounds in a row that took no hull from either side.
     pub quiet_rounds: u16,
     /// Fleets that jumped out of the fight, in the order they left: whom a
@@ -1348,8 +1342,9 @@ pub struct GameEngine {
 
     /// (player, sector key) pairs the player has entered.
     explored: KeySet<(u64, u32)>,
-    /// Explore credits already paid: once per player and sector.
-    credited: KeySet<(u64, u32, ExploreCredit)>,
+    /// (player, sector key) pairs whose chart the player has delivered and
+    /// been paid for: once per player and sector.
+    charted: KeySet<(u64, u32)>,
     /// (player, sector key) whose chart mark may have changed since the
     /// last chart refresh: delivered, or lost with the fleet that held it.
     pub(crate) chart_news: Vec<(u64, u32)>,
@@ -1382,7 +1377,7 @@ impl GameEngine {
         let Snapshot {
             world_seed, meta, tick, next_id, players, fleets, npc_fleets, combats,
             sector_overrides, policies, scan_reveals, raid_states, storage_marks, home_salvage_warned,
-            harvest_reports, bots, outposts, pending_events, explored, credited, known,
+            harvest_reports, bots, outposts, pending_events, explored, charted, known,
         } = snapshot;
 
         GameEngine {
@@ -1407,7 +1402,7 @@ impl GameEngine {
             pending_arrivals: Vec::new(),
             next_id,
             explored: explored.into_iter().collect(),
-            credited: credited.into_iter().collect(),
+            charted: charted.into_iter().collect(),
             chart_news: Vec::new(),
             known: KnownSectors::load(known),
             odds_memo: RefCell::default(),
@@ -1437,7 +1432,7 @@ impl GameEngine {
             outposts: self.outposts.clone(),
             pending_events: self.pending_events.clone(),
             explored: self.explored.iter().copied().collect(),
-            credited: self.credited.iter().copied().collect(),
+            charted: self.charted.iter().copied().collect(),
             known: self.known.rows(),
         }
     }
@@ -1660,8 +1655,6 @@ impl GameEngine {
 
             let fleets: Vec<Troop> = fleet_ids.iter().map(|id| self.fleets[id].troop()).collect();
             let groups: Vec<Troop> = group_ids.iter().map(|id| self.npc_fleets[id].troop()).collect();
-            let engaged: f32 = fleet_ids.iter().map(|id| fleet_power(&self.fleets[id])).sum();
-
             let mut dice = combat::Dice::of_round(self.world_gen.world_seed, sector, self.current_tick, round);
             let fought = combat::round(&fleets, &groups, &mut dice);
             let quiet = !fought.hull_lost();
@@ -1690,7 +1683,7 @@ impl GameEngine {
                 ..battle_side(&fought.hostiles)
             };
             let report = BattleRoundEvent { sector, round, fleets: fleet_side, hostiles: hostile_side, mine: false, raid: false };
-            let Some(quiet_rounds) = self.record_round(combat_id, report, engaged, quiet) else { continue; };
+            let Some(quiet_rounds) = self.record_round(combat_id, report, quiet) else { continue; };
 
             let enemies = group_ids.iter()
                 .map(|id| self.npc_fleets.get(id).map_or_else(|| "hostile group".to_string(), |n| n.label.clone()))
@@ -1761,10 +1754,9 @@ impl GameEngine {
 
     /// Count a round into its fight and send its report. Returns the rounds
     /// in a row that took no hull, this one included.
-    fn record_round(&mut self, combat_id: u64, report: BattleRoundEvent, engaged: f32, quiet: bool) -> Option<u16> {
+    fn record_round(&mut self, combat_id: u64, report: BattleRoundEvent, quiet: bool) -> Option<u16> {
         let active = self.active_combats.get_mut(&combat_id)?;
         active.round = report.round;
-        active.peak_power = active.peak_power.max(engaged);
         active.quiet_rounds = if quiet { active.quiet_rounds + 1 } else { 0 };
         for group in report.fleets.groups.iter().chain(&report.hostiles.groups) {
             tally_losses(&mut active.losses, group);
@@ -1974,7 +1966,6 @@ impl GameEngine {
             player_fleet_ids: Vec::new(),
             npc_fleet_ids: Vec::new(),
             round: 0,
-            peak_power: 0.0,
             quiet_rounds: 0,
             fled: Vec::new(),
             losses: Vec::new(),
@@ -2064,7 +2055,6 @@ impl GameEngine {
         }
         let raiders = [Troop { arms: siege.arms, squads: siege.raiders.squads(), silent: false }];
         let label = siege.label();
-        let engaged: f32 = fleet_ids.iter().map(|id| fleet_power(&self.fleets[id])).sum();
         let owner_name = self.players.get(&owner).map(|p| p.name.clone());
 
         let mut dice = combat::Dice::of_round(self.world_gen.world_seed, sector, self.current_tick, round);
@@ -2123,7 +2113,7 @@ impl GameEngine {
             mine: false,
             raid: true,
         };
-        let Some(quiet_rounds) = self.record_round(combat_id, report, engaged, quiet) else { return; };
+        let Some(quiet_rounds) = self.record_round(combat_id, report, quiet) else { return; };
         self.announce_wiped(&wiped, sector, &format!("the {label}"));
 
         let defenders_left = fought.fleets.units() > 0;
@@ -2184,8 +2174,8 @@ impl GameEngine {
     }
 
     /// End a fight. Fleets still in it are free, and one charging its jump
-    /// out goes on charging. A group that was destroyed leaves its wreckage
-    /// and pays its score, and its lair is cleared. A group that was not
+    /// out goes on charging. A group that was destroyed leaves its wreckage,
+    /// which is all a kill pays, and its lair is cleared. A group that was not
     /// keeps its losses and its damage: when fleets jumped out it may follow
     /// the strongest of them (`begin_pursuit`), away from its own sector it
     /// turns back, and in it it mends (`process_npc_behavior`). `withdrew`
@@ -2211,19 +2201,15 @@ impl GameEngine {
             .filter(|nid| self.npc_fleets.contains_key(nid))
             .partition(|nid| self.npc_fleets[nid].ships.is_empty());
 
-        let mut kills: Vec<(Hex, Resources, f32)> = Vec::new();
+        let mut lairs: Vec<Hex> = Vec::new();
         let mut total = Resources::default();
         for nid in &fallen {
             let group = &self.npc_fleets[nid];
             let lair = if group.of_lair() { group.home_sector } else { sector };
             let salvage = npc_salvage(group, &self.world.pace).scale(f64::from(self.sector_farm_factor(lair)));
             total = total.add(salvage);
-            match kills.iter_mut().find(|(at, ..)| *at == lair) {
-                Some((_, pile, power)) => {
-                    *pile = pile.add(salvage);
-                    *power += group.power;
-                }
-                None => kills.push((lair, salvage, group.power)),
+            if !lairs.contains(&lair) {
+                lairs.push(lair);
             }
             self.pending_events.push(GameEvent {
                 tick: self.current_tick,
@@ -2259,8 +2245,7 @@ impl GameEngine {
             }),
         });
 
-        for (lair, spoils, power) in kills {
-            self.credit_kill(combat.peak_power, &combat.player_fleet_ids, power, lair.to_key(), spoils);
+        for lair in lairs {
             self.heat_sector(lair);
             self.ensure_override(lair.to_key()).npc_cleared_tick = Some(self.current_tick);
         }
@@ -2472,32 +2457,9 @@ impl GameEngine {
             .collect()
     }
 
-    /// Score for destroying the groups of one lair, `power` between them as
-    /// they were generated, once per respawn of the sector and to every
-    /// player who fought (cooperation costs nothing). It follows the pile
-    /// the kill left (finds factor and anti-farming heat included), so
-    /// points and resources rise and fall together. `engaged` is the most
-    /// power the players' side brought to bear.
-    fn credit_kill(&mut self, engaged: f32, player_fleets: &[u64], power: f32, sector_key: u32, pile: Resources) {
-        let fresh = self.sector_overrides.get(&sector_key).is_none_or(|o| o.npc_cleared_tick.is_none());
-        if !fresh { return; }
-        let points = score::kill_points(pile, engaged, power);
-        if points <= 0.0 { return; }
-        let owners: HashSet<u64> = player_fleets.iter()
-            .filter_map(|f| self.fleets.get(f))
-            .map(|f| f.owner_id)
-            .collect();
-        for pid in owners {
-            if let Some(p) = self.players.get_mut(&pid) {
-                p.combat_points += points;
-            }
-        }
-    }
-
     /// Ticks for a sector's heat to halve.
     fn farm_half_life(&self, sector: Hex) -> u64 {
-        let hours = scaling::npc_respawn_hours(sector.dist_from_origin());
-        let respawn = self.world.pace.econ_ticks(f64::from(hours) * 3600.0);
+        let respawn = scaling::npc_respawn_ticks(sector.dist_from_origin(), &self.world.pace);
         (respawn as f32 * scaling::FARM_HALF_LIFE_RESPAWNS).ceil() as u64
     }
 
@@ -2820,9 +2782,7 @@ impl GameEngine {
     fn process_npc_behavior(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         for (&key, ov) in self.sector_overrides.iter_mut() {
             let Some(cleared_tick) = ov.npc_cleared_tick else { continue; };
-            let coord = Hex::from_key(key);
-            let hours = scaling::npc_respawn_hours(coord.dist_from_origin());
-            let delay = self.world.pace.econ_ticks(f64::from(hours) * 3600.0);
+            let delay = scaling::npc_respawn_ticks(Hex::from_key(key).dist_from_origin(), &self.world.pace);
             if self.current_tick >= cleared_tick + delay {
                 ov.npc_cleared_tick = None;
             }
@@ -4482,7 +4442,7 @@ impl GameEngine {
 
     /// Where `player_id`'s chart of a sector stands, given `charts_aboard`.
     pub fn chart_mark(&self, player_id: u64, sector_key: u32, aboard: &KeySet<u32>) -> Option<ChartMark> {
-        if self.credited.contains(&(player_id, sector_key, ExploreCredit::Charted)) {
+        if self.charted.contains(&(player_id, sector_key)) {
             Some(ChartMark::Delivered)
         } else if aboard.contains(&sector_key) {
             Some(ChartMark::Aboard)
@@ -4534,8 +4494,6 @@ impl GameEngine {
             research_pending: Vec::new(),
             token_hash: None,
             agent: false,
-            combat_points: 0.0,
-            explore_points: 0.0,
             relics: 0,
             exchange_pressure: 0.0,
             exchange_tick: 0,
@@ -6288,7 +6246,7 @@ impl GameEngine {
     fn note_chart(&mut self, fleet_id: u64, owner_id: u64, sector: Hex) {
         let key = sector.to_key();
         let at_home = self.players.get(&owner_id).is_none_or(|p| p.homeworld == sector);
-        if at_home || self.credited.contains(&(owner_id, key, ExploreCredit::Charted)) { return; }
+        if at_home || self.charted.contains(&(owner_id, key)) { return; }
         if let Some(fleet) = self.fleets.get_mut(&fleet_id)
             && !fleet.charts.contains(&key)
         {
@@ -6296,29 +6254,33 @@ impl GameEngine {
         }
     }
 
-    /// Pay explore points for the charts a docked fleet carries.
+    /// Pay for the charts a docked fleet carries: each sector new to its
+    /// empire pays `scaling::chart_value` of loot into the stockpile, as
+    /// far as the caps allow.
     fn deliver_charts(&mut self, fleet_id: u64) {
         let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
         if fleet.charts.is_empty() { return; }
         let owner = fleet.owner_id;
         let charts = std::mem::take(&mut fleet.charts);
 
-        let (mut sectors, mut points) = (0u32, 0.0f32);
+        let (mut sectors, mut value) = (0u32, 0.0f64);
         for key in charts {
             self.chart_news.push((owner, key));
-            if self.credited.insert((owner, key, ExploreCredit::Charted)) {
-                points += score::chart_points(ring_rating(Hex::from_key(key)));
+            if self.charted.insert((owner, key)) {
+                value += scaling::chart_value(ring_rating(Hex::from_key(key)));
                 sectors += 1;
             }
         }
         if sectors == 0 { return; }
-        if let Some(p) = self.players.get_mut(&owner) {
-            p.explore_points += points;
-        }
+        let worth = scaling::split_loot(value);
+        let Some(player) = self.players.get_mut(&owner) else { return; };
+        let paid = player.resources.shortfall(scaling::storage_cap(&player.buildings, &self.world.pace)).min(worth);
+        player.resources = player.resources.add(paid);
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
-            kind: EventKind::ChartDelivered(iac_shared::protocol::ChartDeliveredEvent { fleet_id, sectors, points }),
+            kind: EventKind::ChartDelivered(iac_shared::protocol::ChartDeliveredEvent { fleet_id, sectors }),
         });
+        self.push_stockpile(fleet_id, StockpileCause::Charts, paid);
     }
 
     /// Send a boarding party into the derelict in the fleet's sector.
@@ -6414,12 +6376,23 @@ impl GameEngine {
             return Ok(());
         }
 
-        // Clean breach: roll the loot.
+        // Clean breach: roll the loot, then the rare finds, by threat.
         let dist = location.dist_from_origin();
         let rating = ring_rating(location);
         let base_value = scaling::derelict_value(dist)
             * f64::from(rng.random_range(scaling::DERELICT_ROLL_MIN..=scaling::DERELICT_ROLL_MAX));
-        let loot_mult = self.world.pace.finds_mult() * if has_rigging { EXPLORE_RECYCLER_LOOT_MULTIPLIER } else { 1.0 };
+        let mut recovered_ship: Option<ShipClass> = None;
+        if rng.random_range(0.0..1.0) < scaling::recovery_chance(rating) {
+            recovered_ship = Some(recoverable_ship_class(tier, &mut rng));
+        }
+        let mut tech_cache: Option<ResearchType> = None;
+        if rng.random_range(0.0..1.0) < scaling::data_core_chance(rating) {
+            tech_cache = self.pick_tech_cache(owner_id, &mut rng);
+        }
+        let relic = rng.random_range(0.0..1.0) < scaling::relic_chance(rating);
+        let loot_mult = self.world.pace.finds_mult()
+            * if has_rigging { EXPLORE_RECYCLER_LOOT_MULTIPLIER } else { 1.0 }
+            * if relic { scaling::RELIC_LOOT_MULT } else { 1.0 };
         let rolled = scaling::split_loot(base_value).scale(loot_mult);
 
         // Cargo-cap the haul; anything the hold can't take drifts loose
@@ -6437,17 +6410,6 @@ impl GameEngine {
         remaining -= taken.crystal;
         taken.deuterium = rolled.deuterium.min(remaining);
         let overflow = rolled.sub(taken);
-
-        // Rare finds ride on top of the resources, by threat.
-        let mut recovered_ship: Option<ShipClass> = None;
-        if rng.random_range(0.0..1.0) < scaling::recovery_chance(rating) {
-            recovered_ship = Some(recoverable_ship_class(tier, &mut rng));
-        }
-        let mut tech_cache: Option<ResearchType> = None;
-        if rng.random_range(0.0..1.0) < scaling::data_core_chance(rating) {
-            tech_cache = self.pick_tech_cache(owner_id, &mut rng);
-        }
-        let relic = rng.random_range(0.0..1.0) < scaling::relic_chance(rating);
 
         // Apply: cargo, site consumed, overflow salvage.
         if let Some(f) = self.fleets.get_mut(&fleet_id) {
@@ -6470,15 +6432,7 @@ impl GameEngine {
             self.grant_tech_level(owner_id, tech);
         }
 
-        let mut points = 0.0;
-        if self.credited.insert((owner_id, key, ExploreCredit::Boarded)) {
-            points += score::board_points(scaling::split_loot(base_value).scale(self.world.pace.finds_mult()), rating);
-        }
-        if relic {
-            points += scaling::RELIC_POINTS;
-        }
         if let Some(p) = self.players.get_mut(&owner_id) {
-            p.explore_points += points;
             p.relics += u32::from(relic);
         }
 
@@ -6492,16 +6446,14 @@ impl GameEngine {
                 recovered_ship,
                 tech_cache,
                 relic,
-                points,
             }),
         });
         info!(
-            "Fleet {} stripped a tier-{} derelict at {} (+{:.0}M +{:.0}C +{:.0}D{}{}{}, +{:.2} explore)",
+            "Fleet {} stripped a tier-{} derelict at {} (+{:.0}M +{:.0}C +{:.0}D{}{}{})",
             fleet_id, tier, location, taken.metal, taken.crystal, taken.deuterium,
             recovered_ship.map(|c| format!(", recovered {}", c.label())).unwrap_or_default(),
             tech_cache.map(|t| format!(", data core: {:?}", t)).unwrap_or_default(),
             if relic { ", relic" } else { "" },
-            points,
         );
         Ok(())
     }
@@ -7787,7 +7739,6 @@ impl GameEngine {
             player_fleet_ids: Vec::new(),
             npc_fleet_ids: Vec::new(),
             round: 0,
-            peak_power: 0.0,
             quiet_rounds: 0,
             fled: Vec::new(),
             losses: Vec::new(),

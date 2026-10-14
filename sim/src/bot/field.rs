@@ -316,20 +316,11 @@ fn fuel_money(state: &GameState, brief: Brief) -> f64 {
     state.player.resources.deuterium - building - research - brief.yard_deuterium
 }
 
-/// A wing that flies for points has nothing to gain once the score cap is
-/// reached; the wings that bring resources home always do.
-fn has_work(brief: Brief, wing: Wing) -> bool {
-    brief.points_wanted || matches!(wing, Wing::Mining | Wing::Recovery)
-}
-
 /// How long a fleet docked at home stays there whatever the map looks like:
 /// no work, a tank still filling, no fleet slot away, no fuel to spare.
 fn held_at_home(state: &GameState, brief: Brief, unit: Unit) -> Option<u64> {
     let fleet = unit.fleet;
     let home = state.player.homeworld;
-    if !has_work(brief, unit.wing) {
-        return Some(WAIT);
-    }
     let tank_filling = state.player.resources.deuterium >= 1.0;
     if fleet.fuel < READY_FUEL * fleet.fuel_max && tank_filling {
         return Some(5);
@@ -345,8 +336,6 @@ pub(super) struct Brief {
     pub personality: Personality,
     /// Ticks until the next look-in once this one ends; None for a player who stays.
     pub away_for: Option<u64>,
-    /// More combat or exploration points would still raise the score.
-    pub points_wanted: bool,
     /// Deuterium of the unit the shipyard wants next and cannot pay for yet.
     pub yard_deuterium: f64,
 }
@@ -403,7 +392,7 @@ impl<'a> Admiral<'a> {
     fn delegate(&mut self, unit: Unit, leaving: bool) {
         let fleet = unit.fleet;
         let Some(doctrines) = unit.wing.doctrines() else { return };
-        if !(has_work(self.brief, unit.wing) && self.can_return(unit)) {
+        if !self.can_return(unit) {
             self.dock(unit);
             return;
         }
@@ -543,7 +532,7 @@ impl<'a> Admiral<'a> {
             if !self.can_return(unit) {
                 return WAIT;
             }
-        } else if !has_work(self.brief, unit.wing) || unit.mauled() || fleet.pursued_by.is_some() {
+        } else if unit.mauled() || fleet.pursued_by.is_some() {
             return self.head_home(unit);
         } else {
             let hold_full = fleet.cargo_capacity > 0.0 && load >= RETURN_LOAD * fleet.cargo_capacity;
