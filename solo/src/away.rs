@@ -5,6 +5,7 @@
 use iac_shared::constants::{Resources, TICK_RATE_HZ};
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{AlertEvent, AlertLevel, BattleOutcome, EventKind, GameEvent};
+use iac_shared::scaling::ShipyardItem;
 use iac_sim::engine::{GameEngine, Outpost, OutpostTask, Player};
 use iac_sim::views;
 use serde::{Deserialize, Serialize};
@@ -20,9 +21,11 @@ pub struct Tally {
     pub raided: Resources,
     /// What the fights of the raids on the homeworld destroyed, repelled or
     /// lost: ships of fleets docked there, Solar Satellites and defences,
-    /// and how many of the defences were rebuilt when a fight ended.
+    /// and how many of the satellites and of the defences were rebuilt
+    /// when a fight ended.
     pub docked_ships_lost: u32,
     pub satellites_lost: u32,
+    pub satellites_rebuilt: u32,
     pub defences_lost: u32,
     pub defences_rebuilt: u32,
     /// Fleets and ships lost away from both docks.
@@ -80,6 +83,12 @@ impl Tally {
             EventKind::RaidResolved(e) => {
                 self.docked_ships_lost += e.ships_lost;
                 self.satellites_lost += e.satellites_lost;
+                self.satellites_rebuilt += e
+                    .rebuilt
+                    .iter()
+                    .filter(|units| matches!(units.unit, ShipyardItem::Ship(_)))
+                    .map(|units| units.count)
+                    .sum::<u32>();
                 self.defences_lost += e.structures_lost;
                 self.defences_rebuilt += e.structures_restored;
                 if e.defended {
@@ -130,10 +139,12 @@ impl Tally {
             count(self.defences_lost, "defence", "defences"),
         ])
         .map(|destroyed| {
-            let rebuilt = match self.defences_rebuilt {
-                0 => String::new(),
-                n => format!(", and {n} of the defences were rebuilt"),
-            };
+            let rebuilt = list(&[
+                count(self.satellites_rebuilt, "of the Solar Satellites", "of the Solar Satellites"),
+                count(self.defences_rebuilt, "of the defences", "of the defences"),
+            ])
+            .map(|rebuilt| format!(", and {rebuilt} were rebuilt"))
+            .unwrap_or_default();
             format!("the raids on your homeworld destroyed {destroyed}{rebuilt}")
         });
         let lost = list(&[count(self.fleets_lost, "fleet", "fleets"), count(self.ships_lost, "ship", "ships")])

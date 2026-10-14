@@ -116,9 +116,9 @@ const raidSharesRule = 'The server plays the fight forward a few times over. Des
 
 /// What a raid's fight costs for good and what it does not, in the engine's
 /// three figures.
-const rebuildRule = 'Of the defences that fall in a raid about ${proto.defenceRebuildPct} in a hundred stand again the moment it ends, for nothing: '
-    'each on its own chance where fewer than ${proto.defenceRebuildEachBelow} of a kind fell, a share within ${proto.defenceRebuildSpread} '
-    'either side of it where more did. Ships and Solar Satellites lost are lost.';
+const rebuildRule = 'Of the defences and of the Solar Satellites that fall in a raid about ${proto.defenceRebuildPct} in a hundred stand again '
+    'the moment it ends, for nothing: each on its own chance where fewer than ${proto.defenceRebuildEachBelow} of a kind fell, '
+    'a share within ${proto.defenceRebuildSpread} either side of it where more did. Ships lost are lost.';
 
 /// "a raid of 12x Light Fighter, 2x Cruiser (power 1,351)": what a
 /// forecast says is flown. [opening] starts a sentence with it.
@@ -176,14 +176,15 @@ String raidPlace(proto.RaidResolvedEvent e) => switch (e.outpost) {
       final at => 'Raid on your outpost at ${at.q}, ${at.r}',
     };
 
-/// "Rebuilt at once: 3x Rocket Launcher", or that none was, when defences
-/// fell at the homeworld; null when none did, and for an outpost, whose
-/// platform is not rebuilt unit by unit.
-String? raidRebuilt(proto.RaidResolvedEvent e) => e.rebuilt.isNotEmpty
-    ? 'Rebuilt at once: ${unitsList(e.rebuilt)}'
-    : e.structuresLost > 0 && e.outpost == null
-        ? 'None of the defences that fell was rebuilt'
-        : null;
+/// "Rebuilt at once: 2x Solar Satellite, 3x Rocket Launcher", or that none
+/// was, when Solar Satellites or defences fell at the homeworld; null when
+/// none did, and for an outpost, whose platform is not rebuilt unit by unit.
+String? raidRebuilt(proto.RaidResolvedEvent e) {
+  if (e.rebuilt.isNotEmpty) return 'Rebuilt at once: ${unitsList(e.rebuilt)}';
+  if (e.outpost != null) return null;
+  final fell = [if (e.satellitesLost > 0) 'Solar Satellites', if (e.structuresLost > 0) 'defences'];
+  return fell.isEmpty ? null : 'None of the ${fell.join(' and ')} that fell was rebuilt';
+}
 
 /// "Taken: 2,525 Fe, 1,865 Cr": what a lost raid took; null for one repelled.
 String? raidTaken(proto.RaidResolvedEvent e) => e.defended ? null : 'Taken: ${amountsOf(e.resourcesLost)}';

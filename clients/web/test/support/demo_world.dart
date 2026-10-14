@@ -316,8 +316,9 @@ class _Outpost {
 /// home; outlasted, when the rounds are over or a round took no hull; or
 /// lost, when no defender is left, and then takes the engine's shares of the
 /// stockpile above what storage protects, or of the outpost's store, and
-/// breaches the outpost. Defences that fell are rebuilt at once at the
-/// engine's rate, cut off to a whole number where the engine rolls for it.
+/// breaches the outpost. Defences and Solar Satellites that fell at home
+/// are rebuilt at once at the engine's rate, cut off to a whole number
+/// where the engine rolls for it.
 /// A fleet in it may be ordered out as from any fight, and nothing follows.
 /// Where this world is simpler than the engine: the fight is the one
 /// without dice described below; a raid flies one class, Light Fighters at
@@ -1899,23 +1900,24 @@ class DemoWorld {
   }
 
   /// What follows a raid once its fight is over, or at once when nothing
-  /// stood in its way ([outcome] null): defences rebuilt at the engine's
-  /// rate, the wreckage of a raid destroyed at home, what a lost raid takes
-  /// and the breach it leaves at an outpost, the two events that say so,
-  /// and at home the next raid of the script.
+  /// stood in its way ([outcome] null): Solar Satellites and defences
+  /// rebuilt at the engine's rate, the wreckage of a raid destroyed at
+  /// home, what a lost raid takes and the breach it leaves at an outpost,
+  /// the two events that say so, and at home the next raid of the script.
   void _settleRaid(_Siege siege, BattleOutcome? outcome) {
     final home = !siege.outpost;
     final key = siege.sector.toKey();
     final raidersGone = siege.raiders.isEmpty;
     final defended = raidersGone || outcome == BattleOutcome.outlasted;
     final fell = siege.lost[0] ?? const <ShipyardItem, int>{};
+    const satellite = ShipyardItem.ship(ShipClass.solarSatellite);
     final rebuilt = [
       if (home)
-        for (final kind in DefenceKind.values)
-          if ((fell[ShipyardItem.defence(kind)] ?? 0) * defenceRebuildPct ~/ 100 case final back when back > 0)
-            UnitCount(unit: ShipyardItem.defence(kind), count: back),
+        for (final unit in [satellite, for (final kind in DefenceKind.values) ShipyardItem.defence(kind)])
+          if ((fell[unit] ?? 0) * defenceRebuildPct ~/ 100 case final back when back > 0) UnitCount(unit: unit, count: back),
     ];
     if (rebuilt.isNotEmpty) {
+      _satellites += rebuilt.where((u) => u.unit == satellite).fold(0, (n, u) => n + u.count);
       _hw = _hwWith(defences: [
         for (final d in _hw.defences)
           DefenceState(
@@ -1989,7 +1991,7 @@ class DemoWorld {
         rebuilt: rebuilt,
         satellitesLost: lostOf((u) => u.unit.ship == ShipClass.solarSatellite),
         structuresLost: lostOf((u) => u.unit.defence != null),
-        structuresRestored: rebuilt.fold(0, (n, u) => n + u.count),
+        structuresRestored: rebuilt.where((u) => u.unit.defence != null).fold(0, (n, u) => n + u.count),
         protectedKept: kept,
         shipsLost: lostOf((u) => u.unit.ship != null && u.unit.ship != ShipClass.solarSatellite)));
     if (home) _announceRaid(((_tick ~/ _raidPeriod) + 1) * _raidPeriod);

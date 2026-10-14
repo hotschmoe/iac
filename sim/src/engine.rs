@@ -3551,13 +3551,13 @@ impl GameEngine {
     }
 
     /// What follows a raid on `siege.dock` once its fight is over, or once
-    /// it has found nothing in its way (`outcome` None). The defences that
-    /// fell at home are rebuilt at OGame's rate, at once; ships and Solar
-    /// Satellites lost are lost. A raid that left no defender takes its
-    /// share of the dock's stock above the protected floor, and
-    /// no raid follows for a while; at the outpost it also breaches it,
-    /// and the outpost is never destroyed. `dropped` is the wreckage the
-    /// raiders left and the tick it despawns.
+    /// it has found nothing in its way (`outcome` None). The defences and
+    /// the Solar Satellites that fell at home are rebuilt at OGame's rate
+    /// for defences, at once; ships lost are lost. A raid that left no
+    /// defender takes its share of the dock's stock above the protected
+    /// floor, and no raid follows for a while; at the outpost it also
+    /// breaches it, and the outpost is never destroyed. `dropped` is the
+    /// wreckage the raiders left and the tick it despawns.
     fn settle_raid(
         &mut self,
         sector: Hex,
@@ -3600,7 +3600,7 @@ impl GameEngine {
                 ShipyardItem::Defence(_) => None,
             })
             .collect();
-        let rebuilt = if dock == Dock::Home { self.rebuild_defences(owner, &fallen) } else { Vec::new() };
+        let rebuilt = if dock == Dock::Home { self.rebuild_at_home(owner, &fallen, satellites_lost) } else { Vec::new() };
 
         let (mut resources_lost, mut protected_kept) = (Resources::default(), Resources::default());
         if !defended {
@@ -3654,7 +3654,10 @@ impl GameEngine {
                 raiders: ships_of(&siege.muster),
                 raiders_lost,
                 structures_lost: fallen.iter().sum(),
-                structures_restored: rebuilt.iter().map(|units| units.count).sum(),
+                structures_restored: rebuilt.iter()
+                    .filter(|units| matches!(units.unit, ShipyardItem::Defence(_)))
+                    .map(|units| units.count)
+                    .sum(),
                 lost,
                 rebuilt,
                 satellites_lost,
@@ -3668,26 +3671,33 @@ impl GameEngine {
         );
     }
 
-    /// OGame's rebuild: of the defences of each kind that fell, where fewer
-    /// than `DEFENCE_REBUILD_EACH_BELOW` fell each comes back with
+    /// OGame's rebuild of defences, which here is the rule for everything
+    /// at home that is not a ship: of the defences of each kind that fell,
+    /// and then of the Solar Satellites, where fewer than
+    /// `DEFENCE_REBUILD_EACH_BELOW` fell each comes back with
     /// `DEFENCE_REBUILD_PCT` chances in a hundred, and where more fell a
     /// share within `DEFENCE_REBUILD_SPREAD` of it is rolled for the kind.
     /// They stand again at once and cost nothing. A dome is not rebuilt
-    /// beside one ordered since. Returns what was rebuilt, by kind.
-    fn rebuild_defences(&mut self, owner: u64, fallen: &[u32; DefenceKind::COUNT]) -> Vec<UnitCount> {
+    /// beside one ordered since. The satellites are rolled for after the
+    /// last defence, so their dice move no defence's. Returns what was
+    /// rebuilt, by unit, in catalogue order.
+    fn rebuild_at_home(&mut self, owner: u64, fallen: &[u32; DefenceKind::COUNT], satellites_fallen: u32) -> Vec<UnitCount> {
         let mut rng = StdRng::seed_from_u64(
             self.current_tick.wrapping_mul(0xD6E8FEB86659FD93).wrapping_add(owner),
         );
-        let mut rebuilt = Vec::new();
-        for kind in DefenceKind::ALL {
-            let fell = fallen[kind as usize];
-            if fell == 0 { continue; }
-            let mut back = if fell < DEFENCE_REBUILD_EACH_BELOW {
+        let mut roll = |fell: u32| {
+            if fell < DEFENCE_REBUILD_EACH_BELOW {
                 (0..fell).filter(|_| rng.random_range(0..100u32) < DEFENCE_REBUILD_PCT).count() as u32
             } else {
                 let pct = rng.random_range(DEFENCE_REBUILD_PCT - DEFENCE_REBUILD_SPREAD..=DEFENCE_REBUILD_PCT + DEFENCE_REBUILD_SPREAD);
                 (u64::from(fell) * u64::from(pct) / 100) as u32
-            };
+            }
+        };
+        let mut rebuilt = Vec::new();
+        for kind in DefenceKind::ALL {
+            let fell = fallen[kind as usize];
+            if fell == 0 { continue; }
+            let mut back = roll(fell);
             let Some(player) = self.players.get_mut(&owner) else { continue; };
             if let Some(most) = kind.max_count() {
                 back = back.min(most.saturating_sub(Self::defences_owned_and_ordered(player, kind)));
@@ -3695,6 +3705,13 @@ impl GameEngine {
             if back == 0 { continue; }
             player.defences.count[kind as usize] += back;
             rebuilt.push(UnitCount { unit: ShipyardItem::Defence(kind), count: back });
+        }
+        let satellites = roll(satellites_fallen);
+        if satellites > 0
+            && let Some(player) = self.players.get_mut(&owner)
+        {
+            player.satellites += satellites;
+            rebuilt.insert(0, UnitCount { unit: ShipyardItem::Ship(ShipClass::SolarSatellite), count: satellites });
         }
         rebuilt
     }

@@ -2186,7 +2186,8 @@ Future<void> raid(Browser browser) async {
       (list as List).cast<Map<String, dynamic>>().where((u) => u[key] == name).fold(0, (n, u) => n + (u['count'] as int));
   check(
       (after['raid'] as Map)['rounds_left'] == null &&
-          after['satellites'] == (before['satellites'] as int) - (resolved['satellites_lost'] as int) &&
+          after['satellites'] ==
+              (before['satellites'] as int) - (resolved['satellites_lost'] as int) + counted(resolved['rebuilt'], 'unit', 'SolarSatellite') &&
           (before['defences'] as List).every((d) =>
               counted(after['defences'], 'kind', d['kind'] as String) ==
               (d['count'] as int) - counted(resolved['lost'], 'unit', d['kind'] as String) + counted(resolved['rebuilt'], 'unit', d['kind'] as String)),

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 12;
+pub const ECONOMY_VERSION: u32 = 13;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 4;
 
@@ -684,7 +684,9 @@ pub const RAID_ROUNDS: u32 = 6;
 /// `DEFENCE_REBUILD_EACH_BELOW` of a kind fell each has that chance, and
 /// where more fell a share within `DEFENCE_REBUILD_SPREAD` either side of
 /// it is rolled for the kind. OGame's. It trades what defences cost to hold
-/// against what ships cost.
+/// against what ships cost. The Solar Satellites a raid destroys at a
+/// homeworld are rebuilt by the same rule, as a kind of their own, which
+/// is not OGame's: there a satellite that falls is gone.
 pub const DEFENCE_REBUILD_PCT: u32 = 70;
 pub const DEFENCE_REBUILD_SPREAD: u32 = 10;
 pub const DEFENCE_REBUILD_EACH_BELOW: u32 = 10;

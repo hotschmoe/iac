@@ -233,13 +233,16 @@ void main() {
         reason: 'the forecast is the server\'s label with Rust\'s sentence for it, and no comparison of two powers');
     expect(said(tester, 'raid-ships'), 'IT FLIES  ${shipsList(raid.ships).toUpperCase()}   POWER ${groupDigits(raid.power.round())}');
     expect(textUnder(tester, find.byKey(const Key('raid-shares'))), 'DESTROYED 100%\nOUTLASTED 0%\nLOST 0%');
-    expect(said(tester, 'raid-kept'), '${raidKept(raid.odds).toUpperCase()}, BEFORE ANY DEFENCE IS REBUILT.');
+    expect(said(tester, 'raid-kept'), '${raidKept(raid.odds).toUpperCase()}, BEFORE ANYTHING IS REBUILT.');
     expect(find.byKey(const Key('defence-cover')), findsNothing);
     expect(
         why(tester, 'defence-rebuild'),
         allOf(contains('about ${proto.defenceRebuildPct} in a hundred'), contains('fewer than ${proto.defenceRebuildEachBelow} of a kind'),
             contains('within ${proto.defenceRebuildSpread} either side')),
         reason: 'the rebuild is told from the engine\'s three figures');
+    expect(why(tester, 'defence-rebuild'), allOf(startsWith('Of the defences and of the Solar Satellites that fall in a raid'), endsWith('Ships lost are lost.')),
+        reason: 'one rule for everything at home that is not a ship');
+    expect(textUnder(tester, find.byKey(const Key('defence-satellites'))), contains('those that fall in it are rebuilt as defences are'));
     expect(find.textContaining('restoring'), findsNothing);
     expect(said(tester, 'defence-standing'), contains('EVERY FLEET DOCKED HERE, EVERY SOLAR SATELLITE AND EVERY DEFENCE'));
     expect(find.byKey(Key('docked-${proto.ShipClass.smallCargo.wire}')), findsOneWidget, reason: 'the fleet at the dock is listed as part of what fights');
@@ -348,7 +351,8 @@ void main() {
     expect(said(tester, 'battle-wreckage'), 'WRECKAGE LEFT: ${amountsOf(resolved.salvageDropped!).toUpperCase()}');
     expect(find.byKey(const Key('battle-taken')), findsNothing, reason: 'a raid repelled takes nothing');
     expect(resolved.raidersLost.single.count, resolved.raiders.single.count);
-    expect(c.state.hw!.satellites, 2 - resolved.satellitesLost, reason: 'a Solar Satellite that fell is gone');
+    final satellitesBack = resolved.rebuilt.where((u) => u.unit.ship == proto.ShipClass.solarSatellite).fold(0, (n, u) => n + u.count);
+    expect(c.state.hw!.satellites, 2 - resolved.satellitesLost + satellitesBack, reason: 'a Solar Satellite that fell is gone unless it was rebuilt');
     expect(c.state.hw!.defences.first.count, 6 - resolved.structuresLost + resolved.structuresRestored);
     expect(c.state.hw!.raid.roundsLeft, isNull, reason: 'with the raid over the forecast is of the next one');
     expect(c.state.fleets.singleWhere((f) => f.id == docked.id).status, FleetStatus.docked);
@@ -370,7 +374,7 @@ void main() {
   });
 
   testWidgets(
-      'a raid that leaves no defender is lost: the fleet that stayed is destroyed, the defences that fell are rebuilt at the engine\'s rate, '
+      'a raid that leaves no defender is lost: the fleet that stayed is destroyed, the defences and the satellites that fell are rebuilt at the engine\'s rate, '
       'and the raid takes its share (demo)', (tester) async {
     final c = await raided(tester, 60 * proto.ShipClass.lightFighter.power);
     final forecast = c.state.hw!.raid.odds;
@@ -385,8 +389,11 @@ void main() {
     expect(said(tester, 'battle-taken'), 'TAKEN: ${amountsOf(resolved.resourcesLost).toUpperCase()}.');
     expect(find.byKey(const Key('battle-wreckage')), findsNothing, reason: 'only a raid destroyed to its last ship leaves wreckage');
     expect(c.state.hw!.defences.first.count, resolved.structuresRestored, reason: 'what was rebuilt stands at once');
-    expect((c.state.hw!.satellites, c.state.fleets.where((f) => f.sector == c.state.homeworld).length), (0, 0),
-        reason: 'ships and satellites lost are lost');
+    expect(resolved.satellitesLost, 2, reason: 'both satellites fell');
+    expect(resolved.rebuilt.first, const proto.UnitCount(unit: proto.ShipyardItem.ship(proto.ShipClass.solarSatellite), count: 1),
+        reason: 'the satellites are rebuilt by the defences\' rule and listed first, as the catalogue lists them');
+    expect((c.state.hw!.satellites, c.state.fleets.where((f) => f.sector == c.state.homeworld).length), (1, 0),
+        reason: 'the satellites rebuilt stand at once, and ships lost are lost');
     expect(resolved.resourcesLost.metal, greaterThan(0), reason: 'a full stockpile holds more than its storage protects');
     expect(c.state.stock.metal, lessThan(full.metal - resolved.resourcesLost.metal * .9), reason: 'what was taken is gone from the stockpile');
     expect(c.state.events.any((e) => e.message.contains('YOUR FLEET F102 DESTROYED')), isTrue);

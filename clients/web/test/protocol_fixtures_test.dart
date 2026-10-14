@@ -392,7 +392,7 @@ void main() {
         'Wreckage left: 22,800 Fe, 7,800 Cr, 1,200 De, which drifts away in 10:00 unless a fleet docked at home scoops it',
       ]);
       final lost = event('raid_resolved').kind as RaidResolvedEvent;
-      expect((RaidEnding.of(lost), raidTaken(lost), raidRebuilt(lost)), (RaidEnding.lost, 'Taken: 2,500,000 Fe, 50 Cr, 25 De', 'Rebuilt at once: 4x Rocket Launcher'));
+      expect((RaidEnding.of(lost), raidTaken(lost), raidRebuilt(lost)), (RaidEnding.lost, 'Taken: 2,500,000 Fe, 50 Cr, 25 De', 'Rebuilt at once: 1x Solar Satellite, 4x Rocket Launcher'));
       final undefended = event('raid_resolved__undefended').kind as RaidResolvedEvent;
       expect((undefended.outcome, undefended.rounds, RaidEnding.of(undefended)), (null, 0, RaidEnding.unopposed),
           reason: 'a raid that met nothing was lost without a round');

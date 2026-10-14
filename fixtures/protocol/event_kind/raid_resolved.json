@@ -43,6 +43,10 @@
   ],
   "rebuilt": [
     {
+      "count": 1,
+      "unit": "SolarSatellite"
+    },
+    {
       "count": 4,
       "unit": "RocketLauncher"
     }

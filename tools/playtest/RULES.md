@@ -274,8 +274,10 @@ What every doctrine does:
   stay at the homeworld (`homeworld.satellites`), never join a fleet, and
   stand in every raid's fight with a hull of 200, a shield of 1 and an
   attack of 1: every armed ship fires again four times in five after a shot
-  at one, so a raid that is not destroyed quickly takes them by the dozen,
-  and none is rebuilt. Raise the Solar Plant before a mine, not after.
+  at one, so a raid that is not destroyed quickly takes them by the dozen.
+  Those that fall are rebuilt as defences are, about 70 in a hundred at
+  once and for nothing when the raid ends (Raids, below), and the rest are
+  gone. Raise the Solar Plant before a mine, not after.
 - **Ore** — an ore tile holds 9 / 30 / 66 / 126 raw units (Sparse to Pristine)
   times 1.10 per ring from ring 3 (x5 from ring 20), and the further out the
   richer the density rolls. Harvesting takes units out of the tile (depletion
@@ -714,7 +716,7 @@ What every doctrine does:
   standing at home this tick. The server plays the fight itself 8 to 64 times
   over, as it does for a sector's odds: `destroyed`, `outlasted` and `lost`
   are the shares of those fights that ended each way, `kept` the share of
-  their worth your ships, satellites and defences keep (before any defence
+  their worth your ships, satellites and defences keep (before anything
   is rebuilt), `raiders_kept` the raiders' share, and `label` is `repelled`
   (destroyed every time), `held` (never lost, not always destroyed),
   `at_risk` (lost in some) or `lost`. Build against the label, not against
@@ -738,10 +740,12 @@ What every doctrine does:
   is no wreckage; no defender is left (`fleets_destroyed`, or `fled` when
   your last fleet jumped out): lost. A raid that finds nothing at all in
   its way is lost on the spot, without a fight.
-  **After it.** Of the defences that fell, about 70 in a hundred stand
-  again at once and for nothing (fewer than ten of a kind: each on its own
-  70 in a hundred; ten or more: 60 to 80 percent of them). Ships and Solar
-  Satellites lost are lost. A lost raid also takes a hard-capped slice of
+  **After it.** Of the defences that fell, and of the Solar Satellites,
+  about 70 in a hundred stand again at once and for nothing, whether the
+  raid was repelled or lost (fewer than ten of a kind: each on its own 70
+  in a hundred; ten or more: 60 to 80 percent of them; the satellites are
+  a kind of their own). Ships lost are lost. A lost raid also takes a
+  hard-capped slice of
   the stockpile above the share the storage buildings protect (8% of metal
   and crystal, 5% of deuterium), and none comes for 48 game hours divided
   by P^0.75. What destroyed ships carried goes to the stockpile as far as
@@ -759,9 +763,11 @@ What every doctrine does:
   orders leaves when the fight's odds fall under its disengage ratio.
   `RaidResolved` is the summary: `defended`, `outcome`, `rounds`,
   `raiders` and `raiders_lost`, `lost` (everything you lost, by unit, the
-  defences before the rebuild), `rebuilt`, `ships_lost`, `satellites_lost`,
-  `structures_lost`, `structures_restored`, `resources_lost`,
-  `protected_kept`, and for a destroyed raid `salvage_dropped` and
+  satellites and the defences before the rebuild), `rebuilt` (the
+  satellites and the defences that stand again, by unit), `ships_lost`,
+  `satellites_lost` (those that fell, before the rebuild),
+  `structures_lost`, `structures_restored` (the defences alone),
+  `resources_lost`, `protected_kept`, and for a destroyed raid `salvage_dropped` and
   `salvage_despawn_tick`. The wreckage is on your own planet, so
   a fleet docked at home scoops it into storage by itself, up to what the
   stores hold (`SalvageCollected` says what); with no fleet docked, or the
