@@ -5,20 +5,25 @@
 // appetite times that yardstick, so the ladder rises with the economy
 // instead of following a fixed script. Mines are picked by payback, with a
 // resource that sits low against its cap counting for more, and no mine is
-// raised past the energy there is: the Solar Plant goes first. Fleet value
-// is held at a share of the empire's building and research points, and home
-// defence at a margin over the next raid.
+// raised past the energy there is: the cheapest energy goes first, the
+// Solar Plant, the Fusion Reactor with the deuterium it burns, or Solar
+// Satellites at twice their price for what raids take of them. A store is
+// raised before its resource would spill while the player is away. Fleet
+// value is held at a share of the empire's building and research points,
+// and home defence at a margin over the next raid.
 //
-// A personality names the research it wants and the ships it flies. What a
-// research or a ship requires is not written here: the planner reads it from
-// the catalogue and orders what is missing, a research before the one that
+// A personality names the research it wants and the ships it flies, from
+// lines that run to the heaviest hulls; the next class up a line is worked
+// toward once the economy has grown into its price. What a research or a
+// ship requires is not written here: the planner reads it from the
+// catalogue and orders what is missing, a research before the one that
 // needs it and the Shipyard level a class asks for once its research is in.
 //
 // Building and research orders are sent with `reserve`, so a queue runs in
 // the order planned. A player who stays queues one order at a time; one
-// about to leave fills every queue, gives each building place to an order
-// worth its share of the income to come, and spends what no order has
-// claimed.
+// about to leave fills every queue and gives each building place to an
+// order worth its share of the income to come. Either spends what no order
+// has claimed on what scores, since the score counts what is built.
 //
 // A shipyard batch is paid for whole when it is ordered, so the planner cuts
 // a batch to the units the stockpile covers now and orders the rest at a

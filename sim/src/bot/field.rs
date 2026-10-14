@@ -6,10 +6,13 @@
 //
 //   wing       doctrine            with no work under it   by hand
 //   garrison   none                                        stays docked
-//   mining     mine_and_return     salvage_and_sites       nearest known ore, strip it, haul home
+//   mining     mine_and_return     salvage_and_sites       nearest known ore that pays, strip it, haul home
 //   survey     prospect            salvage_and_sites       nearest sector not yet charted; boards
-//   recovery   salvage_and_sites   mine_and_return         derelicts and scoops wreckage on the way
-//   strike     patrol_home         salvage_and_sites       nearest group it beats safely, then as survey
+//   recovery   salvage_and_sites   mine_and_return         derelicts and wreckage that pay
+//   strike     patrol_home         salvage_and_sites       nearest group whose wreckage pays, else home
+//
+// A turtle's ships and, once it has a cargo ship, a miner's warships are
+// the garrison: they are bought with what no order claimed, and stay home.
 //
 // A doctrine that finds nothing to do brings its fleet home and holds. A
 // fleet found at the dock with a full tank as a look-in ends is therefore
@@ -28,16 +31,23 @@
 // runs for home. A raid on the homeworld is a fight too: when the
 // server's forecast of one that is announced says it may leave no defender
 // standing, the pilot takes its fleets to the next sector for it and
-// brings them back when it is over. The odds are the
+// brings them back when it is over; a fleet with no warship, which adds
+// nothing to the defence and is what rapid fire eats, leaves for any raid
+// announced. The odds are the
 // server's, and they count the damage a fleet carries: before its orders
 // the admiral asks (`odds`) how each fleet it may move would fare in every
 // sector where that decides something, and it stays out of any sector it
 // has no answer for.
 //
-// Fuel is paid in deuterium the moment a fleet docks, ahead of anything
-// waiting in a queue. A pilot therefore leaves only when the stockpile has a
-// tank to spare beyond the next orders. A fleet under a doctrine is held to
-// the doctrine's fuel budget by the server.
+// A trip is flown for what it brings home (`pays`): ore, wreckage or a
+// derelict's hold, as much as the fleet can carry, against the deuterium
+// of the detour, and for a fight also the worth the odds say the fleet
+// will lose (`fight_pays`). Fuel is paid in deuterium the moment a fleet
+// docks, ahead of anything waiting in a queue, so from home a trip is also
+// held to the deuterium the stockpile has spare beyond the next orders.
+// Away from home a fleet short of fuel refines what its hold carries
+// before it turns home. A fleet under a doctrine is held to the doctrine's
+// fuel budget by the server.
 
 use std::collections::{BTreeMap, BTreeSet};
 

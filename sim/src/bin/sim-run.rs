@@ -31,7 +31,8 @@ const USAGE: &str = "usage: sim-run [--pace <preset|number>] [--seed <n>] [--sea
                 attention    check-in | hybrid | hands-on | all
               default: all:all and idle (every style once, and a player that never acts);
               a world has 24 home seats, so at most 24 players in all
-  --sessions  look-ins per day of check-in and hybrid players (default 4, at most 24)
+  --sessions  look-ins per day of check-in and hybrid players (default 4, at most 24); past the
+              season's pace their day is shorter than a day of the clock (at blitz about 67 minutes)
   --ticks/--hours/--days  simulated duration; a tick is one second (default --days 1)
   --every     ticks between score samples (default: a day; a tenth of a run under two days)
   --ignore-cap  bots keep flying for combat and exploration points past the score cap

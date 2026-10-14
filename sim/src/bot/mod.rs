@@ -20,8 +20,9 @@
 // The home planner (`home.rs`) is the same for every attention pattern; only
 // how often it runs and how far ahead it queues differ. Fleet handling
 // (`field.rs`) either assigns doctrines or pilots. A bot reads its own row
-// of the leaderboard, and the wings that fly for points stay home once
-// combat and exploration have filled the score cap.
+// of the leaderboard: while combat and exploration points still raise its
+// score, a wing other than the survey wing also charts and boards for them.
+// No fight is chosen for points.
 //
 // Everything a bot carries from one turn to the next is its `Memory`. With
 // its `Style` that is a `BotRecord`, which the engine keeps per bot account

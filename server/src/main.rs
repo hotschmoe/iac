@@ -94,7 +94,9 @@ struct Args {
     #[arg(long, value_name = "N", default_value_t = DEFAULT_PLAYER_SEATS)]
     player_seats: usize,
 
-    /// Look-ins per day of new check-in and hybrid bots
+    /// Look-ins per day of new check-in and hybrid bots. Past the season's
+    /// pace their day is shorter than a day of the clock: at blitz about
+    /// 67 minutes
     #[arg(long, default_value_t = DEFAULT_SESSIONS_PER_DAY, value_parser = clap::value_parser!(u64).range(1..=MAX_SESSIONS_PER_DAY))]
     bot_sessions: u64,
 }
