@@ -611,7 +611,7 @@ impl RaidLabel {
             RaidLabel::Lost => "nothing here stands through the fight: the raid takes its share",
             RaidLabel::AtRisk => "the fight may leave no defender standing",
             RaidLabel::Held => "a defender stands when the raiders give up; what falls before that is lost",
-            RaidLabel::Repelled => "the raiders are destroyed and leave their wreckage",
+            RaidLabel::Repelled => "the raiders are destroyed and leave their wreckage; what of yours falls before that is lost",
         }
     }
 }
@@ -2452,6 +2452,7 @@ pub enum EventKind {
     CombatEnded(CombatEndedEvent),
     Pursuit(PursuitEvent),
     SalvageCollected(SalvageCollectedEvent),
+    Stockpile(StockpileEvent),
     FleetArrived(FleetArrivedEvent),
     BuildingCompleted(BuildingCompletedEvent),
     ResearchCompleted(ResearchCompletedEvent),
@@ -2591,16 +2592,14 @@ pub struct SiteExploredEvent {
 }
 
 /// A fleet docked at the homeworld, or arrived at its owner's finished
-/// outpost, and handed over the sectors it charted. Each new chart pays
-/// `scaling::chart_value` into the stockpile, as far as its caps allow.
+/// outpost, and handed over the sectors it charted. What they paid into
+/// the stockpile is a `StockpileEvent` of cause `Charts`; what a full store
+/// has no room for is lost.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChartDeliveredEvent {
     pub fleet_id: u64,
     /// Sectors newly credited to the empire.
     pub sectors: u32,
-    /// What they paid into the stockpile. What a full store has no room
-    /// for is lost.
-    pub paid: Resources,
 }
 
 /// Whatever killed the crew is still aboard.
@@ -2846,10 +2845,11 @@ pub struct ShipsLostEvent {
 }
 
 /// Every ship of a fleet is gone. For an NPC fleet killed by players,
-/// `salvage` is the wreckage it left in `sector`: exactly what
-/// `collect_salvage` can take (when several NPC fleets die in one fight the
-/// sector pile is the sum of their events). Player fleets leave no wreckage,
-/// so `salvage` is zero. A destroyed fleet of the receiver's also produces a
+/// `salvage` is the wreckage this kill added to `sector`. The fight's
+/// `CombatEnded` adds the kills of the fight up in its `salvage`, and names
+/// the whole pile lying there, wreckage left from before included, in
+/// `salvage_pile` when that is more. Player fleets leave no wreckage, so
+/// `salvage` is zero. A destroyed fleet of the receiver's also produces a
 /// `Critical` `Alert`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FleetDestroyedEvent {
@@ -2901,10 +2901,13 @@ pub struct CombatStartedEvent {
 }
 
 /// A fight is over. `owners` lists the empires that fought. `salvage` is the
-/// pile the hostiles' destruction left in the sector (absent when they were
-/// not destroyed); it despawns at `salvage_despawn_tick`. When the fight was
-/// a raid, `raid` is set and the `RaidResolved` of the same tick says what
-/// was rebuilt and what was taken.
+/// wreckage the hostiles' destruction left in the sector, the sum of the
+/// fight's `FleetDestroyed` (absent when they were not destroyed). When
+/// wreckage from before was still lying there, `salvage_pile` is the pile
+/// the two make, which is what `collect_salvage` finds; absent when the
+/// fight's wreckage is all there is. The pile despawns at
+/// `salvage_despawn_tick`. When the fight was a raid, `raid` is set and the
+/// `RaidResolved` of the same tick says what was rebuilt and what was taken.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CombatEndedEvent {
     pub sector: Hex,
@@ -2924,16 +2927,66 @@ pub struct CombatEndedEvent {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub salvage: Option<Resources>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub salvage_pile: Option<Resources>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub salvage_despawn_tick: Option<u64>,
 }
 
-/// A fleet scooped wreckage. `resources` is what went into the hold; if the
-/// hold filled first, `remaining` is what is still on the ground (it keeps
-/// its original despawn time). Absent when the pile is gone.
+/// Resources went into the stockpile, or came out of it, other than by
+/// production and by paying for an order, a repair or fuel: what a fleet's
+/// hold put into it at the home dock, what `load` took from it into a hold,
+/// wreckage lying on the homeworld that a docked fleet scooped into it, and
+/// what the charts a fleet delivered paid.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StockpileEvent {
+    pub player_id: u64,
+    /// The fleet whose hold it came from or went to; for `Wreckage`, the
+    /// docked fleet that scooped it; for `Charts`, the fleet that delivered
+    /// them.
+    pub fleet_id: u64,
+    pub cause: StockpileCause,
+    /// What went in (`Unloaded`, `Wreckage`, `Charts`) or came out
+    /// (`Loaded`).
+    pub amount: Resources,
+}
+
+/// Why the stockpile changed in a `StockpileEvent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StockpileCause {
+    /// A fleet's hold was emptied into the stockpile at the home dock: a
+    /// fleet docked with cargo, an `unload`, or the cargo of ships a fleet
+    /// lost there.
+    Unloaded,
+    /// `load` put stock into a fleet's hold.
+    Loaded,
+    /// Wreckage on the homeworld, mostly a repelled raid's.
+    Wreckage,
+    /// Charts delivered to a dock: `scaling::chart_value` for each sector
+    /// new to the empire, as far as the caps allow.
+    Charts,
+}
+
+impl StockpileCause {
+    /// What happened, as a client words it after the fleet's name and
+    /// before the amount.
+    pub fn phrase(self) -> &'static str {
+        match self {
+            StockpileCause::Unloaded => "unloaded into the stockpile",
+            StockpileCause::Loaded => "loaded from the stockpile",
+            StockpileCause::Wreckage => "scooped wreckage at home into the stockpile",
+            StockpileCause::Charts => "delivered charts, paid into the stockpile",
+        }
+    }
+}
+
+/// A fleet scooped wreckage into its hold. `resources` is what went into the
+/// hold; if the hold filled first, `remaining` is what is still on the
+/// ground (it keeps its original despawn time). Absent when the pile is
+/// gone. Wreckage on the player's own homeworld goes into the stockpile
+/// instead, and is told by a `StockpileEvent`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SalvageCollectedEvent {
-    /// The collecting fleet. For the automatic scoop of a pile on the
-    /// player's own homeworld, the lowest-id fleet docked there.
     pub fleet_id: u64,
     pub sector: Hex,
     pub resources: Resources,

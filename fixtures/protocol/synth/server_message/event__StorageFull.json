@@ -1,7 +1,7 @@
 [
-{"canonical":{"kind":"StorageFull","player_id":66,"resource":"metal","tick":60,"type":"event"},"input":{"kind":"StorageFull","player_id":66,"resource":"metal","tick":60,"type":"event"}},
-{"canonical":{"kind":"StorageFull","player_id":66,"resource":"crystal","tick":60,"type":"event"},"input":{"kind":"StorageFull","player_id":66,"resource":"crystal","tick":60,"type":"event"}},
-{"canonical":{"kind":"StorageFull","player_id":66,"resource":"deuterium","tick":60,"type":"event"},"input":{"kind":"StorageFull","player_id":66,"resource":"deuterium","tick":60,"type":"event"}},
-{"canonical":{"kind":"StorageFull","resource":"deuterium","tick":60,"type":"event"},"input":{"kind":"StorageFull","resource":"deuterium","tick":60,"type":"event"}},
-{"canonical":{"kind":"StorageFull","resource":"deuterium","tick":60,"type":"event"},"input":{"kind":"StorageFull","player_id":null,"resource":"deuterium","tick":60,"type":"event"}}
+{"canonical":{"kind":"StorageFull","player_id":79,"resource":"metal","tick":65,"type":"event"},"input":{"kind":"StorageFull","player_id":79,"resource":"metal","tick":65,"type":"event"}},
+{"canonical":{"kind":"StorageFull","player_id":79,"resource":"crystal","tick":65,"type":"event"},"input":{"kind":"StorageFull","player_id":79,"resource":"crystal","tick":65,"type":"event"}},
+{"canonical":{"kind":"StorageFull","player_id":79,"resource":"deuterium","tick":65,"type":"event"},"input":{"kind":"StorageFull","player_id":79,"resource":"deuterium","tick":65,"type":"event"}},
+{"canonical":{"kind":"StorageFull","resource":"deuterium","tick":65,"type":"event"},"input":{"kind":"StorageFull","resource":"deuterium","tick":65,"type":"event"}},
+{"canonical":{"kind":"StorageFull","resource":"deuterium","tick":65,"type":"event"},"input":{"kind":"StorageFull","player_id":null,"resource":"deuterium","tick":65,"type":"event"}}
 ]

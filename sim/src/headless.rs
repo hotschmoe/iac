@@ -13,7 +13,9 @@ use iac_shared::constants::{
 };
 use iac_shared::hex::{hex_ring, Hex};
 use iac_shared::pace::Pace;
-use iac_shared::protocol::{BattleOutcome, EventKind, GameEvent, PursuitPhase, QueueType, UnitCount, WaitReason};
+use iac_shared::protocol::{
+    BattleOutcome, EventKind, GameEvent, PursuitPhase, QueueType, StockpileCause, UnitCount, WaitReason,
+};
 use iac_shared::scaling::{self, BuildingType, ResearchType, ShipyardItem};
 use serde::Serialize;
 
@@ -896,7 +898,6 @@ impl Counting<'_> {
         let entries = &mut *self.entries;
         let flying = |fleet_id: u64| engine.fleets.get(&fleet_id).map(|f| f.owner_id);
         let named = |name: &str| engine.players.values().find(|p| p.name == name).map(|p| p.id);
-        let home_of = |player_id: u64| engine.players.get(&player_id).map(|p| p.homeworld);
         let kind = |fleet_id: u64| {
             let fleet = engine.fleets.get(&fleet_id)?;
             let (class, _) = fleet.ships.counts().max_by_key(|&(_, count)| count)?;
@@ -911,11 +912,18 @@ impl Counting<'_> {
                     }
                 }
                 EventKind::SalvageCollected(e) => {
-                    let owner = flying(e.fleet_id);
-                    let at_home = owner.and_then(home_of) == Some(e.sector);
-                    if let Some(t) = tally_of(entries, owner) {
-                        let gain = scaling::resource_weight(&e.resources);
-                        if at_home { t.raid_salvage += gain } else { t.salvage += gain }
+                    if let Some(t) = tally_of(entries, flying(e.fleet_id)) {
+                        t.salvage += scaling::resource_weight(&e.resources);
+                    }
+                }
+                EventKind::Stockpile(e) if e.cause == StockpileCause::Wreckage => {
+                    if let Some(t) = tally_of(entries, Some(e.player_id)) {
+                        t.raid_salvage += scaling::resource_weight(&e.amount);
+                    }
+                }
+                EventKind::Stockpile(e) if e.cause == StockpileCause::Charts => {
+                    if let Some(t) = tally_of(entries, Some(e.player_id)) {
+                        t.chart_pay += scaling::resource_weight(&e.amount);
                     }
                 }
                 EventKind::SiteExplored(e) => {
@@ -927,7 +935,6 @@ impl Counting<'_> {
                 EventKind::ChartDelivered(e) => {
                     if let Some(t) = tally_of(entries, flying(e.fleet_id)) {
                         t.sectors_charted += e.sectors;
-                        t.chart_pay += scaling::resource_weight(&e.paid);
                     }
                 }
                 EventKind::CombatEnded(e) if !e.raid => {

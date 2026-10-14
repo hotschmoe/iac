@@ -10,7 +10,7 @@ use iac_shared::constants::{Resources, ShipClass, RAID_ROUNDS};
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     BatchWait, BattleOutcome, Command, ErrorCode, EventKind, QueueAction, QueueEvent, QueueType, RaidLabel, ServerMessage,
-    WaitReason,
+    StockpileCause, WaitReason,
 };
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 use iac_shared::world::NpcBehaviorType;
@@ -46,7 +46,13 @@ fn chart_the_neighbourhood(e: &mut Empire) {
 
     let delivered = |e: &Empire, mark: usize| {
         e.since(mark, |k| match k {
-            EventKind::ChartDelivered(d) => Some(d.clone()),
+            EventKind::ChartDelivered(d) => Some(d.sectors),
+            _ => None,
+        })
+    };
+    let paid_for_charts = |e: &Empire, mark: usize| {
+        e.since(mark, |k| match k {
+            EventKind::Stockpile(s) if s.cause == StockpileCause::Charts => Some(s.amount),
             _ => None,
         })
     };
@@ -56,17 +62,17 @@ fn chart_the_neighbourhood(e: &mut Empire) {
     assert!(delivered(e, mark).is_empty(), "nothing is paid in the field");
     let stock = e.engine.players[&e.pid].resources;
     e.travel(home);
-    let paid = delivered(e, mark);
-    assert_eq!(paid.len(), 1);
+    assert_eq!(delivered(e, mark), [1], "one sector charted");
     let rating = scaling::threat_rating(scaling::npc_power(out.dist_from_origin()));
-    assert_eq!(paid[0].paid, scaling::split_loot(scaling::chart_value(rating)), "the chart pays its value in resources");
-    assert!(e.engine.players[&e.pid].resources.metal >= stock.metal + paid[0].paid.metal, "into the stockpile");
+    let paid = paid_for_charts(e, mark);
+    assert_eq!(paid, [scaling::split_loot(scaling::chart_value(rating))], "the chart pays its value in resources");
+    assert!(e.engine.players[&e.pid].resources.metal >= stock.metal + paid[0].metal, "into the stockpile");
     assert_eq!(e.score_row().score, before.score, "and scores nothing until it is built into something");
 
     let mark = e.mark();
     e.travel(out);
     e.travel(home);
-    assert!(delivered(e, mark).is_empty(), "the same sector never pays twice");
+    assert!(delivered(e, mark).is_empty() && paid_for_charts(e, mark).is_empty(), "the same sector never pays twice");
 }
 
 const HALF: f64 = scaling::CANCEL_REFUND_FRACTION;
@@ -429,7 +435,6 @@ fn hunt_pirates(e: &mut Empire, lair: Hex) {
 }
 
 fn withstand_a_raid(e: &mut Empire) {
-    let home_sector = e.engine.players[&e.pid].homeworld;
     e.order(Command::Build { building_type: BuildingType::Shipyard, reserve: false }).expect("second shipyard level");
     e.run_until(100, |e| e.state().homeworld.build_queue.is_empty() && e.state().homeworld.build_pending.is_empty());
     let mark = e.mark();
@@ -470,7 +475,7 @@ fn withstand_a_raid(e: &mut Empire) {
 
     e.run(2);
     let scooped = e.since(mark, |k| match k {
-        EventKind::SalvageCollected(c) if c.sector == home_sector => Some(c.resources),
+        EventKind::Stockpile(s) if s.cause == StockpileCause::Wreckage => Some(s.amount),
         _ => None,
     });
     assert_eq!(scooped, [pile], "the docked fleet scoops the wreckage into storage");

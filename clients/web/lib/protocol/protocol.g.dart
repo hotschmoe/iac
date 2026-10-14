@@ -1203,7 +1203,11 @@ enum RaidLabel {
   held('held', label: 'HELD', outcome: 'a defender stands when the raiders give up; what falls before that is lost'),
 
   /// The raiders were destroyed in every fight played.
-  repelled('repelled', label: 'REPELLED', outcome: 'the raiders are destroyed and leave their wreckage');
+  repelled(
+    'repelled',
+    label: 'REPELLED',
+    outcome: 'the raiders are destroyed and leave their wreckage; what of yours falls before that is lost',
+  );
 
   const RaidLabel(this.wire, {required this.label, required this.outcome});
 
@@ -4568,6 +4572,7 @@ sealed class EventKind {
       'CombatEnded' => CombatEndedEvent.fromJson(json),
       'Pursuit' => PursuitEvent.fromJson(json),
       'SalvageCollected' => SalvageCollectedEvent.fromJson(json),
+      'Stockpile' => StockpileEvent.fromJson(json),
       'FleetArrived' => FleetArrivedEvent.fromJson(json),
       'BuildingCompleted' => BuildingCompletedEvent.fromJson(json),
       'ResearchCompleted' => ResearchCompletedEvent.fromJson(json),
@@ -4883,31 +4888,24 @@ class SiteExploredEvent extends EventKind {
 }
 
 /// A fleet docked at the homeworld, or arrived at its owner's finished
-/// outpost, and handed over the sectors it charted. Each new chart pays
-/// `scaling::chart_value` into the stockpile, as far as its caps allow.
+/// outpost, and handed over the sectors it charted. What they paid into
+/// the stockpile is a `StockpileEvent` of cause `Charts`; what a full store
+/// has no room for is lost.
 class ChartDeliveredEvent extends EventKind {
   final int fleetId;
 
   /// Sectors newly credited to the empire.
   final int sectors;
 
-  /// What they paid into the stockpile. What a full store has no room
-  /// for is lost.
-  final Resources paid;
-
-  const ChartDeliveredEvent({required this.fleetId, required this.sectors, required this.paid});
+  const ChartDeliveredEvent({required this.fleetId, required this.sectors});
 
   factory ChartDeliveredEvent.fromJson(Object? json) {
     final m = _obj(json);
-    return ChartDeliveredEvent(
-      fleetId: _int(m['fleet_id']),
-      sectors: _int(m['sectors']),
-      paid: Resources.fromJson(m['paid']),
-    );
+    return ChartDeliveredEvent(fleetId: _int(m['fleet_id']), sectors: _int(m['sectors']));
   }
 
   @override
-  Json toJson() => {'kind': 'ChartDelivered', 'fleet_id': fleetId, 'sectors': sectors, 'paid': paid.toJson()};
+  Json toJson() => {'kind': 'ChartDelivered', 'fleet_id': fleetId, 'sectors': sectors};
 }
 
 /// Whatever killed the crew is still aboard.
@@ -5513,10 +5511,11 @@ class ShipsLostEvent extends EventKind {
 }
 
 /// Every ship of a fleet is gone. For an NPC fleet killed by players,
-/// `salvage` is the wreckage it left in `sector`: exactly what
-/// `collect_salvage` can take (when several NPC fleets die in one fight the
-/// sector pile is the sum of their events). Player fleets leave no wreckage,
-/// so `salvage` is zero. A destroyed fleet of the receiver's also produces a
+/// `salvage` is the wreckage this kill added to `sector`. The fight's
+/// `CombatEnded` adds the kills of the fight up in its `salvage`, and names
+/// the whole pile lying there, wreckage left from before included, in
+/// `salvage_pile` when that is more. Player fleets leave no wreckage, so
+/// `salvage` is zero. A destroyed fleet of the receiver's also produces a
 /// `Critical` `Alert`.
 class FleetDestroyedEvent extends EventKind {
   final int fleetId;
@@ -5661,10 +5660,13 @@ class CombatStartedEvent extends EventKind {
 }
 
 /// A fight is over. `owners` lists the empires that fought. `salvage` is the
-/// pile the hostiles' destruction left in the sector (absent when they were
-/// not destroyed); it despawns at `salvage_despawn_tick`. When the fight was
-/// a raid, `raid` is set and the `RaidResolved` of the same tick says what
-/// was rebuilt and what was taken.
+/// wreckage the hostiles' destruction left in the sector, the sum of the
+/// fight's `FleetDestroyed` (absent when they were not destroyed). When
+/// wreckage from before was still lying there, `salvage_pile` is the pile
+/// the two make, which is what `collect_salvage` finds; absent when the
+/// fight's wreckage is all there is. The pile despawns at
+/// `salvage_despawn_tick`. When the fight was a raid, `raid` is set and the
+/// `RaidResolved` of the same tick says what was rebuilt and what was taken.
 class CombatEndedEvent extends EventKind {
   final Hex sector;
 
@@ -5683,6 +5685,7 @@ class CombatEndedEvent extends EventKind {
   final List<String> owners;
   final bool mine;
   final Resources? salvage;
+  final Resources? salvagePile;
   final int? salvageDespawnTick;
 
   const CombatEndedEvent({
@@ -5695,6 +5698,7 @@ class CombatEndedEvent extends EventKind {
     required this.owners,
     this.mine = false,
     this.salvage,
+    this.salvagePile,
     this.salvageDespawnTick,
   });
 
@@ -5710,6 +5714,7 @@ class CombatEndedEvent extends EventKind {
       owners: _list(m['owners'], _string),
       mine: _opt(m['mine'], _bool) ?? false,
       salvage: _opt(m['salvage'], Resources.fromJson),
+      salvagePile: _opt(m['salvage_pile'], Resources.fromJson),
       salvageDespawnTick: _opt(m['salvage_despawn_tick'], _int),
     );
   }
@@ -5726,16 +5731,84 @@ class CombatEndedEvent extends EventKind {
     'owners': owners,
     'mine': mine,
     'salvage': ?salvage?.toJson(),
+    'salvage_pile': ?salvagePile?.toJson(),
     'salvage_despawn_tick': ?salvageDespawnTick,
   };
 }
 
-/// A fleet scooped wreckage. `resources` is what went into the hold; if the
-/// hold filled first, `remaining` is what is still on the ground (it keeps
-/// its original despawn time). Absent when the pile is gone.
+/// Resources went into the stockpile, or came out of it, other than by
+/// production and by paying for an order, a repair or fuel: what a fleet's
+/// hold put into it at the home dock, what `load` took from it into a hold,
+/// wreckage lying on the homeworld that a docked fleet scooped into it, and
+/// what the charts a fleet delivered paid.
+class StockpileEvent extends EventKind {
+  final int playerId;
+
+  /// The fleet whose hold it came from or went to; for `Wreckage`, the
+  /// docked fleet that scooped it; for `Charts`, the fleet that delivered
+  /// them.
+  final int fleetId;
+  final StockpileCause cause;
+
+  /// What went in (`Unloaded`, `Wreckage`, `Charts`) or came out
+  /// (`Loaded`).
+  final Resources amount;
+
+  const StockpileEvent({required this.playerId, required this.fleetId, required this.cause, required this.amount});
+
+  factory StockpileEvent.fromJson(Object? json) {
+    final m = _obj(json);
+    return StockpileEvent(
+      playerId: _int(m['player_id']),
+      fleetId: _int(m['fleet_id']),
+      cause: StockpileCause.fromJson(m['cause']),
+      amount: Resources.fromJson(m['amount']),
+    );
+  }
+
+  @override
+  Json toJson() => {
+    'kind': 'Stockpile',
+    'player_id': playerId,
+    'fleet_id': fleetId,
+    'cause': cause.toJson(),
+    'amount': amount.toJson(),
+  };
+}
+
+/// Why the stockpile changed in a `StockpileEvent`.
+enum StockpileCause {
+  /// A fleet's hold was emptied into the stockpile at the home dock: a
+  /// fleet docked with cargo, an `unload`, or the cargo of ships a fleet
+  /// lost there.
+  unloaded('unloaded', phrase: 'unloaded into the stockpile'),
+
+  /// `load` put stock into a fleet's hold.
+  loaded('loaded', phrase: 'loaded from the stockpile'),
+
+  /// Wreckage on the homeworld, mostly a repelled raid's.
+  wreckage('wreckage', phrase: 'scooped wreckage at home into the stockpile'),
+
+  /// Charts delivered to a dock: `scaling::chart_value` for each sector
+  /// new to the empire, as far as the caps allow.
+  charts('charts', phrase: 'delivered charts, paid into the stockpile');
+
+  const StockpileCause(this.wire, {required this.phrase});
+
+  final String wire;
+  final String phrase;
+
+  static StockpileCause fromJson(Object? json) => _named(values, (v) => v.wire, json);
+
+  String toJson() => wire;
+}
+
+/// A fleet scooped wreckage into its hold. `resources` is what went into the
+/// hold; if the hold filled first, `remaining` is what is still on the
+/// ground (it keeps its original despawn time). Absent when the pile is
+/// gone. Wreckage on the player's own homeworld goes into the stockpile
+/// instead, and is told by a `StockpileEvent`.
 class SalvageCollectedEvent extends EventKind {
-  /// The collecting fleet. For the automatic scoop of a pile on the
-  /// player's own homeworld, the lowest-id fleet docked there.
   final int fleetId;
   final Hex sector;
   final Resources resources;

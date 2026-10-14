@@ -49,7 +49,7 @@ for guerilla warfare type battling".
   builder's recommendation; the owner did not say). A chart delivered to a
   dock pays `chart_value(T) = 50 + 50 x T^1.5` units of loot into the
   stockpile for each sector new to the empire, at any pace and as far as the
-  caps allow (`CHART_VALUE_*`, `ChartDelivered.paid`); a first boarding pays
+  caps allow (`CHART_VALUE_*`; since the merge with master a `Stockpile` event of cause `Charts`); a first boarding pays
   its loot as any boarding does; a relic makes a site pay `RELIC_LOOT_MULT`
   (6) times its loot.
 - *The jump law* is linear: `max(1, ceil(JUMP_SPEED_REF / speed))` with
@@ -143,6 +143,13 @@ field pays.
   roll moved before the hold is filled, with no draw moved.
 - *The board shows `defence`* although it is 0 today, so the parts always
   add up to the score if the share moves.
+- *At the merge with master's playtest fixes* (3dae48e) the bonus room
+  (`LeaderboardReply.bonus`, `BonusRoom`; master's entry below) went with the
+  cap, and the play tool's `Standing:` line says the leader and the gap, in
+  all and by part (`score.leader.gap_by_part`). A delivered chart's pay is a
+  `Stockpile` event of cause `Charts` (worded "delivered charts, paid into
+  the stockpile") and no longer `ChartDelivered.paid`. A boarding's loot and
+  a relic's go into the hold, so they send none.
 - *The bots* (`sim/src/bot/`, the other agent's ground): the smallest change
   that compiles. With no cap there is nothing for a wing to stop for:
   `Brief.points_wanted`, `has_work`, `Bot::under`, the bot's `rule`, its
@@ -267,6 +274,60 @@ stood.
   finds work more often, and a world of bots plays differently after the
   first changed fight. The sum of all totals fell by 0.5 to 2.0% in all
   five runs measured, inside a spread where single styles moved 18%.
+
+## 2026-10-14 (what the builder chose fixing the playtest of 2026-10-14)
+
+None of these was put to the owner; they came with the fixes to the eight
+problems the playtest of 2026-10-14 reported (`docs/playtests/2026-10-14/`,
+and the journal of the same day). Each line ends with what undoes it.
+`ECONOMY_VERSION` is 14 and `SAVE_FORMAT` 13.
+
+- *A doctrine sets out only on a trip the fuel aboard flies there and home.*
+  The goal of `prospect`, `mine_and_return` and `salvage_and_sites` must be
+  reachable in its jumps and home again in the fewest jumps over the real
+  lanes, with the reserve on top (`Reach::affords`). Before, a sector inside
+  the hex range whose lanes wind took the fleet out until its next jump
+  failed the fuel check, home, and out again, for ever. The built-in bots
+  fly these doctrines, so the version moves. Undo: drop `reach.affords` from
+  the three goals in `sim/src/engine.rs`.
+- *The way home is the one the fuel flies.* `Reach::way_home` still prefers
+  a lane without a fight, at the engage ratio first, but takes a lane only
+  if the fuel aboard flies it; when none does, it takes the shortest and the
+  reason says the fleet cannot reach home on it. Undo: the `flies` test in
+  `way_home`.
+- *A hold is told once.* A doctrine's hold is reported when it begins and
+  again when its reason (less its figures) changes, no longer every minute;
+  any act but another hold or a scan ends it. `FleetPolicy::last_hold` keeps
+  the reason only. Undo: `hold_is_news` and `push_policy_event`.
+- *A hold names the limit that holds it.* Odds below the engage ratio, the
+  fuel there and back, or the range; the tank is named only where it sets
+  the range and the range is what holds. Wording only.
+- *Wreckage is one figure per thing it names.* `CombatEnded.salvage` is now
+  what the fight dropped, the sum of its `FleetDestroyed`; the new
+  `salvage_pile` is the whole pile when wreckage from before lay under it.
+  Before, `salvage` was the pile, and a kill on an uncollected pile printed
+  three figures for one fight. Undo: the two `CombatEnded` sites in
+  `end_combat` and `end_siege`.
+- *What enters or leaves the stockpile outside production and paying is a
+  `Stockpile` event:* a hold emptied at the home dock (docked with cargo,
+  `unload`, or the cargo of ships lost there), `load`, and wreckage scooped
+  on the homeworld, which is no longer a `SalvageCollected` (that event now
+  only means a hold). Refuelling at the home dock is not one: it is paying
+  for fuel, it would fire on every trickle of a dry stockpile, and the tank
+  says it. The web client logs every one and raises an alert for what came
+  in (unloaded, wreckage), not for `load`, which the player ordered. Undo:
+  `push_stockpile` and its four callers; `StockpileEvent` in
+  `shared/src/protocol.rs`.
+- *Repelled is not free.* `RaidLabel::Repelled`'s sentence now ends "what of
+  yours falls before that is lost", and the play tool prints a forecast's
+  `kept` as the share lost and a resolved raid that lost units as repelled
+  at a cost. The label and its figures are as they were.
+- *The leaderboard carries the asker's bonus room* (`LeaderboardReply.bonus`:
+  `banked`, `cap`, `room`, `core_to_count`), so no client works out the cap.
+- *The play tool sends an order at a time behind a fence and stops at the
+  first refusal.* A batch of five takes up to five ticks instead of one;
+  `--keep-going` sends all at once and is still answered order by order.
+  Undo: `run_commands` in `tools/playtest/play.py`.
 
 ## 2026-10-14 (Solar Satellites that fall in a raid are rebuilt as defences are)
 

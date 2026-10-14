@@ -1,11 +1,6 @@
 {
   "fleet_id": 1,
   "kind": "ChartDelivered",
-  "paid": {
-    "crystal": 780.0,
-    "deuterium": 390.0,
-    "metal": 1430.0
-  },
   "sectors": 12,
   "tick": 1234
 }

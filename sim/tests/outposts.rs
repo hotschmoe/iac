@@ -21,7 +21,7 @@ use iac_shared::pace::Pace;
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, BattleOutcome, BattleRoundEvent, ChartMark, Command, ErrorCode, EventKind, OutpostState,
     OutpostSurvey, OutpostWork, PolicyPreset, RaidIncomingEvent, RaidLabel, RaidResolvedEvent, ServerMessage, ThreatBasis,
-    UnitCount,
+    StockpileCause, UnitCount,
 };
 use iac_shared::scaling::{self, DefenceKind, RatioLabel, ShipyardItem};
 use iac_shared::world::{NpcBehaviorType, SectorTemplate};
@@ -591,7 +591,7 @@ fn a_convoy_round_trip_makes_nothing_but_the_yield_and_the_charts_it_delivers() 
     e.travel(home);
     e.run(2);
     let charts: f64 = e.since(mark, |k| match k {
-        EventKind::ChartDelivered(c) => Some(c.paid.metal),
+        EventKind::Stockpile(s) if s.cause == StockpileCause::Charts => Some(s.amount.metal),
         _ => None,
     }).iter().sum();
     let at_home = home_stock + charts + natural.metal * (e.engine.current_tick() - started) as f64;
@@ -607,7 +607,7 @@ fn a_convoy_round_trip_makes_nothing_but_the_yield_and_the_charts_it_delivers() 
 
     let burned = jump * (out.len() + back.len()) as f64;
     let charted = e.since(trip, |k| match k {
-        EventKind::ChartDelivered(c) => Some(c.paid),
+        EventKind::Stockpile(s) if s.cause == StockpileCause::Charts => Some(s.amount),
         _ => None,
     });
     let made = rate.add(natural).scale((e.engine.current_tick() - started) as f64).add(charted.iter().fold(Resources::default(), |sum, r| sum.add(*r)));

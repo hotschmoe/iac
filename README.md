@@ -198,6 +198,11 @@ Standing orders are a separate message type (not a command):
  "params":{"min_fuel_pct":10,"cargo_return_pct":85,"max_range":4,"engage_ratio_x10":15,"disengage_ratio_x10":9,"fuel_budget_pct":20}}
 ```
 
+A line that names it as an order, `{"action":"policy_update",...}`, is refused
+by the headless client with a `client_error` saying to send it with `"type"`
+in place of `"action"`; an order it does not know is refused with the list of
+orders and the form of standing orders.
+
 `params` is optional, and so is every field in it: send only what you want to
 change (`"params":{"max_range":2}`) and the rest take their defaults. A fleet
 under orders carries them in its row: `fleets[].policy` is
@@ -217,10 +222,17 @@ fly by hand has no `policy` field.
 
 Fuel safety: the autopilot returns home when its fuel falls below the cost of
 the shortest route home (charted or not) plus the `min_fuel_pct` reserve, and it
-refuses any outward jump that would leave less than that. A range limit
-shorter than `max_range` (the tank cannot afford the round trip) is reported
-in the hold reason. Whenever a doctrine stands still it says why in a
-`PolicyAction` event (`action: "hold"`).
+refuses any outward jump that would leave less than that. It sets out only for
+a sector it can fly to and home from on the fuel aboard, its reserve kept,
+counting jumps over the real lanes. Turning home, it takes the way the fuel it
+carries flies (a lane without a fight first, then one with) and says how many
+jumps home is, by which sector, and the fuel against what it carries; when no
+way home is within its fuel it flies the shortest and says so. Whenever a
+doctrine stands still it says why in a `PolicyAction` event (`action:
+"hold"`), naming the limit that holds it: odds below the engage ratio, the
+fuel there and back, or the range (with the tank named when it, not
+`max_range`, sets the range). A hold is told when it begins and again only
+when its reason changes.
 
 Fuel budget: refuelling is paid in deuterium ahead of every queue, so every
 standing order carries a bound on it. The fleet earns an allowance at
@@ -1061,6 +1073,14 @@ worldgen rolls inside `shared/src/world.rs`.
   earned: a group pays its wreckage when it is
   destroyed and not before. `recall` is the other way out: at once, all the way home, for
   twice the fuel and a chance of harm to every ship.
+  *Caught while charging.* The same holds for a fleet that ordered a jump
+  before any fight: if a group attacks it in its sector while its jump
+  charges, it is in the fight as a fleet that is leaving, fired on every
+  round until the jump lands and not firing back, and the jump goes on
+  (`stop` calls it off, its fuel forfeit, and the fleet then fights). This
+  is meant: a fleet that has paid for its jump has turned its back. One
+  `Alert` (warning) says so when it happens, with the ticks until the jump
+  lands.
   *Pursuit.* When the last fleet has left, a group goes after the strongest
   of those that jumped out, if it was beating it (its power at least the
   fleet's) and the fleet is next door: convoys never, patrols one jump,
@@ -1111,10 +1131,13 @@ worldgen rolls inside `shared/src/world.rs`.
   `losses` so far, and in the full state the `last_round`, which a tick
   update carries as its `BattleRound` event instead. Ships that break up
   in a `recall` are a `ShipsLost` event.
-  Victors drop salvage (`FleetDestroyed.salvage`
-  is exactly the pile `collect_salvage` can take; it lasts 180 ticks, its
-  sector view carries `salvage_despawn_tick`, and a `SalvageDespawned` event
-  says when one expires). You only receive combat
+  Victors drop salvage. `FleetDestroyed.salvage` is what that kill added to
+  the sector's pile, `CombatEnded.salvage` the sum of the fight's kills, and
+  when wreckage from before still lay there `CombatEnded.salvage_pile` is the
+  whole pile, which is what `collect_salvage` takes and the sector view shows.
+  The pile lasts 180 ticks from the last kill, its sector view carries
+  `salvage_despawn_tick`, and a `SalvageDespawned` event says when one
+  expires. You only receive combat
   events for fights your fleets or homeworld are in, or that happen in a
   sector where you have a fleet or your homeworld. Each carries `owner`
   (empire name, `null` for NPCs) and `mine`; losing a fleet also raises a
@@ -1172,7 +1195,7 @@ worldgen rolls inside `shared/src/world.rs`.
   chart delivered to your homeworld or your finished outpost pays
   `50 + 50 x T^1.5` units of loot into your stockpile for each sector new to
   your empire (T its ring's threat rating), at any pace, as far as your
-  caps allow (`ChartDelivered.paid`). A stripped derelict is replaced after 120 game hours / P^0.5.
+  caps allow (a `Stockpile` event with `cause: "charts"`). A stripped derelict is replaced after 120 game hours / P^0.5.
 - **Standing orders** — assign a fleet a doctrine and the server flies it
   (see `policy_update` above). Doctrines respect fuel/cargo thresholds,
   return home to deposit and refuel within their fuel budget, go home to be
@@ -1225,7 +1248,10 @@ worldgen rolls inside `shared/src/world.rs`.
   is rebuilt), `raiders_kept` the raiders' share, and `label` is `repelled`
   (destroyed every time), `held` (never lost, not always destroyed),
   `at_risk` (lost in some) or `lost`. Build against the label, not against
-  a power figure: nothing compares two powers any more.
+  a power figure: nothing compares two powers any more. `repelled` and
+  `held` say the raid does not breach the dock, not that it costs nothing:
+  what falls before the last raider does is lost, and `kept` below 1 is
+  that cost.
   **The fight.** When the raid arrives it stands at your homeworld and
   fights the next tick: the round of every fight (Combat, above), one a
   tick, the raiders against every ship of yours standing at home, every
@@ -1273,10 +1299,20 @@ worldgen rolls inside `shared/src/world.rs`.
   `satellites_lost` (those that fell, before the rebuild),
   `structures_lost`, `structures_restored` (the defences alone),
   `resources_lost`, `protected_kept`, and for a destroyed raid `salvage_dropped` and
-  `salvage_despawn_tick`. The wreckage is on your own planet, so
+  `salvage_despawn_tick`. `defended: true` with something in `lost` is a
+  raid repelled at a cost. The wreckage is on your own planet, so
   a fleet docked at home scoops it into storage by itself, up to what the
-  stores hold (`SalvageCollected` says what); with no fleet docked, or the
-  stores full, an `Alert` fires once when 60 s are left.
+  stores hold (a `Stockpile` event with `cause: "wreckage"` says what); with
+  no fleet docked, or the stores full, an `Alert` fires once when 60 s are
+  left.
+- **What enters or leaves the stockpile** — besides production and what is
+  paid for orders, repairs and fuel, the stockpile changes only when a hold
+  is emptied into it at the home dock (a fleet docked with cargo, an
+  `unload`, or the cargo of ships a fleet lost there), when `load` fills a
+  hold from it, when a docked fleet scoops wreckage on the homeworld, or
+  when a fleet delivers charts. Each is a `Stockpile` event (`fleet_id`,
+  `cause`: `unloaded`, `loaded`, `wreckage`, `charts`, and the `amount`), shown in the web client's log and alerts
+  and in `play`'s events in the words of `StockpileCause::phrase`.
 - **The hub and its exchange** — the sector at the centre, `[0,0]`, is a
   neutral post: empty space with no ore, no hostile group and no derelict,
   and no hostile group wanders in. `full_state.world.hub` lists it with what

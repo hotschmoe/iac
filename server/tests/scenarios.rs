@@ -813,6 +813,19 @@ async fn an_outpost_is_surveyed_refused_founded_outlives_a_server_stopped_while_
     let unread = pipe.until(|m| m["type"] == "client_error");
     assert!(unread["message"].as_str().unwrap().contains("fleet_id"), "a line the client cannot read is answered in band and not sent: {unread}");
     assert!(pipe.until(|m| m["type"] == "tick_update").get("outpost").is_some(), "the outpost still stands");
+    pipe.say(&json!({"action": "policy_update", "fleet_id": fleet, "preset": "prospect"}).to_string());
+    let misread = pipe.until(|m| m["type"] == "client_error");
+    assert!(
+        misread["message"].as_str().unwrap().contains("policy_update is a message of its own, not an order: send it with \"type\" in place of \"action\""),
+        "standing orders sent as an order are answered with the form they take: {misread}",
+    );
+    pipe.say(&json!({"action": "survey_outpost", "fleet_id": fleet}).to_string());
+    let unknown = pipe.until(|m| m["type"] == "client_error");
+    assert!(
+        unknown["message"].as_str().unwrap().contains("unknown variant `survey_outpost`")
+            && unknown["message"].as_str().unwrap().contains("{\"type\":\"policy_update\""),
+        "an order the client does not know names the orders and the form of standing orders: {unknown}",
+    );
 
     pipe.say(&json!({"action": "abandon_outpost"}).to_string());
     let gone = pipe.until(|m| m["type"] == "tick_update" && m.get("outpost").is_none());

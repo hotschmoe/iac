@@ -987,6 +987,7 @@ fn event_kind_name(k: &EventKind) -> &'static str {
         EventKind::CombatEnded(_) => "combat_ended",
         EventKind::Pursuit(_) => "pursuit",
         EventKind::SalvageCollected(_) => "salvage_collected",
+        EventKind::Stockpile(_) => "stockpile",
         EventKind::FleetArrived(_) => "fleet_arrived",
         EventKind::BuildingCompleted(_) => "building_completed",
         EventKind::ResearchCompleted(_) => "research_completed",
@@ -1586,6 +1587,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     owners: vec!["Admiral".into()],
                     mine: true,
                     salvage: Some(res(60.0, 15.0, 9.0)),
+                    salvage_pile: Some(res(150.0, 37.5, 22.5)),
                     salvage_despawn_tick: Some(137),
                 }),
             }),
@@ -1839,6 +1841,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             owners: vec!["Admiral".into(), "Rival".into()],
             mine: false,
             salvage: None,
+            salvage_pile: None,
             salvage_despawn_tick: None,
         })),
         ("standoff", EventKind::CombatEnded(CombatEndedEvent {
@@ -1851,6 +1854,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             owners: vec!["Admiral".into()],
             mine: true,
             salvage: None,
+            salvage_pile: None,
             salvage_despawn_tick: None,
         })),
         ("fled", EventKind::CombatEnded(CombatEndedEvent {
@@ -1863,6 +1867,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             owners: vec!["Admiral".into()],
             mine: true,
             salvage: None,
+            salvage_pile: None,
             salvage_despawn_tick: None,
         })),
         ("raid_outlasted", EventKind::CombatEnded(CombatEndedEvent {
@@ -1875,6 +1880,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             owners: vec!["Admiral".into()],
             mine: true,
             salvage: None,
+            salvage_pile: None,
             salvage_despawn_tick: None,
         })),
         ("raid", EventKind::BattleRound(raid_round())),
@@ -1915,6 +1921,24 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             sector: h(5, -5),
             resources: res(40.0, 0.0, 0.0),
             remaining: Some(res(20.0, 15.0, 9.0)),
+        })),
+        ("", EventKind::Stockpile(StockpileEvent {
+            player_id: 7,
+            fleet_id: 1,
+            cause: StockpileCause::Unloaded,
+            amount: res(4312.5, 0.0, 120.0),
+        })),
+        ("wreckage", EventKind::Stockpile(StockpileEvent {
+            player_id: 7,
+            fleet_id: 1,
+            cause: StockpileCause::Wreckage,
+            amount: res(8100.0, 2700.0, 0.0),
+        })),
+        ("charts", EventKind::Stockpile(StockpileEvent {
+            player_id: 7,
+            fleet_id: 1,
+            cause: StockpileCause::Charts,
+            amount: res(1430.0, 780.0, 390.0),
         })),
         ("", EventKind::SalvageDespawned(SalvageDespawnedEvent {
             sector: h(5, -5),
@@ -2162,7 +2186,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             tech_cache: Some(ResearchType::ShieldingTechnology),
             relic: true,
         })),
-        ("", EventKind::ChartDelivered(ChartDeliveredEvent { fleet_id: 1, sectors: 12, paid: res(1430.0, 780.0, 390.0) })),
+        ("", EventKind::ChartDelivered(ChartDeliveredEvent { fleet_id: 1, sectors: 12 })),
         ("", EventKind::Exchanged(ExchangedEvent { sector: h(0, 0), terms: sample_terms() })),
         ("started", EventKind::Queue(QueueEvent {
             player_id: Some(7),

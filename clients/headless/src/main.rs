@@ -142,7 +142,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 /// Accept a full ClientMessage (has a `type` field) or a bare Command (has
 /// an `action` field) and normalize to the former. The error is the one for
-/// the shape the line claims to be, so a bad field is named as itself.
+/// the shape the line claims to be, so a bad field is named as itself, and
+/// an `action` that names a message of its own says how that one is sent.
 fn parse_line(line: &str) -> Result<ClientMessage, String> {
     let value: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
     let Some(object) = value.as_object() else {
@@ -151,9 +152,24 @@ fn parse_line(line: &str) -> Result<ClientMessage, String> {
     if object.contains_key("type") {
         serde_json::from_value::<ClientMessage>(value).map_err(|e| e.to_string())
     } else if object.contains_key("action") {
-        serde_json::from_value::<Command>(value)
-            .map(ClientMessage::Command)
-            .map_err(|e| e.to_string())
+        serde_json::from_value::<Command>(value.clone()).map(ClientMessage::Command).map_err(|e| {
+            let mut retagged = object.clone();
+            let name = retagged.remove("action").unwrap_or_default();
+            retagged.insert("type".to_string(), name.clone());
+            match serde_json::from_value::<ClientMessage>(serde_json::Value::Object(retagged)) {
+                Ok(ClientMessage::Command(_)) | Err(_) => format!(
+                    "{e}. An order is {{\"action\":...}}; standing orders are a message of their own, \
+                     {{\"type\":\"policy_update\",\"fleet_id\":2,\"preset\":\"prospect\"}}"
+                ),
+                Ok(_) => {
+                    let name = name.as_str().unwrap_or_default();
+                    format!(
+                        "{name} is a message of its own, not an order: send it with \"type\" in place of \"action\", \
+                         as {{\"type\":\"{name}\",...}}"
+                    )
+                }
+            }
+        })
     } else {
         Err("expected a \"type\" field (full message) or an \"action\" field (bare command)".to_string())
     }

@@ -1104,6 +1104,7 @@ class DemoWorld {
       post.store = _less(post.store, taken);
     }
     _setFleet(_copy(f, laden: post == null, cargo: _plus(f.cargo, taken)));
+    if (post == null) _ev(StockpileEvent(playerId: _playerId, fleetId: fleetId, cause: StockpileCause.loaded, amount: taken));
     final carries = 'it carries ${(aboard + loaded).round()} of ${f.cargoCapacity.round()}';
     _ev(AlertEvent(
         level: AlertLevel.info,
@@ -1149,6 +1150,7 @@ class DemoWorld {
     final back = _least(f.cargo, _less(_hw.storage.cap, _resources));
     _resources = _plus(_resources, back);
     _setFleet(_copy(_find(f.id)!, laden: false, cargo: _less(f.cargo, back)));
+    if (back.total > 0) _ev(StockpileEvent(playerId: _playerId, fleetId: f.id, cause: StockpileCause.unloaded, amount: back));
     return back;
   }
 
@@ -1924,13 +1926,14 @@ class DemoWorld {
               kind: d.kind, count: d.count + rebuilt.where((u) => u.unit.defence == d.kind).fold(0, (n, u) => n + u.count), power: d.power),
       ]);
     }
-    Resources? pile;
+    Resources? pile, before;
     int? despawn;
     if (home && raidersGone) {
       final cost = siege.muster.fold(const Resources(), (sum, s) => _plus(sum, _times(_unitCostOf(s.unit), s.count)));
       pile = _times(cost, _book.constant('RAID_DEFENSE_SALVAGE_FRACTION'));
       despawn = _tick + 600;
-      _salvage[key] = (_plus(pile, _salvage[key]?.$1 ?? const Resources()), despawn);
+      before = _salvage[key]?.$1;
+      _salvage[key] = (_plus(pile, before ?? const Resources()), despawn);
       _dirty.add(key);
     }
     var taken = const Resources(), kept = const Resources();
@@ -1971,6 +1974,7 @@ class DemoWorld {
           owners: const ['Demo'],
           mine: true,
           salvage: pile,
+          salvagePile: before == null ? null : _salvage[key]?.$1,
           salvageDespawnTick: despawn));
     }
     _ev(RaidResolvedEvent(
@@ -2833,7 +2837,7 @@ class DemoWorld {
       }
 
       _combats.remove(c.fleetId);
-      Resources? pile;
+      Resources? pile, dropped, before;
       int? despawn;
       if (fleetGone) {
         _fleets = [for (final e in _fleets) if (e.id != f.id) e];
@@ -2849,7 +2853,9 @@ class DemoWorld {
         _hostiles[k] = [for (final h in _hostiles[k] ?? const <NpcFleetInfo>[]) if (h.id != c.npc.id) h];
         _squads.remove(c.npc.id);
         _groups.remove(c.npc.id);
-        pile = _plus(loot, _salvage[k]?.$1 ?? const Resources());
+        before = _salvage[k]?.$1;
+        dropped = loot;
+        pile = _plus(loot, before ?? const Resources());
         despawn = _tick + 600;
         _salvage[k] = (pile, despawn);
         _dirty.add(k);
@@ -2868,7 +2874,8 @@ class DemoWorld {
           losses: _losses(c, fleetGone: fleetGone, groupGone: groupGone),
           owners: const ['Demo'],
           mine: true,
-          salvage: pile,
+          salvage: dropped,
+          salvagePile: before == null ? null : pile,
           salvageDespawnTick: despawn));
       if (!fleetGone) _setFleet(_copy(f, state: FleetStatus.idle));
     }

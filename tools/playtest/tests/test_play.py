@@ -75,6 +75,39 @@ class Events(unittest.TestCase):
         quiet = play.collapse_events(msgs, errors=False)
         self.assertEqual(quiet, ["  t5 built MetalMine L4"])
 
+    def test_one_pile_is_named_one_way_in_every_line(self):
+        destroyed = {"tick": 3246, "kind": "FleetDestroyed", "fleet_id": 9, "is_npc": True, "sector": {"q": 2, "r": -1},
+                     "salvage": {"metal": 89.3, "crystal": 48.7, "deuterium": 24.4}, "label": "light fighter convoy"}
+        ended = {"tick": 3246, "kind": "CombatEnded", "sector": {"q": 2, "r": -1}, "outcome": "hostiles_destroyed", "rounds": 2,
+                 "losses": [], "salvage": {"metal": 89.3, "crystal": 48.7, "deuterium": 24.4},
+                 "salvage_pile": {"metal": 279.0, "crystal": 152.2, "deuterium": 76.1}}
+        self.assertIn("its wreckage 89/49/24 added to the pile there", play.event_text(destroyed))
+        self.assertIn("wreckage 89/49/24 (on wreckage from before: 279/152/76 lie there now)", play.event_text(ended))
+        alone = dict(ended)
+        del alone["salvage_pile"]
+        self.assertTrue(play.event_text(alone).endswith("; wreckage 89/49/24"))
+        scoop = {"tick": 3248, "kind": "SalvageCollected", "fleet_id": 78, "sector": {"q": 2, "r": -1},
+                 "resources": {"metal": 279.0, "crystal": 152.2, "deuterium": 45.3}, "remaining": {"metal": 0, "crystal": 0, "deuterium": 30.8}}
+        self.assertEqual(play.event_text(scoop), "fleet 78 scooped 279/152/45 of wreckage @2,-1 into its hold, 0/0/31 left on the ground")
+
+    def test_what_enters_or_leaves_the_stockpile_is_said(self):
+        e = {"tick": 1769, "kind": "Stockpile", "player_id": 83, "fleet_id": 84, "cause": "unloaded",
+             "amount": {"metal": 4312.0, "crystal": 0.0, "deuterium": 0.0}}
+        self.assertEqual(play.event_text(e), "STOCKPILE: fleet 84 unloaded into the stockpile: 4312/0/0")
+        self.assertIn("scooped wreckage at home into the stockpile: 8100/2700/0",
+                      play.event_text(dict(e, cause="wreckage", amount={"metal": 8100.0, "crystal": 2700.0, "deuterium": 0.0})))
+
+    def test_a_raid_repelled_with_losses_says_what_was_lost(self):
+        odds = {"label": "repelled", "destroyed": 1.0, "outlasted": 0.0, "lost": 0.0, "kept": 0.82, "raiders_kept": 0.0}
+        self.assertTrue(play.odds_words(odds).startswith("REPELLED and you LOSE about 18% of what stands there"))
+        self.assertTrue(play.odds_words(dict(odds, kept=1.0)).startswith("REPELLED and you lose nothing that stands there"))
+        resolved = {"tick": 2720, "kind": "RaidResolved", "defended": True, "outcome": "hostiles_destroyed", "rounds": 2,
+                    "lost": [{"unit": "LightFighter", "count": 1}], "raiders": [], "raiders_lost": [],
+                    "resources_lost": {"metal": 0, "crystal": 0, "deuterium": 0}}
+        text = play.event_text(resolved)
+        self.assertIn("REPELLED, the raiders destroyed, and you LOST some of what stood there after 2 round(s): you lost 1x LightFighter", text)
+        self.assertIn("and you lost nothing", play.event_text(dict(resolved, lost=[])))
+
     def test_alert_levels(self):
         self.assertTrue(play.is_alert({"kind": "Alert", "level": "Warning"}))
         self.assertFalse(play.is_alert({"kind": "Alert", "level": "Info"}))
@@ -98,41 +131,42 @@ class Commands(unittest.TestCase):
         self.assertIsNotNone(play.parse_commands(["{nope"])[1])
         self.assertIsNotNone(play.parse_commands(["[1,2]"])[1])
 
-    def test_errors_go_to_the_command_they_name(self):
-        cmds = [{"action": "build", "building_type": "MetalMine"}, {"action": "research", "tech": "EspionageTechnology"},
-                {"action": "harvest", "fleet_id": 99, "resource": "Auto"}]
-        errs = [{"code": "FleetNotFound", "message": "fleet 99 not found"},
-                {"code": "NoResearchLab", "message": "Espionage Technology needs Research Lab level 3"}]
-        got, left = play.match_errors(cmds, errs)
-        self.assertIsNone(got[0])
-        self.assertEqual(got[1]["code"], "NoResearchLab")
-        self.assertEqual(got[2]["code"], "FleetNotFound")
-        self.assertEqual(left, [])
+    def test_standing_orders_are_taken_as_an_order_and_sent_as_their_own_message(self):
+        sent = play.normalize({"action": "policy_update", "fleet_id": 2, "preset": "prospect"})
+        self.assertEqual(sent, {"type": "policy_update", "fleet_id": 2, "preset": "prospect"})
+        self.assertEqual(play.normalize({"type": "policy_update", "fleet_id": 2, "preset": "prospect"})["type"], "policy_update")
+        self.assertEqual(play.normalize({"action": "scan", "fleet_id": 2}), {"action": "scan", "fleet_id": 2})
 
-    def test_queue_full_goes_to_the_last_matching_order(self):
-        cmds = [{"action": "build", "building_type": "A"}, {"action": "build", "building_type": "B"}, {"action": "research", "tech": "T"}]
-        got, _ = play.match_errors(cmds, [{"code": "QueueFull", "message": "the building queue is full (3 items)"}])
-        self.assertIsNone(got[0])
-        self.assertIsNotNone(got[1])
-        self.assertIsNone(got[2])
+    def test_each_answer_belongs_to_the_order_before_its_fence(self):
+        fs = fresh()
+        load = {"action": "load", "fleet_id": fs["fleets"][0]["id"], "resource": "metal", "amount": 3000}
+        fid, fence = play.fence_for(fs, load)
+        self.assertEqual(fence, {"action": "odds", "fleet_id": fid, "sectors": []})
+        lf ={"type": "error", "code": "InsufficientResources", "message": "Light Fighter x1 costs 3000 metal"}
+        short = {"type": "error", "code": "NoResources", "message": "the stockpile holds 1982.3 metal; fleet 84 cannot load 3000.0"}
+        answer = {"type": "odds", "fleet_id": fid, "sectors": []}
+        board = {"type": "leaderboard", "entries": []}
+        log = [lf, answer, board, short, answer, {"type": "tick_update", "tick": 9, "events": []}]
+        windows, seen, after = play.split_windows(log, [fid, fid])
+        self.assertEqual(seen, 2)
+        self.assertEqual(play.refusal_of(windows[0]), lf, "the Light Fighter's refusal is the batch's first order's")
+        self.assertEqual(play.refusal_of(windows[1]), short, "and the load's is the load's, whatever its words name")
+        self.assertEqual(after[0]["type"], "tick_update")
+        self.assertIsNone(play.reply_line(load, board), "a leaderboard the daemon asked for is no order's answer")
+        self.assertIsNone(play.refusal_of([board]))
 
-    def test_unmatchable_error_is_reported_not_lost(self):
-        got, left = play.match_errors([{"action": "scan", "fleet_id": 2}], [{"code": "X", "message": "a"}, {"code": "Y", "message": "b"}])
-        self.assertEqual(len(left) + sum(g is not None for g in got), 2)
+    def test_a_fence_with_no_fleet_is_answered_by_the_refusal_for_fleet_0(self):
+        fs = fresh()
+        fs["fleets"] = []
+        fid, _ = play.fence_for(fs, {"action": "build", "building_type": "MetalMine"})
+        self.assertEqual(fid, 0)
+        refusal = {"type": "error", "code": "FleetNotFound", "message": "fleet 0 not found (or it has no ships left)"}
+        windows, seen, _ = play.split_windows([refusal], [0])
+        self.assertEqual((seen, windows), (1, [[]]))
 
-    def test_spaced_server_names_match_their_order(self):
-        cmds = [{"action": "build", "building_type": "MetalMine"}, {"action": "research", "tech": "CombustionDrive"}]
-        errs = [{"code": "NoResearchLab", "message": "Combustion Drive needs Research Lab level 1 (you have 0)"}]
-        got, left = play.match_errors(cmds, errs)
-        self.assertEqual([g and g["code"] for g in got], [None, "NoResearchLab"])
-        self.assertEqual(left, [])
-
-    def test_cancel_errors_match_by_order_id_not_queue_name(self):
+    def test_cancels_report_their_order_id(self):
         cmds = [{"action": "cancel_queued", "queue_type": "Building", "id": 6},
                 {"action": "cancel_queued", "queue_type": "Research", "id": 7}]
-        errs = [{"code": "InvalidTarget", "message": "order 7 is in the building queue, not the research queue"}]
-        got, _ = play.match_errors(cmds, errs)
-        self.assertEqual([g and g["code"] for g in got], [None, "InvalidTarget"])
         qev = [{"action": "Cancelled", "item": "Crystal Mine Lv.2", "id": 6}]
         self.assertIn("#6", play.queue_outcome(cmds[0], qev, set()))
         self.assertIsNone(play.queue_outcome(cmds[1], qev, set()))
@@ -190,12 +224,63 @@ class State(unittest.TestCase):
         board = {"tick": fs["tick"], "entries": [row(1, "Other", 90, 60, 20, 10), row(2, fs["player"]["name"], 40.04, 25.04, 10, 5)]}
         s = play.score_of(fs, board)
         self.assertEqual((s["rank"], s["of"], s["score"], s["fleet"]), (2, 2, 40.0, 5))
+        self.assertEqual(s["leader"], {"name": "Other", "score": 90, "gap": 50.0,
+                                       "gap_by_part": {"buildings": 35.0, "research": 10.0, "fleet": 5.0}})
+        self.assertNotIn("bonus", s)
         doc = play.build_state(fs, board, 5)
         head = play.headline("x", doc)
         self.assertIn("SCORE 40.0 rank 2/2 (buildings 25.0, research 10.0, fleet 5.0)", head)
+        self.assertIn("Standing: leader Other 90.0, 50.0 ahead of you (buildings +35.0, research +10.0, fleet +5.0)", head)
         self.assertIn("IDLE QUEUES", head)
         self.assertIn("Unspent stock scores 0", head)
         self.assertIn("Defences score 0", head)
+
+    def test_next_items_say_what_is_short(self):
+        fs = fresh()
+        fs["player"]["resources"] = {"metal": 0.0, "crystal": 0.0, "deuterium": 0.0}
+        fs["homeworld"]["production"] = {"metal": 2.0, "crystal": 0.0, "deuterium": 0.0}
+        doc = play.build_state(fs, None, None)
+        mine = doc["next"]["buildings"]["MetalMine"]
+        self.assertFalse(mine["ok"])
+        self.assertEqual(mine["short"]["metal"], mine["cost"][0])
+        rich = fresh()
+        rich["player"]["resources"] = {"metal": 1e9, "crystal": 1e9, "deuterium": 1e9}
+        payable = play.build_state(rich, None, None)["next"]["buildings"]["MetalMine"]
+        self.assertTrue(payable["ok"])
+        self.assertNotIn("short", payable)
+
+    def test_a_reserve_holding_the_slot_and_a_queue_all_short_say_so(self):
+        fs = fresh()
+        hw = fs["homeworld"]
+        hw["build_queue"] = []
+        hw["production"]["metal"] = 5.0
+        hw["build_pending"] = [
+            {"id": 11, "building_type": "SolarPlant", "target_level": 9, "ticks": 4, "reserve": True, "waiting_on": "Resources",
+             "waiting_for": {"metal": 500.0, "crystal": 0, "deuterium": 0}},
+            {"id": 12, "building_type": "MetalStorage", "target_level": 1, "ticks": 4, "waiting_on": "Order"}]
+        q = play.queues_of(fs)["build"]
+        self.assertIn("the reserve on SolarPlant->L9 #11 holds the free slot while it is short (500 metal, covered in ~100s)", q["note"])
+        self.assertIn("1 order(s) behind it that could start now wait for it: MetalStorage->L1 #12", q["note"])
+        self.assertIn("NOTE: the reserve", play.queue_line("build", q))
+        hw["build_pending"] = [
+            {"id": 11, "building_type": "SolarPlant", "target_level": 9, "ticks": 4, "waiting_on": "Resources",
+             "waiting_for": {"metal": 500.0, "crystal": 0, "deuterium": 0}},
+            {"id": 13, "building_type": "CrystalMine", "target_level": 9, "ticks": 4, "waiting_on": "Resources",
+             "waiting_for": {"metal": 50.0, "crystal": 0, "deuterium": 0}}]
+        q = play.queues_of(fs)["build"]
+        self.assertIn("every waiting order is short, so the free slot stays idle; the first to be covered is CrystalMine->L9 #13 (50 metal) in ~10s",
+                      q["note"])
+        hw["build_queue"] = [{"building_type": "MetalMine", "target_level": 3, "start_tick": 0, "end_tick": 99}] * hw.get("build_slots", 1)
+        self.assertNotIn("note", play.queues_of(fs)["build"], "with no slot free the queue only waits for one")
+
+    def test_state_keys(self):
+        doc = play.build_state(fresh(), None, 5)
+        picked, err = play.pick_keys(doc, ["stock", "queues"])
+        self.assertIsNone(err)
+        self.assertEqual(list(picked), ["stock", "queues"])
+        _, err = play.pick_keys(doc, ["stock", "nope"])
+        self.assertIn("no such key in state: nope", err)
+        self.assertIn("stock", err)
 
     def test_server_warnings_pass_through_when_present(self):
         fs = fresh()

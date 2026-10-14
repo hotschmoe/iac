@@ -969,7 +969,8 @@ void main() {
             '(${jsonEncode(round.toJson()).length} bytes of JSON): '
             '${shut.toStringAsFixed(1)} ms with the battle view shut (worst ${shutWorst.toStringAsFixed(1)}), '
             '${open.toStringAsFixed(1)} ms with it open (worst ${openWorst.toStringAsFixed(1)}), over $rounds rounds each');
-        expect(paint, lessThan(8), reason: 'half a frame at sixty a second, in a debug build');
+        expect(paint, lessThan(50),
+            reason: 'a wall-clock figure on a shared machine: about 2 ms when idle, 15 ms under a load of twelve; this bound catches a scene grown by an order of magnitude, and the count of points above keeps it from drawing a ship each');
         await key(tester, LogicalKeyboardKey.escape, '');
         await finish(tester, c);
       }

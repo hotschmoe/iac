@@ -317,11 +317,21 @@ String errandLine(proto.GroupErrand e, int tick, {required bool mine}) {
   return 'After $whom$landing${e.hexesLeft == 0 ? ', then turns back' : ', and ${hexesOf(e.hexesLeft)} more'}';
 }
 
+/// "Wreckage left: 89 Fe, 49 Cr, 24 De, on wreckage from before: 279 Fe,
+/// 152 Cr, 76 De lie there now": what a fight left, and the pile it joined
+/// when wreckage from before still lay there; null when it left none.
+String? wreckageLeft(proto.CombatEndedEvent e) {
+  final left = e.salvage;
+  if (left == null) return null;
+  final joined = e.salvagePile == null ? '' : ', on wreckage from before: ${amountsOf(e.salvagePile!)} lie there now';
+  return 'Wreckage left: ${amountsOf(left)}$joined';
+}
+
 /// A fight's end as the log prints it: the outcome, the rounds, what the
 /// player's fleets lost and what was left behind.
 String endedLine(proto.CombatEndedEvent e) {
   final mine = [for (final l in e.losses) if (l.mine && l.lost.isNotEmpty) lossesLine(l)];
-  final pile = e.salvage == null ? '' : ' Wreckage ${amountsOf(e.salvage!)}.';
+  final pile = switch (wreckageLeft(e)) { null => '', final left => ' $left.' };
   return 'Combat ended in ${e.sector} after ${roundsOf(e.rounds)}: ${outcomeSentence(e.outcome)}.'
       '${mine.isEmpty ? '' : ' ${mine.join('; ')}.'}$pile';
 }
