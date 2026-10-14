@@ -577,7 +577,7 @@ impl<'a> Planner<'a> {
         let held = usize::from(self.home.research_active.is_some());
         let room = self.room(held, self.home.research_pending.len(), 1, queue_ahead);
         for _ in 0..room {
-            let Some(tech) = self.next_tech() else { break };
+            let Some(tech) = self.next_tech().or_else(|| self.surplus_tech()) else { break };
             let level = self.plan.research.get(tech) + 1;
             self.plan.research.set(tech, level);
             let cost = scaling::research_cost(tech, level);
@@ -792,15 +792,41 @@ impl<'a> Planner<'a> {
     /// it; a player who stays also keeps the price of the next Metal Mine
     /// level, which it orders one level at a time.
     fn surplus(&mut self, orders: &mut Vec<Order>) {
-        let reserve = match self.away_for {
-            Some(_) => Resources::default(),
-            None => scaling::building_cost(BuildingType::MetalMine, self.plan.buildings.metal_mine + 1),
-        };
-        while let Some(item) = self.surplus_item(self.spare.sub(reserve)) {
-            if !self.batch(item, MAX_SURPLUS_BATCH, self.spare.sub(reserve), orders) {
+        while let Some(item) = self.surplus_item(self.purse()) {
+            if !self.batch(item, MAX_SURPLUS_BATCH, self.purse(), orders) {
                 break;
             }
         }
+    }
+
+    /// What no order has claimed, less, for a player who stays, the price of
+    /// the next Metal Mine level.
+    fn purse(&self) -> Resources {
+        match self.away_for {
+            Some(_) => self.spare,
+            None => self.spare.sub(scaling::building_cost(BuildingType::MetalMine, self.plan.buildings.metal_mine + 1)),
+        }
+    }
+
+    /// With nothing on the ladder due, the lab takes the cheapest level of
+    /// any research it can start that what no order has claimed pays for:
+    /// research scores as it is built, and late in a game the stock of one
+    /// resource, most often deuterium, outruns everything the yard buys.
+    fn surplus_tech(&mut self) -> Option<ResearchType> {
+        let purse = self.purse();
+        T::ALL
+            .into_iter()
+            .filter(|&tech| {
+                let level = self.plan.research.get(tech) + 1;
+                level <= scaling::research_max_level(tech)
+                    && scaling::research_energy(tech, level) == 0
+                    && self.tech_open(tech)
+                    && fits(scaling::research_cost(tech, level), purse)
+            })
+            .min_by(|&a, &b| {
+                let cost = |tech: ResearchType| scaling::resource_weight(&scaling::research_cost(tech, self.plan.research.get(tech) + 1));
+                cost(a).total_cmp(&cost(b))
+            })
     }
 
     fn surplus_item(&self, purse: Resources) -> Option<ShipyardItem> {
