@@ -560,6 +560,12 @@
               "now": 0.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 410,
+            "needed": 71,
+            "plant_maxed": false
+          },
           "level": 0,
           "max_level": 20,
           "next": {
@@ -587,6 +593,12 @@
               "now": 11.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 410,
+            "needed": 74,
+            "plant_maxed": false
+          },
           "level": 1,
           "max_level": 20,
           "next": {
@@ -614,6 +626,12 @@
               "now": 49.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 410,
+            "needed": 91,
+            "plant_maxed": false
+          },
           "level": 2,
           "max_level": 20,
           "next": {
@@ -636,6 +654,12 @@
               "now": 79.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 448,
+            "needed": 60,
+            "plant_maxed": false
+          },
           "level": 3,
           "max_level": 20,
           "next": {
@@ -663,6 +687,12 @@
               "now": 0.01638888888888889
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 459,
+            "needed": 60,
+            "plant_maxed": false
+          },
           "level": 4,
           "max_level": 20,
           "next": {
@@ -700,6 +730,12 @@
               "now": 384.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 410,
+            "needed": 60,
+            "plant_maxed": false
+          },
           "level": 5,
           "max_level": 20,
           "next": {
@@ -727,6 +763,12 @@
               "now": 512.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 410,
+            "needed": 60,
+            "plant_maxed": false
+          },
           "level": 6,
           "max_level": 20,
           "next": {
@@ -764,6 +806,12 @@
               "now": 512.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 410,
+            "needed": 60,
+            "plant_maxed": false
+          },
           "level": 7,
           "max_level": 20,
           "next": {
@@ -799,6 +847,12 @@
               "now": 1320000.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 410,
+            "needed": 60,
+            "plant_maxed": false
+          },
           "level": 8,
           "max_level": 20,
           "next": {
@@ -826,6 +880,12 @@
               "now": 2100000.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 410,
+            "needed": 60,
+            "plant_maxed": false
+          },
           "level": 9,
           "max_level": 20,
           "next": {
@@ -858,6 +918,12 @@
               "now": 3.5
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 410,
+            "needed": 60,
+            "plant_maxed": false
+          },
           "level": 10,
           "max_level": 20,
           "next": {
@@ -880,6 +946,12 @@
               "now": 12.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 410,
+            "needed": 60,
+            "plant_maxed": false
+          },
           "level": 11,
           "max_level": 20,
           "next": {
@@ -1643,7 +1715,7 @@
             },
             {
               "energy": true,
-              "have": 412,
+              "have": 410,
               "met": false,
               "name": "Energy",
               "need": 900000
@@ -2278,6 +2350,7 @@
         }
       ]
     },
+    "raids_possible": true,
     "research": [
       {
         "level": 0,

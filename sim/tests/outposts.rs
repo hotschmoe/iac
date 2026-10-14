@@ -1427,7 +1427,7 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
     let keeper = settle(&mut held, 10, true);
     let loser = settle(&mut bare, 18, false);
 
-    let before = (held.summaries()[0].field, held.engine.outposts[&keeper].store);
+    let before = (held.summaries().remove(0).field, held.engine.outposts[&keeper].store);
     held.run(6000).unwrap();
     let report = held.summaries().remove(0);
     let post = &held.engine.outposts[&keeper];

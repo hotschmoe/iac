@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use iac_shared::constants::{
-    Density, ResourceKind, Resources, TerrainType, FUEL_DEUT_PER_UNIT, OUTPOST_MAX_LEVEL, OUTPOST_MAX_RING, OUTPOST_MIN_RING,
+    Density, ResourceKind, Resources, ShipClass, TerrainType, FUEL_DEUT_PER_UNIT, OUTPOST_MAX_LEVEL, OUTPOST_MAX_RING, OUTPOST_MIN_RING,
     OUTPOST_REPAIR_SHARE, OUTPOST_SPACING, RAID_ROLL_INTERVAL,
 };
 use iac_shared::hex::{hex_ring, Hex};
@@ -55,7 +55,7 @@ impl ScoreBreakdown {
 
 /// What the map and the raids paid a player so far. Resources are given as
 /// their score weight: the core points they are worth once spent.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct FieldTally {
     pub ore: f32,
     pub salvage: f32,
@@ -68,6 +68,10 @@ pub struct FieldTally {
     pub sites_boarded: u32,
     pub sectors_charted: u32,
     pub ships_lost: u32,
+    /// `ships_lost` by class, with the Solar Satellites raids destroyed.
+    pub lost_by_class: BTreeMap<ShipClass, u32>,
+    /// Deuterium turned into fuel from fleets' holds.
+    pub refined_deuterium: f64,
     /// Fleets destroyed in a fight, and the ships that went with them.
     pub fleets_lost: u32,
     pub ships_lost_with_fleets: u32,
@@ -90,8 +94,11 @@ pub struct FieldTally {
     /// Rounds fought, and the most ships one fleet took into a round.
     pub rounds: u32,
     pub largest_fleet: u32,
-    /// Deuterium paid at the homeworld to fill fleet tanks.
+    /// Deuterium paid at the homeworld to fill fleet tanks again after a trip.
     pub refuel_deuterium: f64,
+    /// Deuterium paid at the homeworld for tanks that grew: ships joining a
+    /// fleet, a larger Deuterium Tank.
+    pub fill_deuterium: f64,
     /// Raids on the homeworld: those repelled, and the part of them in
     /// which no raider was left (the rest were outlasted); those lost, and
     /// the part of them that found nothing in their way.
@@ -447,6 +454,8 @@ pub struct Headless {
     /// The share of their cost defences count for in the report. The
     /// engine keeps the game's own.
     defence_share: f32,
+    /// Every fleet's fuel and the deuterium in its hold as the last tick left them.
+    fuel_left: Vec<(u64, f64, f64)>,
 }
 
 impl Headless {
@@ -456,6 +465,7 @@ impl Headless {
             seats: Vec::new(),
             entries: Vec::new(),
             defence_share: score::DEFENCE_SHARE,
+            fuel_left: Vec::new(),
         }
     }
 
@@ -579,6 +589,7 @@ impl Headless {
         let mut counting = Counting {
             entries: &mut self.entries,
             tanks: Vec::new(),
+            fuel_left: &mut self.fuel_left,
             stores: Vec::new(),
             hurt: BTreeSet::new(),
         };
@@ -619,7 +630,7 @@ impl Headless {
         Some(Sample {
             tick,
             score: ScoreBreakdown::with(score::score_of(&self.engine, player), self.defence_share),
-            field: entry.tally,
+            field: entry.tally.clone(),
             idle: entry.slots.into(),
             idle_why: entry.why,
             stock: scaling::resource_weight(&player.resources),
@@ -683,7 +694,7 @@ impl Headless {
                     style: entry.style.clone(),
                     player_id: player.id,
                     score: ScoreBreakdown::with(score::score_of(&self.engine, player), self.defence_share),
-                    field: entry.tally,
+                    field: entry.tally.clone(),
                     idle: entry.slots.into(),
                     idle_why: entry.why,
                     mined: entry.mined.made as f32,
@@ -709,7 +720,9 @@ impl Headless {
 struct Counting<'a> {
     entries: &'a mut [Entry],
     /// Every fleet before the tick: its fuel, and whether it was moving.
-    tanks: Vec<(u64, f64, bool)>,
+    tanks: Vec<(u64, f64, f64, bool)>,
+    /// Every fleet's fuel and the deuterium in its hold as the last tick left them.
+    fuel_left: &'a mut Vec<(u64, f64, f64)>,
     /// Every outpost before the tick: its store, and whether a raid arriving
     /// in the tick finds it breached.
     stores: Vec<(u64, Resources, bool)>,
@@ -722,7 +735,8 @@ impl Watch<Seats> for Counting<'_> {
     fn at(&mut self, phase: Phase, engine: &GameEngine, seats: &Seats, events: &[GameEvent]) {
         match phase {
             Phase::Turns => {
-                self.tanks = engine.fleets.values().map(|f| (f.id, f.fuel, f.state == FleetStatus::Moving)).collect();
+                self.count_refining(engine);
+                self.tanks = engine.fleets.values().map(|f| (f.id, f.fuel, f.fuel_max, f.state == FleetStatus::Moving)).collect();
                 let mending = engine.current_tick() + 1;
                 self.stores = engine
                     .outposts
@@ -743,12 +757,30 @@ impl Watch<Seats> for Counting<'_> {
                 }
                 self.count(engine, events);
             }
-            Phase::Frames | Phase::Observed => {}
+            Phase::Frames => {}
+            Phase::Observed => {
+                *self.fuel_left = engine.fleets.values().map(|f| (f.id, f.fuel, f.cargo.deuterium)).collect();
+            }
         }
     }
 }
 
 impl Counting<'_> {
+    /// During the seats' turns a tank rises while the hold's deuterium falls
+    /// only by `refine` (a merge raises both): the fleets as the last tick
+    /// left them against the fleets after the turns.
+    fn count_refining(&mut self, engine: &GameEngine) {
+        for &(fleet_id, fuel, aboard) in self.fuel_left.iter() {
+            let Some(fleet) = engine.fleets.get(&fleet_id) else { continue };
+            if fleet.fuel > fuel
+                && fleet.cargo.deuterium < aboard
+                && let Some(t) = tally_of(self.entries, Some(fleet.owner_id))
+            {
+                t.refined_deuterium += aboard - fleet.cargo.deuterium;
+            }
+        }
+    }
+
     fn count_slots(&mut self, engine: &GameEngine) {
         let pace = engine.pace();
         for entry in self.entries.iter_mut() {
@@ -829,8 +861,10 @@ impl Counting<'_> {
 
     /// Fuel only rises at the homeworld, where it is bought; a fleet that
     /// jumped out during the tick is filled again before it leaves the sector.
+    /// The part of it that fills the tanks of ships joining a fleet is
+    /// counted apart: it is the price of a hull, not of a trip.
     fn count_refuelling(&mut self, engine: &GameEngine) {
-        for &(fleet_id, fuel, was_moving) in &self.tanks {
+        for &(fleet_id, fuel, fuel_max, was_moving) in &self.tanks {
             let Some(fleet) = engine.fleets.get(&fleet_id) else { continue };
             let at_home = engine.players.get(&fleet.owner_id).is_some_and(|p| p.homeworld == fleet.location);
             if !at_home {
@@ -842,7 +876,9 @@ impl Counting<'_> {
             if bought > 0.0
                 && let Some(t) = tally_of(self.entries, Some(fleet.owner_id))
             {
-                t.refuel_deuterium += bought * FUEL_DEUT_PER_UNIT;
+                let joined = (fleet.fuel_max - fuel_max).clamp(0.0, bought);
+                t.fill_deuterium += joined * FUEL_DEUT_PER_UNIT;
+                t.refuel_deuterium += (bought - joined) * FUEL_DEUT_PER_UNIT;
             }
         }
     }
@@ -962,6 +998,13 @@ impl Counting<'_> {
                         let t = &mut entry.tally;
                         let lost = group.units.iter().map(|u| u.lost).sum::<u32>();
                         let left = group.units.iter().map(|u| u.count).sum::<u32>();
+                        for unit in &group.units {
+                            if let ShipyardItem::Ship(class) = unit.unit
+                                && unit.lost > 0
+                            {
+                                *t.lost_by_class.entry(class).or_default() += unit.lost;
+                            }
+                        }
                         t.ships_lost += lost;
                         t.rounds += 1;
                         t.rounds_fleeing += u32::from(group.fleeing);
@@ -996,6 +1039,9 @@ impl Counting<'_> {
                 EventKind::ShipsLost(e) => {
                     if let Some(t) = tally_of(entries, named(&e.owner)) {
                         t.ships_lost += e.ships.iter().map(|s| s.count).sum::<u32>();
+                        for ships in &e.ships {
+                            *t.lost_by_class.entry(ships.ship_class).or_default() += ships.count;
+                        }
                     }
                 }
                 EventKind::RaidResolved(e) => {
@@ -1023,6 +1069,11 @@ impl Counting<'_> {
                             }
                         }
                         t.ships_lost += e.ships_lost;
+                        for unit in &e.lost {
+                            if let ShipyardItem::Ship(class) = unit.unit {
+                                *t.lost_by_class.entry(class).or_default() += unit.count;
+                            }
+                        }
                         t.raid_rounds += e.rounds;
                         t.raid_ships_lost += e.ships_lost;
                         if e.outpost.is_none() {
