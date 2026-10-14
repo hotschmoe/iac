@@ -689,8 +689,7 @@ class BattleScopeState extends State<BattleScope> with SingleTickerProviderState
     if (from == null || from != index - 1) {
       final before = index > 0 && held[index - 1].round == round.round - 1 ? held[index - 1] : round;
       field
-        ..marks.clear()
-        ..firing = false
+        ..clear()
         ..setSides(Sides.ofRound(before), snap: true);
     }
     field
@@ -750,7 +749,7 @@ class ScopePainter extends CustomPainter {
     field.ground(
         ours: Ground(near: 16, far: size.height / 2 - 6, halfWidth: half),
         theirs: Ground(near: 16, far: size.height / 2 - 6, halfWidth: half),
-        scale: (math.min(size.width, size.height) / 400).clamp(.8, 1.6));
+        scale: (math.min(size.width, size.height) / 330).clamp(.8, 1.9));
     c.save();
     c.clipRect(Offset.zero & size);
     c.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF07050A));

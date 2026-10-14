@@ -55,7 +55,14 @@ class ArenaPainter extends CustomPainter {
       return;
     }
     _arena(t);
-    if (sim.atHome) _planet(t);
+    if (sim.atHome) {
+      final raided = sim.combat;
+      if (raided) {
+        canvas.saveLayer(Rect.fromCircle(center: Offset(g.cx - g.rh * .1, g.cy - g.rh * .12), radius: g.rh * .62), Paint()..color = const Color(0x52FFFFFF));
+      }
+      _planet(t);
+      if (raided) canvas.restore();
+    }
     if (sim.atExchange) _exchange(t);
     _terrain(t);
     for (final a in sim.ast) {
@@ -505,11 +512,9 @@ class ArenaPainter extends CustomPainter {
   /// gate inward, with the ticks until it lands and whether it lands before
   /// the fleet can be gone. All of it is the state's `pursued_by`.
   void _pursuit(double t) {
-    final f = sim.fleet;
-    final hunter = f?.pursuedBy;
-    if (f == null || hunter == null) return;
-    final lane = dirs.where((d) => d.v == proto.Hex(hunter.from.q - f.sector.q, hunter.from.r - f.sector.r)).firstOrNull;
-    if (lane == null) return;
+    final hunter = sim.fleet?.pursuedBy;
+    final lane = sim.pursuitLane;
+    if (hunter == null || lane == null) return;
     final a = lane.angle, n = Offset(math.cos(a), math.sin(a)), side = Offset(-n.dy, n.dx);
     final gate = g.gatePoint(lane);
     final inner = _centre + n * g.rh * .34;
@@ -526,7 +531,7 @@ class ArenaPainter extends CustomPainter {
         ..lineTo(at.dx + n.dx * w - side.dx * w, at.dy + n.dy * w - side.dy * w);
       c.drawPath(p, Draw.line(_ember, 1.6, (1 - ph) * .95));
     }
-    final at = _centre + n * g.rh * .56;
+    final at = _centre + n * g.rh * .6 + side * g.rh * .3;
     final head = 'PURSUIT ${hunter.arrivesIn}';
     final verdict = hunter.catches ? 'CATCHES' : 'TOO LATE';
     final style = T.cond(size: g.compact ? 11 : 13, color: const Color(0xFFFFD6CC), weight: FontWeight.w700, spacing: 2);

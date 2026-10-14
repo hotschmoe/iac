@@ -227,6 +227,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     if (k is proto.SectorEnteredEvent && k.firstVisit) _firstVisits.add(k.sector);
     sim.onEvent(e);
     if (!mounted) return;
+    if (k case proto.BattleRoundKind(:final battleRound) when battleRound.sector == _fleet?.sector && con.screen == Screen.windshield) {
+      _clearForScope();
+    }
     switch (k) {
       case proto.CombatStartedEvent():
         if (k.mine) {
@@ -429,6 +432,11 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     }
     if (id != 'harvest') setState(() => _hsub = false);
   }
+
+  /// On a phone the toasts stand over the upper half of the scope, where
+  /// the hostile side is drawn: while a fight is fought there, each round
+  /// takes down the ones that ask nothing. What they said is in the log.
+  void _clearForScope() => _clearForSheet();
 
   /// The phone layout opens its panels in a sheet whose top lies under the
   /// toasts, so the toasts that ask nothing make way for it. The desktop

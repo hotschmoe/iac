@@ -699,7 +699,7 @@ class BattleField {
       m.shape = MarkShape(m.unit, m.shown.count, zoom: zoom, scale: scale, dense: dense);
     }
     final captioned = captions.containsKey(groups.first.first.formation);
-    final gap = math.max(5.0, 12 * zoom * scale), between = gap * 2.4, caption = captioned ? 12.0 : 0.0, rowGap = gap * .6;
+    final gap = math.max(5.0, 12 * zoom * scale), between = gap * 2.4, caption = captioned ? 15.0 : 0.0, rowGap = gap * .6;
     var depth = g.near;
     var row = <(Mark, double)>[];
     var across = 0.0, tall = 0.0;
@@ -734,6 +734,19 @@ class BattleField {
     }
     if (row.isNotEmpty) close();
     return force || (fits && depth - rowGap <= g.far) ? places : null;
+  }
+
+  /// Take everything off the scene, for another sector or another fight.
+  void clear() {
+    marks.clear();
+    beams.clear();
+    haze.clear();
+    sparks.clear();
+    frags.clear();
+    rings.clear();
+    floats.clear();
+    firing = false;
+    shake = 0;
   }
 
   /// The mark under [p], a point about the scene's centre.

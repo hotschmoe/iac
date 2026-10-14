@@ -1,12 +1,13 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'dart:ui' as ui show PictureRecorder;
 import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:iac_client/console/battle.dart' show chaseLine, flightPrice, stopFlightRule, ticksOf;
+import 'package:iac_client/console/battle.dart' show chaseLine, flightPrice, raidRoundOf, stopFlightRule, ticksOf;
 import 'package:iac_client/console/services.dart';
 import 'package:iac_client/design/panel.dart';
 import 'package:iac_client/models/fleet.dart' as ui;
@@ -16,8 +17,10 @@ import 'package:iac_client/models/resources.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
 import 'package:iac_client/scenes/battle/field.dart';
 import 'package:iac_client/scenes/windshield/painter.dart' show ArenaPainter;
+import 'package:iac_client/scenes/windshield/sim.dart' show WindshieldSim;
 import 'package:iac_client/state/command_parser.dart';
 import 'package:iac_client/state/game_controller.dart';
+import 'package:iac_client/views/battle_view.dart' show BattleScope, BattleScopeState;
 import 'package:iac_client/views/overlays.dart' show ToastLayer;
 import 'package:iac_client/views/rail.dart';
 import 'package:iac_client/views/windshield/parts.dart' show ContactsPanel, Dock, Feed, FleetRail, GateCard, SectorHead, StatusPanel, doctrineLine;
@@ -365,9 +368,11 @@ Future<FakeController> pumpFake(WidgetTester tester, GameState s, {Size size = c
   return c;
 }
 
+/// The windshield's scene.
+WindshieldSim simOf(WidgetTester tester) => tester.widgetList<CustomPaint>(find.byType(CustomPaint)).map((p) => p.painter).whereType<ArenaPainter>().single.sim;
+
 /// The marks of the windshield's scope.
-BattleField fieldOf(WidgetTester tester) =>
-    tester.widgetList<CustomPaint>(find.byType(CustomPaint)).map((p) => p.painter).whereType<ArenaPainter>().single.sim.field;
+BattleField fieldOf(WidgetTester tester) => simOf(tester).field;
 
 /// Scroll the battle view's report until the row with [row] is built and in sight.
 Future<void> bringUp(WidgetTester tester, Key row) async {
@@ -872,6 +877,85 @@ void main() {
     }
   });
 
+  testWidgets('a fight of five thousand a side in twelve classes each costs a frame little: the scope\'s paint and the battle view\'s frame are measured', (tester) async {
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      for (final perClass in const [416, 5000]) {
+        final round = melee();
+        final rows = [for (final c in flying) shipRow(c, perClass)];
+        GameState at(int rounds) => hostileHere(status: ui.FleetStatus.combat).copyWith(fleets: [
+              fleet(1, const [], status: ui.FleetStatus.combat, rows: rows)
+            ], sectors: {
+              here: sector(here, lanes: [const proto.Hex(2, -1)], hostiles: [hostileGroup(77, rows, proto.NpcBehavior.swarm)]),
+            }, battles: {
+              here: Battle(sector: here, rounds: rounds, round: round, history: [for (var i = 0; i < rounds; i++) round])
+            });
+        final c = await pumpFake(tester, at(1).copyWith(battles: const {}), size: size);
+        final painter = tester.widgetList<CustomPaint>(find.byType(CustomPaint)).map((p) => p.painter).whereType<ArenaPainter>().single;
+        final sim = painter.sim;
+        final ground = tester.getSize(find.byKey(const ValueKey('arena')));
+        final points = sim.field.marks.fold(0, (n, m) => n + m.shape.glyphs.length + m.shape.pips.length ~/ 2);
+        final watch = Stopwatch();
+        var total = 0, worst = 0;
+        const frames = 180;
+        var t = sim.now;
+        for (var frame = 0; frame < frames; frame++) {
+          if (frame % 60 == 0) sim.onEvent(proto.GameEvent(tick: 501, kind: proto.BattleRoundKind(round)));
+          t += 1 / 60;
+          final recorder = ui.PictureRecorder();
+          final canvas = Canvas(recorder);
+          watch
+            ..reset()
+            ..start();
+          sim.tick(1 / 60, t);
+          painter.paint(canvas, ground);
+          watch.stop();
+          recorder.endRecording().dispose();
+          total += watch.elapsedMicroseconds;
+          worst = math.max(worst, watch.elapsedMicroseconds);
+        }
+        final paint = total / frames / 1000;
+        expect(sim.field.marks, hasLength(24));
+        expect(points, lessThan(24 * (1 + MarkShape.pipsFor(5000))), reason: 'the scope never draws a ship each');
+
+        const rounds = 12;
+        const warmUp = 6;
+        Future<(double, double)> framesTaking(int from) async {
+          var sum = 0, slowest = 0;
+          for (var n = from; n < from + warmUp + rounds; n++) {
+            c.push(at(n));
+            watch
+              ..reset()
+              ..start();
+            await tester.pump(const Duration(milliseconds: 16));
+            watch.stop();
+            if (n >= from + warmUp) {
+              sum += watch.elapsedMicroseconds;
+              slowest = math.max(slowest, watch.elapsedMicroseconds);
+            }
+            await tester.pump(const Duration(milliseconds: 500));
+          }
+          return (sum / rounds / 1000, slowest / 1000);
+        }
+
+        c.push(at(1));
+        await tester.pump(const Duration(milliseconds: 50));
+        final (shut, shutWorst) = await framesTaking(2);
+        await key(tester, LogicalKeyboardKey.keyI, 'i');
+        await tester.pump(const Duration(milliseconds: 300));
+        final (open, openWorst) = await framesTaking(2 + warmUp + rounds);
+        expect(find.byKey(const Key('battle-view')), findsOneWidget);
+        debugPrint('COST ${size.width.round()} wide, ${perClass * flying.length} a side in ${flying.length} classes, $points points on the scope: '
+            'scope tick and paint ${paint.toStringAsFixed(2)} ms a frame (worst ${(worst / 1000).toStringAsFixed(2)}) over $frames frames with a round every 60; '
+            'the frame that takes a new round of ${round.fleets.volleys.length + round.hostiles.volleys.length} volleys: '
+            '${shut.toStringAsFixed(1)} ms with the battle view shut (worst ${shutWorst.toStringAsFixed(1)}), '
+            '${open.toStringAsFixed(1)} ms with it open (worst ${openWorst.toStringAsFixed(1)}), over $rounds rounds each');
+        expect(paint, lessThan(8), reason: 'half a frame at sixty a second, in a debug build');
+        await key(tester, LogicalKeyboardKey.escape, '');
+        await finish(tester, c);
+      }
+    }
+  });
+
   testWidgets('a mark is a class: two ships are two glyphs, two hundred a block behind one glyph, five thousand a larger block and no more; the bar and the count are the state\'s',
       (tester) async {
     for (final size in const [Size(1440, 900), Size(390, 844)]) {
@@ -978,6 +1062,19 @@ void main() {
     for (final size in const [Size(1440, 900), Size(390, 844)]) {
       final wide = size.width > 1000;
       final c = await pumpFake(tester, inFight(fleeing: const proto.Fleeing(to: north, ticks: 2, rounds: 1), leaving: true), size: size);
+      final sim = simOf(tester);
+      final scope = sim.field;
+      await tester.pump(const Duration(milliseconds: 700));
+      expect(sim.exitLane?.name, 'N', reason: 'the scope draws the lane the fleet is leaving by, from the state\'s fleeing');
+      expect(scope.headings['f1'], closeTo(-math.pi / 2, 1e-9), reason: 'and its marks turn to it');
+      final drift = scope.offsets['f1']!;
+      expect(drift.dx.abs() < 1 && drift.dy < -8 && drift.dy > -80, isTrue, reason: 'drawing off toward the gate and staying in sight: $drift');
+      c.ev.add(proto.GameEvent(tick: 501, kind: proto.BattleRoundKind(skirmish(leaving: true))));
+      await tester.pump(const Duration(milliseconds: 150));
+      expect(scope.beams, isNotEmpty);
+      expect(scope.beams.every((b) => !b.ours), isTrue, reason: 'its guns are silent: only the fire it takes is drawn');
+      await shot(tester, 'ws-fleeing-fire-${size.width.round()}');
+      await tester.pump(const Duration(seconds: 1));
       if (!wide) {
         expect(textUnder(tester, find.byKey(const ValueKey('leaving-strip'))), 'LEAVING  JUMP IN 2 - 1 ROUND MORE UNDER FIRE');
         await tester.tap(find.byKey(const ValueKey('leaving-strip')));
@@ -1052,9 +1149,92 @@ void main() {
       }
       expectTextFits(tester, find.byKey(const Key('pursuit-panel')), reason: 'the pursuit panel at ${size.width.round()}');
       await shot(tester, 'ws-pursuit-${size.width.round()}');
+      expect(sim.pursuitLane?.name, 'S', reason: 'the lane the pack comes down is marked on the scope, from the state\'s pursued_by');
+      expect(scope.theirs, isEmpty);
+      if (!wide) {
+        await tester.tap(find.byKey(const ValueKey('status-sheet')));
+        await tester.pump(const Duration(milliseconds: 100));
+        await shot(tester, 'ws-pursuit-scene-390');
+      }
+
+      c.push(world([
+        fleet(1, [('Light Fighter', 2)], at: north, status: ui.FleetStatus.combat, jumpTicks: 2),
+      ], {
+        here: sector(here, lanes: [north]),
+        north: sector(north, lanes: [here], hostiles: [
+          hostileGroup(77, [shipRow(proto.ShipClass.heavyFighter, 1), shipRow(proto.ShipClass.cruiser, 1)], proto.NpcBehavior.aggressive, muster: 3),
+        ]),
+      }, tick: 504));
+      await tester.pump(const Duration(milliseconds: 16));
+      final landed = scope.theirs.toList();
+      expect(landed, hasLength(2), reason: 'the pack has landed');
+      expect(landed.every((m) => m.y > m.ty + 20), isTrue, reason: 'and comes onto the scope from the lane that was marked, not out of nothing');
+      for (var frame = 0; frame < 40; frame++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(landed.every((m) => (m.y - m.ty).abs() < 2), isTrue, reason: 'to stand over the fleet it caught');
       await tester.pump(const Duration(seconds: 4));
       expect(tester.takeException(), isNull);
       await finish(tester, c);
+    }
+  });
+
+  testWidgets(
+      'a raid at home is the same picture: the battery as defence marks beside the docked fleet\'s, the raiders as the hostile side, the rounds left on the scope, '
+      'and the battle view a key away (demo)', (tester) async {
+    for (final size in const [Size(1440, 900), Size(390, 844)]) {
+      final c = DemoController()..startDemo();
+      await pumpShell(tester, screen: Screen.windshield, controller: c, size: size);
+      final home = c.state.homeworld;
+      c.selectFleet(c.state.fleets.indexWhere((f) => f.sector == home));
+      c.garrison({proto.DefenceKind.rocketLauncher: 40, proto.DefenceKind.lightLaser: 12, proto.DefenceKind.smallShieldDome: 1}, satellites: 6);
+      await tester.pump(const Duration(milliseconds: 100));
+      final sim = simOf(tester);
+      final scope = sim.field;
+      expect(scope.marks.any((m) => m.battery), isFalse, reason: 'at rest the scope shows the fleet, not the defences');
+      c.raidHome(60 * proto.ShipClass.lightFighter.power, inTicks: 2);
+      for (var i = 0; i < 4 && c.state.raidAtHome == null; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+      final docked = c.currentFleet;
+      expect(c.state.raidAtHome!.round, isNull, reason: 'the raid stands at home and no round is fought yet');
+      expect({for (final m in scope.marks.where((m) => m.battery)) m.unit.label: m.shown.count},
+          {'Solar Satellite': 6, 'Rocket Launcher': 40, 'Light Laser': 12, 'Small Shield Dome': 1},
+          reason: 'before the first round the battery is what the state says stands at home');
+      expect((scope.captions[Formation.batteryId], scope.captions[Formation.fleetId(docked.id)]), ('HOME DEFENCES', docked.name));
+      expect(scope.theirs.map((m) => (m.formation, m.unit.label)), [(Formation.raidId, 'Light Fighter')], reason: 'the raiders are the hostile side');
+      expect((sim.stamp?.round, sim.stamp?.verdict), (raidRoundOf(0), c.state.raidAtHome!.raid!.odds.label.label));
+      await shot(tester, 'ws-raid-arrived-${size.width.round()}');
+
+      await tester.pump(const Duration(seconds: 1));
+      expect(c.state.raidAtHome!.round, isNotNull);
+      await shot(tester, 'ws-raid-fire-${size.width.round()}');
+      await tester.pump(const Duration(milliseconds: 900));
+      final fight = c.state.raidAtHome!;
+      expect((fight.over, sim.stamp?.round), (false, raidRoundOf(fight.rounds)), reason: 'the scope says the round of the most the raid is fought for');
+      final battery = fight.round!.fleets.groups.singleWhere((g) => g.battery);
+      expect({for (final m in scope.marks.where((m) => m.battery)) m.unit.label: m.shown.count},
+          {for (final u in battery.units) if (u.count > 0) u.unit.label: u.count},
+          reason: 'after a round the battery is the round\'s own count of each kind');
+      expect(tester.takeException(), isNull);
+
+      await key(tester, LogicalKeyboardKey.keyI, 'i');
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(textUnder(tester, find.byKey(const Key('battle-view'))), allOf(contains('RAID AT ${home.q}, ${home.r}'), contains(raidRoundOf(c.state.raidAtHome!.rounds))));
+      final scene = tester.state<BattleScopeState>(find.byType(BattleScope)).field;
+      expect(scene.marks.where((m) => m.battery).map((m) => m.unit.label), containsAll(['Rocket Launcher', 'Light Laser', 'Small Shield Dome']));
+      expect(tester.widget<Text>(find.byKey(const Key('bv-fleets-battery'))).textSpan!.toPlainText(), 'HOME DEFENCES  NO FLEET: THEY STAND WHERE THEY ARE');
+      expect(find.byKey(Key('bv-fleets-group-${docked.id}')), findsOneWidget);
+      await shot(tester, 'bv-raid-${size.width.round()}');
+      await key(tester, LogicalKeyboardKey.escape, '');
+      for (var i = 0; i <= proto.raidRounds && !(c.state.raidAtHome?.over ?? false); i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+      await tester.pump(const Duration(seconds: 2));
+      expect(scope.theirs, isEmpty, reason: 'the raid is over and the raiders are gone from the scope');
+      expect(scope.marks.any((m) => m.battery), isFalse, reason: 'and the defences with them');
+      expect(tester.takeException(), isNull);
+      await endShell(tester, c);
     }
   });
 

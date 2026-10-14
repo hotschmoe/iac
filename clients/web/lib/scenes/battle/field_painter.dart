@@ -175,7 +175,7 @@ class FieldPainter {
       if (box == null) continue;
       final m = f.marks.firstWhere((m) => m.formation == id);
       final off = _offsetOf(m);
-      final y = m.hostile ? box.top - 7 : box.bottom + 7;
+      final y = m.hostile ? box.top - 9 : box.bottom + 9;
       final at = centre + Offset(box.center.dx, y) + off;
       final style = T.cond(size: 9, color: markColor(m).withValues(alpha: .85), spacing: 1.4);
       final wide = Draw.tp(name, style).width;

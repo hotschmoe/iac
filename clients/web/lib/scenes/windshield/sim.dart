@@ -207,13 +207,19 @@ class WindshieldSim {
     update(f, s, sides);
   }
 
+  /// The lane the group on the fleet's trail comes down: the one to the
+  /// sector the state says it is jumping from.
+  Dir? get pursuitLane {
+    final f = fleet;
+    final hunter = f?.pursuedBy;
+    if (f == null || hunter == null) return null;
+    return dirs.where((d) => d.v == proto.Hex(hunter.from.q - f.sector.q, hunter.from.r - f.sector.r)).firstOrNull;
+  }
+
   void _followPursuit(ui.FleetState f, int tick) {
-    final hunter = f.pursuedBy;
+    final lane = pursuitLane;
     final rh = _geo?.rh;
-    if (hunter != null && rh != null) {
-      final lane = dirs.where((d) => d.v == proto.Hex(hunter.from.q - f.sector.q, hunter.from.r - f.sector.r)).firstOrNull;
-      if (lane != null) _trail = (at: Offset(math.cos(lane.angle), math.sin(lane.angle)) * rh * .866, tick: tick);
-    }
+    if (lane != null && rh != null) _trail = (at: Offset(math.cos(lane.angle), math.sin(lane.angle)) * rh * .866, tick: tick);
     final trail = _trail;
     if (trail != null && tick - trail.tick > 1) _trail = null;
     field.hostileEntry = _trail?.at;
@@ -264,11 +270,9 @@ class WindshieldSim {
       }
     }
     _syncProps(s, r);
-    field.marks.clear();
-    field.beams.clear();
-    field.haze.clear();
-    field.firing = false;
-    field.setSides(sides, snap: true);
+    field
+      ..clear()
+      ..setSides(sides, snap: true);
     _status(f);
   }
 
@@ -387,9 +391,8 @@ class WindshieldSim {
   /// and in from the far side once it has landed. A fleet charging its way
   /// out of a fight stays in sight, under the fire it is taking.
   double _reach(Warp w) {
-    var p = ((now - w.t0) / 1.1).clamp(0.0, 1.0);
-    if (w.waiting) p = math.min(p, .5);
-    if (p < .5) return math.pow(p / .5, 2.2).toDouble() * (fleet?.fleeing != null ? .2 : 1.0);
+    final p = ((now - w.t0) / 1.1).clamp(0.0, 1.0);
+    if (w.waiting || p < .5) return math.pow(math.min(p, .5) / .5, 2.2).toDouble() * (fleet?.fleeing != null ? .2 : 1.0);
     final k = 1 - math.pow(1 - math.min(1.0, (p - .5) / .5), 3).toDouble();
     return -1.15 * (1 - k);
   }
@@ -445,10 +448,10 @@ class WindshieldSim {
 
   double warpAmount() {
     final w = warp;
-    if (w == null) return 0;
+    if (w == null || (w.waiting && fleet?.fleeing != null)) return 0;
     var p = ((now - w.t0) / 1.1).clamp(0.0, 1.0);
     if (w.waiting) p = math.min(p, .5);
-    return math.sin(p * math.pi) * (fleet?.fleeing != null ? .12 : 1);
+    return math.sin(p * math.pi);
   }
 
   void _stars(double dt) {
