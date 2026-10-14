@@ -1400,11 +1400,15 @@ class ExchangeQuote extends ServerMessage {
   Json toJson() => {'type': 'exchange_quote', ...terms.toJson(), 'refusal': ?refusal};
 }
 
-/// The score table: one ranking for every player, human or agent.
-/// `score = core + min(combat + explore, 0.25 * core)`, where `core` counts
-/// completed building and research levels, living ships and half of the
-/// defence structures, each at its cost weighted 1 : 1.5 : 2 for
-/// metal : crystal : deuterium, per thousand.
+/// The score table: one ranking for every player, human or agent. A score
+/// is what an empire has built and keeps:
+/// `score = buildings + research + fleet + outpost + defence`, each part
+/// the cost of what stands, weighted 1 : 1.5 : 2 for
+/// metal : crystal : deuterium, per thousand. `fleet` is the ships the
+/// empire has now, its Solar Satellites among them, so a fleet destroyed
+/// leaves the score; `defence` is the defence structures at the share of
+/// their cost the score gives them (`iac_sim::score::DEFENCE_SHARE`, none
+/// today). Kills, charts and derelicts score nothing: they pay in resources.
 ///
 /// Built-in bots are part of the world but not of the ranking: they are
 /// never in `entries` and take no rank there. They are listed in `bots`,
@@ -1449,22 +1453,24 @@ class LeaderboardEntry {
   final String name;
   final bool agent;
   final double score;
-  final double core;
+  final double buildings;
+  final double research;
+  final double fleet;
 
-  /// Raw combat points, before the 25 percent cap.
-  final double combat;
-
-  /// Raw exploration points, before the 25 percent cap.
-  final double explore;
+  /// The finished levels of the empire's outpost, while it stands.
+  final double outpost;
+  final double defence;
 
   const LeaderboardEntry({
     required this.rank,
     required this.name,
     required this.agent,
     required this.score,
-    required this.core,
-    required this.combat,
-    required this.explore,
+    required this.buildings,
+    required this.research,
+    required this.fleet,
+    required this.outpost,
+    required this.defence,
   });
 
   factory LeaderboardEntry.fromJson(Object? json) {
@@ -1474,9 +1480,11 @@ class LeaderboardEntry {
       name: _string(m['name']),
       agent: _bool(m['agent']),
       score: _double(m['score']),
-      core: _double(m['core']),
-      combat: _double(m['combat']),
-      explore: _double(m['explore']),
+      buildings: _double(m['buildings']),
+      research: _double(m['research']),
+      fleet: _double(m['fleet']),
+      outpost: _double(m['outpost']),
+      defence: _double(m['defence']),
     );
   }
 
@@ -1485,9 +1493,11 @@ class LeaderboardEntry {
     'name': name,
     'agent': agent,
     'score': score,
-    'core': core,
-    'combat': combat,
-    'explore': explore,
+    'buildings': buildings,
+    'research': research,
+    'fleet': fleet,
+    'outpost': outpost,
+    'defence': defence,
   };
 }
 
@@ -3134,7 +3144,7 @@ class SectorState {
   };
 }
 
-/// A sector's chart is made by entering it and pays explore points once.
+/// A sector's chart is made by entering it and pays once, in resources.
 enum ChartMark {
   /// A fleet that entered the sector still carries the chart: it is paid
   /// when that fleet docks at the homeworld or arrives at its owner's
@@ -4824,18 +4834,17 @@ class SiteExploredEvent extends EventKind {
   final Hex sector;
   final int tier;
 
-  /// Loot taken aboard (cargo-capped; overflow drops as sector salvage).
+  /// Loot taken aboard, a relic's worth included (cargo-capped; overflow
+  /// drops as sector salvage).
   final Resources resources;
   final ShipClass? recoveredShip;
 
   /// Instant tech level granted by a recovered data core.
   final ResearchType? techCache;
 
-  /// An ancient relic came aboard (worth 25 explore points; no other use yet).
+  /// An ancient relic came aboard: the loot of the site is worth
+  /// `RELIC_LOOT_MULT` times more for it.
   final bool relic;
-
-  /// Explore points this boarding earned (0 when the site was boarded before).
-  final double points;
 
   const SiteExploredEvent({
     required this.fleetId,
@@ -4845,7 +4854,6 @@ class SiteExploredEvent extends EventKind {
     this.recoveredShip,
     this.techCache,
     this.relic = false,
-    this.points = 0,
   });
 
   factory SiteExploredEvent.fromJson(Object? json) {
@@ -4858,7 +4866,6 @@ class SiteExploredEvent extends EventKind {
       recoveredShip: _opt(m['recovered_ship'], ShipClass.fromJson),
       techCache: _opt(m['tech_cache'], ResearchType.fromJson),
       relic: _opt(m['relic'], _bool) ?? false,
-      points: _opt(m['points'], _double) ?? 0,
     );
   }
 
@@ -4872,30 +4879,35 @@ class SiteExploredEvent extends EventKind {
     'recovered_ship': ?recoveredShip?.toJson(),
     'tech_cache': ?techCache?.toJson(),
     if (relic) 'relic': relic,
-    if (points != 0) 'points': points,
   };
 }
 
 /// A fleet docked at the homeworld, or arrived at its owner's finished
-/// outpost, and handed over the sectors it charted.
+/// outpost, and handed over the sectors it charted. Each new chart pays
+/// `scaling::chart_value` into the stockpile, as far as its caps allow.
 class ChartDeliveredEvent extends EventKind {
   final int fleetId;
 
   /// Sectors newly credited to the empire.
   final int sectors;
 
-  /// Explore points they earned.
-  final double points;
+  /// What they paid into the stockpile. What a full store has no room
+  /// for is lost.
+  final Resources paid;
 
-  const ChartDeliveredEvent({required this.fleetId, required this.sectors, required this.points});
+  const ChartDeliveredEvent({required this.fleetId, required this.sectors, required this.paid});
 
   factory ChartDeliveredEvent.fromJson(Object? json) {
     final m = _obj(json);
-    return ChartDeliveredEvent(fleetId: _int(m['fleet_id']), sectors: _int(m['sectors']), points: _double(m['points']));
+    return ChartDeliveredEvent(
+      fleetId: _int(m['fleet_id']),
+      sectors: _int(m['sectors']),
+      paid: Resources.fromJson(m['paid']),
+    );
   }
 
   @override
-  Json toJson() => {'kind': 'ChartDelivered', 'fleet_id': fleetId, 'sectors': sectors, 'points': points};
+  Json toJson() => {'kind': 'ChartDelivered', 'fleet_id': fleetId, 'sectors': sectors, 'paid': paid.toJson()};
 }
 
 /// Whatever killed the crew is still aboard.

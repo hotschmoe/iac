@@ -18,11 +18,12 @@ pub const PACE_MAX: f64 = 20_000.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaceClass {
     /// Economy timers: divided by P (production, build, research, ship times,
-    /// regeneration, respawns).
+    /// regeneration).
     Economy,
     /// Attention timers and caps: P^0.75 (storage caps, raid cadence).
     Attention,
-    /// Finds: P^0.5 (loot value, derelict respawn, raid warning).
+    /// Finds: P^0.5 (loot value, derelict respawn, a pirate group's return
+    /// and mending, raid warning).
     Finds,
     /// Real time: never scaled (cooldowns, combat, fuel, boarding).
     RealTime,
@@ -49,7 +50,7 @@ pub const TIMER_CLASSES: &[(&str, PaceClass)] = &[
     ("REPAIR_TICKS", PaceClass::RealTime),
     ("STRANDED_RECOVERY_TICKS", PaceClass::RealTime),
     ("FLEE_MIN_ROUNDS", PaceClass::RealTime),
-    ("NPC_HEAL_SHARE", PaceClass::Economy),
+    ("NPC_HEAL_SHARE", PaceClass::Finds),
     ("SCAN_REVEAL_TICKS", PaceClass::RealTime),
     ("RAID_ROLL_INTERVAL", PaceClass::Attention),
     ("RAID_ROUNDS", PaceClass::RealTime),

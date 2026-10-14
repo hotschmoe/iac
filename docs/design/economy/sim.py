@@ -883,6 +883,8 @@ class Sim:
     def on_building(self, n, l):
         if n == 'metal' and l == 10: self.mark('metal10')
         if n == 'shipyard' and l == RAID_MIN_SHIPYARD: self.mark('raided')
+        if n == 'robotics' and l == 2: self.mark('robotics2')
+        if n == 'lab' and l == 1: self.mark('lab1')
         self.check_endgame()
     def on_research(self, n, l):
         if n == 'computer' and BUILDING_SLOTS[l] > BUILDING_SLOTS[l - 1]:
@@ -1233,7 +1235,9 @@ def fmt_requires(prereqs):
 
 def tier_from(tier):         # the first ring whose derelicts are of `tier`
     return next(d for d in sorted(RING) if derelict_tier(d) >= tier)
-MILESTONES = [('raided', f'Shipyard {RAID_MIN_SHIPYARD} (worth raiding)'), ('first_small_cargo', 'First Small Cargo'),
+MILESTONES = [('robotics2', 'Robotics Factory 2'), ('lab1', 'Research Lab 1'),
+              ('raided', f'Shipyard {RAID_MIN_SHIPYARD} (worth raiding)'), ('first_light_fighter', 'First Light Fighter'),
+              ('first_small_cargo', 'First Small Cargo'),
               ('slot2', 'Build slot 2 (Computer Technology)'), ('metal10', 'Metal Mine 10'),
               ('first_heavy_fighter', 'First Heavy Fighter'), ('first_cruiser', 'First Cruiser'),
               ('slot3', 'Build slot 3 (Computer Technology)'),

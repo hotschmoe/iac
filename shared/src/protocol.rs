@@ -703,11 +703,15 @@ pub struct ExchangeQuote {
     pub refusal: Option<String>,
 }
 
-/// The score table: one ranking for every player, human or agent.
-/// `score = core + min(combat + explore, 0.25 * core)`, where `core` counts
-/// completed building and research levels, living ships and half of the
-/// defence structures, each at its cost weighted 1 : 1.5 : 2 for
-/// metal : crystal : deuterium, per thousand.
+/// The score table: one ranking for every player, human or agent. A score
+/// is what an empire has built and keeps:
+/// `score = buildings + research + fleet + outpost + defence`, each part
+/// the cost of what stands, weighted 1 : 1.5 : 2 for
+/// metal : crystal : deuterium, per thousand. `fleet` is the ships the
+/// empire has now, its Solar Satellites among them, so a fleet destroyed
+/// leaves the score; `defence` is the defence structures at the share of
+/// their cost the score gives them (`iac_sim::score::DEFENCE_SHARE`, none
+/// today). Kills, charts and derelicts score nothing: they pay in resources.
 ///
 /// Built-in bots are part of the world but not of the ranking: they are
 /// never in `entries` and take no rank there. They are listed in `bots`,
@@ -748,11 +752,12 @@ pub struct LeaderboardEntry {
     pub name: String,
     pub agent: bool,
     pub score: f32,
-    pub core: f32,
-    /// Raw combat points, before the 25 percent cap.
-    pub combat: f32,
-    /// Raw exploration points, before the 25 percent cap.
-    pub explore: f32,
+    pub buildings: f32,
+    pub research: f32,
+    pub fleet: f32,
+    /// The finished levels of the empire's outpost, while it stands.
+    pub outpost: f32,
+    pub defence: f32,
 }
 
 /// Answer to `preview_move`: what a jump costs and what waits at the far end.
@@ -1531,7 +1536,7 @@ pub struct SectorState {
     pub live: bool,
 }
 
-/// A sector's chart is made by entering it and pays explore points once.
+/// A sector's chart is made by entering it and pays once, in resources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChartMark {
@@ -2571,34 +2576,31 @@ pub struct SiteExploredEvent {
     pub fleet_id: u64,
     pub sector: Hex,
     pub tier: u8,
-    /// Loot taken aboard (cargo-capped; overflow drops as sector salvage).
+    /// Loot taken aboard, a relic's worth included (cargo-capped; overflow
+    /// drops as sector salvage).
     pub resources: Resources,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub recovered_ship: Option<ShipClass>,
     /// Instant tech level granted by a recovered data core.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tech_cache: Option<ResearchType>,
-    /// An ancient relic came aboard (worth 25 explore points; no other use yet).
+    /// An ancient relic came aboard: the loot of the site is worth
+    /// `RELIC_LOOT_MULT` times more for it.
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub relic: bool,
-    /// Explore points this boarding earned (0 when the site was boarded before).
-    #[serde(skip_serializing_if = "is_zero", default)]
-    pub points: f32,
-}
-
-fn is_zero(v: &f32) -> bool {
-    *v == 0.0
 }
 
 /// A fleet docked at the homeworld, or arrived at its owner's finished
-/// outpost, and handed over the sectors it charted.
+/// outpost, and handed over the sectors it charted. Each new chart pays
+/// `scaling::chart_value` into the stockpile, as far as its caps allow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChartDeliveredEvent {
     pub fleet_id: u64,
     /// Sectors newly credited to the empire.
     pub sectors: u32,
-    /// Explore points they earned.
-    pub points: f32,
+    /// What they paid into the stockpile. What a full store has no room
+    /// for is lost.
+    pub paid: Resources,
 }
 
 /// Whatever killed the crew is still aboard.

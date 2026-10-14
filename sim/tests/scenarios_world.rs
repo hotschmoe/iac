@@ -25,7 +25,6 @@ use iac_shared::world::NpcBehaviorType::Passive;
 use iac_shared::world::{home_seats, is_home_seat};
 use iac_sim::commands::auth_failure;
 use iac_sim::engine::{template_npc_id, AuthError, FleetStatus, SectorOverride, Ships};
-use iac_sim::snapshot::ExploreCredit;
 
 fn salvage_events(events: &[iac_shared::protocol::GameEvent]) -> Vec<iac_shared::protocol::SalvageDespawnedEvent> {
     events
@@ -211,7 +210,7 @@ fn prospector(name: &str, strong: bool, max_range: u8) -> (iac_sim::GameEngine, 
         }
         for h in ring_around(home, 2) {
             s.explored.insert((pid, h.to_key()));
-            s.credited.insert((pid, h.to_key(), ExploreCredit::Charted));
+            s.charted.insert((pid, h.to_key()));
         }
     });
     let params = PolicyParams { max_range, ..PolicyParams::default() };
@@ -361,14 +360,14 @@ fn a_prospector_with_nothing_left_in_range_holds_and_says_why_without_flooding()
 fn a_prospector_goes_back_for_the_chart_a_lost_fleet_never_brought_home() {
     let (mut engine, pid, fid, home) = prospector("Second", true, 2);
     let entered = engine.world_gen.connected_neighbors(home).slice()[0];
-    let chart = (pid, entered.to_key(), ExploreCredit::Charted);
+    let chart = (pid, entered.to_key());
     edit(&mut engine, |s| {
         s.players.get_mut(&pid).unwrap().resources.deuterium = 5_000.0;
-        assert!(s.explored.contains(&(pid, entered.to_key())));
-        s.credited.remove(&chart);
+        assert!(s.explored.contains(&chart));
+        s.charted.remove(&chart);
     });
 
-    let events = run_until(&mut engine, 300, |e| e.snapshot().credited.contains(&chart));
+    let events = run_until(&mut engine, 300, |e| e.snapshot().charted.contains(&chart));
     assert!(policy_actions(&events).iter().any(|(a, why)| a == "move" && why == "pushing frontier"));
     assert_eq!(engine.fleets[&fid].location, home, "the chart is banked at the dock");
 }
@@ -664,7 +663,7 @@ fn a_mauled_fleet_under_orders_goes_home_to_be_mended_before_it_does_anything_el
 
 #[test]
 fn a_patrol_hunts_out_to_its_range_brings_home_what_its_kills_leave_and_waits_at_the_dock() {
-    let (mut engine, pid, fid, home) = delegate("Hunter", PolicyPreset::PatrolHome, 4);
+    let (mut engine, _, fid, home) = delegate("Hunter", PolicyPreset::PatrolHome, 4);
     let contacts = ring_around(home, 4)
         .into_iter()
         .filter(|h| engine.world_gen.generate_sector(*h).npc_template.is_some())
@@ -700,7 +699,6 @@ fn a_patrol_hunts_out_to_its_range_brings_home_what_its_kills_leave_and_waits_at
         })
         .collect();
     assert!(wandering.is_empty(), "every jump has a purpose: {wandering:?}");
-    assert!(engine.players[&pid].combat_points > 0.0);
     assert!(
         holds(&actions).iter().any(|why| {
             why.starts_with("no contact within 4 hops of home") && why.ends_with(", and no wreckage that repays the fuel")
@@ -886,7 +884,7 @@ fn chart_after_visit(engine: &mut iac_sim::GameEngine, pid: u64, fid: u64, at: H
 }
 
 #[test]
-fn every_fleet_in_a_crowded_sector_fights_scores_and_comes_out_free() {
+fn every_fleet_in_a_crowded_sector_fights_and_comes_out_free() {
     let mut engine = world("persistent");
     let crews: Vec<(u64, u64)> = (0..9).map(|i| join(&mut engine, &format!("Crew{i}"))).collect();
     let at = lone_fighter_sector(&engine, Passive);
@@ -909,7 +907,6 @@ fn every_fleet_in_a_crowded_sector_fights_scores_and_comes_out_free() {
     for &(pid, fid) in &crews {
         let name = engine.players[&pid].name.clone();
         assert_eq!(engine.fleets[&fid].state, FleetStatus::Idle, "{name} is still marked in combat after the fight");
-        assert!(engine.players[&pid].combat_points > 0.0, "{name} fought and was not credited");
         let order = engine.execute(pid, Command::Scan { fleet_id: fid });
         assert!(order.error.is_none(), "{name} takes no orders: {:?}", order.error);
     }
@@ -1309,7 +1306,7 @@ fn how_far_a_group_follows_goes_by_its_behaviour_and_it_follows_only_what_it_was
 fn flight_costs_its_fuel_and_its_parting_rounds_and_earns_nothing_from_a_group_left_standing() {
     use ShipClass::{Cruiser, EspionageProbe, HeavyFighter, LightFighter};
     let (mut e, lane) = skirmish("persistent", &[(Cruiser, 60)], &[(HeavyFighter, 200)], Passive);
-    let (pid, fid) = (e.pid, e.fid);
+    let fid = e.fid;
     let at = lane[0];
     assert!(e.engine.npc_fleets[&PACK].ships.total() < 200, "the first round took Heavy Fighters");
 
@@ -1348,7 +1345,6 @@ fn flight_costs_its_fuel_and_its_parting_rounds_and_earns_nothing_from_a_group_l
     let fought_on = rounds_stood(&e, mark);
     assert!(fought_on.len() == 1 && !fought_on[0].1 && fought_on[0].2 > 0, "and it fires again: {fought_on:?}");
 
-    let points = e.engine.players[&pid].combat_points;
     assert_eq!(e.fleet().flight.expect("a quote").fuel, burn(&e), "a second flight is paid for again");
     let mark = jump(&mut e, lane[1]);
     assert_eq!(rounds_stood(&e, mark), vec![(at, true, 0)]);
@@ -1358,8 +1354,10 @@ fn flight_costs_its_fuel_and_its_parting_rounds_and_earns_nothing_from_a_group_l
     let fallen: u32 = ended[0].losses.iter().filter(|l| l.fleet_id == PACK).flat_map(|l| &l.lost).map(|u| u.count).sum();
     assert!(fallen > 0, "the fight had destroyed Heavy Fighters: {:?}", ended[0].losses);
     assert_eq!(e.engine.npc_fleets[&PACK].ships.total(), 200 - fallen, "which the group stays short of");
-    assert_eq!(e.engine.players[&pid].combat_points, points, "a group pays its score when it is destroyed and not before");
-    assert!(e.engine.sector_overrides.get(&at.to_key()).is_none_or(|o| o.salvage.is_none()), "and leaves no wreckage until then");
+    assert!(
+        e.engine.sector_overrides.get(&at.to_key()).is_none_or(|o| o.salvage.is_none()),
+        "a group pays its wreckage when it is destroyed and not before",
+    );
     assert!(pursuits(&e, mark).is_empty(), "a convoy follows nobody");
     let fleet = e.fleet();
     assert!(fleet.hull < fleet.hull_max && fleet.repair.is_some(), "the damage stays until a dock mends it");
@@ -1372,7 +1370,7 @@ fn flight_costs_its_fuel_and_its_parting_rounds_and_earns_nothing_from_a_group_l
 }
 
 #[test]
-fn a_group_left_alive_keeps_its_losses_mends_a_step_at_a_time_and_pays_in_full_when_it_falls() {
+fn a_group_left_alive_keeps_its_losses_mends_a_step_at_a_time_and_pays_its_whole_wreckage_when_it_falls() {
     use ShipClass::{Cruiser, LightFighter};
     let (mut e, lane) = skirmish("season", &[(Cruiser, 3)], &[(LightFighter, 30)], Passive);
     let (pid, fid) = (e.pid, e.fid);
@@ -1405,7 +1403,6 @@ fn a_group_left_alive_keeps_its_losses_mends_a_step_at_a_time_and_pays_in_full_w
     empower(&mut e.engine, pid, fid);
     let found = e.engine.npc_fleets[&PACK].ships.total();
     let resting = seen(&e).expect("still there").whole_at.expect("it is wounded");
-    let points = e.engine.players[&pid].combat_points;
     let mark = e.mark();
     e.order(Command::Attack { fleet_id: fid, target_fleet_id: PACK }).expect("the fleet comes back for it");
     assert_eq!(
@@ -1424,7 +1421,6 @@ fn a_group_left_alive_keeps_its_losses_mends_a_step_at_a_time_and_pays_in_full_w
     let whole = Ships::of(&[(LightFighter, 30)]).power(scaling::Arms::of_grade(1.0));
     let pile = scaling::split_loot(scaling::wreck_value(whole)).scale(pace.finds_mult());
     assert_eq!(ended.last().and_then(|c| c.salvage), Some(pile), "the wreckage of the thirty it was generated with");
-    assert!(e.engine.players[&pid].combat_points > points, "and its score, at the kill");
     assert!(!e.engine.npc_fleets.contains_key(&PACK));
 }
 

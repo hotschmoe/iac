@@ -18,7 +18,6 @@ use iac_shared::protocol::{
 use iac_shared::scaling::{ratio_label, ship_tank, RatioLabel, ResearchLevels};
 use iac_shared::world::{self, NpcBehaviorType};
 use iac_sim::engine::{template_npc_id, Errand, FleetStatus, SectorOverride, Ships};
-use iac_sim::snapshot::ExploreCredit;
 use iac_sim::GameEngine;
 
 fn alerts_since(e: &Empire, mark: usize) -> Vec<AlertEvent> {
@@ -324,7 +323,7 @@ fn charted_prospector(engage_ratio_x10: u8) -> (Empire, u64) {
                 let h = Hex { q: home.q + dq, r: home.r + dr };
                 if Hex::distance(&h, &home) <= 2 {
                     s.explored.insert((pid, h.to_key()));
-                    s.credited.insert((pid, h.to_key(), ExploreCredit::Charted));
+                    s.charted.insert((pid, h.to_key()));
                 }
             }
         }

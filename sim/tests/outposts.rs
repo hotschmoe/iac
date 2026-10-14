@@ -759,29 +759,28 @@ fn an_outpost_scores_its_finished_levels_and_nothing_it_holds() {
     let before = e.score_row();
 
     e.order(Command::FoundOutpost { fleet_id: fid }).expect("found");
-    assert_eq!(e.score_row().core, before.core, "an outpost under construction scores nothing");
+    assert_eq!(e.score_row().score, before.score, "an outpost under construction scores nothing");
     e.run(build_ticks(&e, 1));
     let one = e.score_row();
-    assert!((one.core - before.core - 6.45).abs() < 1e-3, "level 1 is 3000 + 1.5 x 1500 + 2 x 600 a thousand: {}", one.core - before.core);
+    assert!((one.score - before.score - 6.45).abs() < 1e-3, "level 1 is 3000 + 1.5 x 1500 + 2 x 600 a thousand: {}", one.score - before.score);
 
     stow(&mut e, fid, res(15_000.0, 9000.0, 3000.0));
     e.order(Command::Unload { fleet_id: fid }).expect("unload at the outpost");
     e.run(500);
     e.order(Command::Load { fleet_id: e.fid, resource: Crystal, amount: Some(100.0) }).expect("load from the store");
-    assert_eq!(e.score_row().core, one.core, "the store, the yield, load and unload score nothing");
+    assert_eq!(e.score_row().score, one.score, "the store, the yield, load and unload score nothing");
 
     e.order(Command::UpgradeOutpost).expect("level 2");
-    assert_eq!(e.score_row().core, one.core, "a level scores when it is finished, not when it is paid");
+    assert_eq!(e.score_row().score, one.score, "a level scores when it is finished, not when it is paid");
     e.run(build_ticks(&e, 2));
     let two = e.score_row();
-    assert!((two.core - one.core - 16.125).abs() < 1e-3, "level 2 adds 16.125: {}", two.core - one.core);
-    assert_eq!((two.combat, two.explore), (before.combat, before.explore));
+    assert!((two.score - one.score - 16.125).abs() < 1e-3, "level 2 adds 16.125: {}", two.score - one.score);
 
     let pid = e.pid;
     let estimate = |e: &Empire| e.state().homeworld.next_raid_estimate_power;
     let raid = estimate(&e);
     e.order(Command::AbandonOutpost).expect("abandon");
-    assert_eq!(e.score_row().core, before.core, "its score goes with it");
+    assert_eq!(e.score_row().score, before.score, "its score goes with it");
     assert_eq!(estimate(&e), raid, "an outpost never sized the raids on the homeworld");
     assert!(!e.engine.outposts.contains_key(&pid));
 }
@@ -1336,7 +1335,7 @@ fn thirty_days_of_raids_never_destroy_an_undefended_outpost() {
     muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 1)], home);
     stow(&mut e, fid, Resources::default());
     let estimate = e.state().homeworld.next_raid_estimate_power;
-    let core = e.score_row().core;
+    let core = e.score_row().score;
 
     let mark = e.mark();
     let (mut breached, mut lowest) = (0u64, f64::MAX);
@@ -1362,7 +1361,7 @@ fn thirty_days_of_raids_never_destroy_an_undefended_outpost() {
     }
 
     assert_eq!(e.state().homeworld.next_raid_estimate_power, estimate, "the outpost never sized a raid on the homeworld");
-    assert_eq!(e.score_row().core, core, "and its level still counts");
+    assert_eq!(e.score_row().score, core, "and its level still counts");
 }
 
 #[test]
@@ -1423,7 +1422,7 @@ fn the_balance_report_counts_what_an_outpost_made_and_what_raids_took() {
     held.run(6000).unwrap();
     let report = held.summaries().remove(0);
     let post = &held.engine.outposts[&keeper];
-    assert!((report.score.outpost - 22.575).abs() < 1e-3 && report.score.core >= report.score.econ + report.score.fleet + 22.5);
+    assert!((report.score.outpost - 22.575).abs() < 1e-3 && report.score.total >= report.score.buildings + report.score.research + report.score.fleet + 22.5);
     assert!(report.field.outpost_raids_repelled >= 2, "{:?}", report.field);
     assert_eq!((report.field.outpost_raids_lost, report.field.outpost_ticks_breached, report.field.outpost_raided), (0, 0, 0.0));
     assert_eq!((report.field.raids_repelled, report.field.raids_lost), (0, 0), "the homeworld's raids are counted apart");

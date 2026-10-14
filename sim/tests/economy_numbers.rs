@@ -20,10 +20,7 @@ use std::path::Path;
 use iac_shared::constants::*;
 use iac_shared::pace::{CAP_EXPONENT_PAST_KNEE, CAP_KNEE, PRESETS, Pace, PaceClass};
 use iac_shared::scaling::*;
-use iac_sim::score::{
-    BOARD_VALUE_SHARE, CHART_BASE_POINTS, CHART_THREAT_POINTS, DEFENCE_SHARE, DISCOVERY_POINTS, EXTRA_CAP,
-    FULL_PAY_RATIO, KILL_SHARE, MIN_PAY, THREAT_POINTS_EXPONENT, board_points, chart_points, kill_pay_factor,
-};
+use iac_sim::score::DEFENCE_SHARE;
 
 const FILE: &str = "docs/design/economy/numbers.json";
 const RINGS: u16 = 60;
@@ -184,7 +181,7 @@ fn game() -> Json {
         SMALL_CARGO_IMPULSE_LEVEL, SMALL_CARGO_IMPULSE_SPEED, SMALL_CARGO_IMPULSE_FUEL,
         BOMBER_HYPERSPACE_LEVEL, BOMBER_HYPERSPACE_SPEED,
         FUEL_DEUT_PER_UNIT,
-        NPC_POWER_BASE, NPC_POWER_GROWTH, NPC_MAX_SHIPS, NPC_STAT_MULT_MAX, NPC_CRUISER_RING, NPC_BATTLECRUISER_RING,
+        NPC_POWER_BASE, NPC_POWER_GROWTH, NPC_MAX_SHIPS, NPC_STAT_MULT_MAX, NPC_MIN_PACK,
         MAX_THREAT, RAPID_FIRE_UNARMED, RAPID_FIRE_UNARMED_DEATHSTAR,
         WRECK_VALUE_K, WRECK_VALUE_EXPONENT, LOOT_SPLIT,
         REPAIR_COST_SHARE_HOME, REPAIR_COST_SHARE_OUTPOST,
@@ -196,9 +193,8 @@ fn game() -> Json {
         RAID_POWER_ROLL_MIN, RAID_POWER_ROLL_MAX, RAID_ROUNDS, DEFENCE_REBUILD_PCT, DEFENCE_REBUILD_SPREAD,
         DEFENCE_REBUILD_EACH_BELOW, RAID_LOSS_CAP_METAL, RAID_LOSS_CAP_CRYSTAL, RAID_LOSS_CAP_DEUT,
         RAID_DEFENSE_SALVAGE_FRACTION,
-        EXTRA_CAP, KILL_SHARE, FULL_PAY_RATIO, MIN_PAY, BOARD_VALUE_SHARE, DISCOVERY_POINTS,
-        CHART_BASE_POINTS, CHART_THREAT_POINTS, THREAT_POINTS_EXPONENT, DEFENCE_SHARE,
-        RELIC_POINTS, FARM_DECAY, FARM_HALF_LIFE_RESPAWNS,
+        DEFENCE_SHARE, CHART_VALUE_BASE, CHART_VALUE_THREAT, CHART_VALUE_EXPONENT,
+        RELIC_LOOT_MULT, FARM_DECAY, FARM_HALF_LIFE_RESPAWNS,
         EXCHANGE_FEE_MIN, EXCHANGE_FEE_MAX, EXCHANGE_METER_SHARE, EXCHANGE_WINDOW_TICKS,
         OUTPOST_MIN_RING, OUTPOST_MAX_RING, OUTPOST_SPACING, OUTPOST_MAX_LEVEL,
         OUTPOST_COST, OUTPOST_GROWTH, OUTPOST_BUILD_RATE, OUTPOST_STORE_BASE, OUTPOST_YIELD_PER_HOUR,
@@ -484,20 +480,12 @@ fn tables() -> Json {
 
     let group_healing: Vec<Json> = (1..=RINGS)
         .flat_map(|ring| PACES.into_iter().map(move |p| (ring, p)))
-        .map(|(ring, p)| map! {"ring": ring, "pace": p, "step_ticks": npc_heal_step_ticks(ring, &pace(p))})
-        .collect();
-
-    let ratings: Vec<Json> = (1..=MAX_THREAT)
-        .map(|rating| {
-            let discovery = board_points(Resources::default(), rating);
-            map! {"rating": rating, "chart_points": chart_points(rating), "discovery_points": discovery}
+        .map(|(ring, p)| {
+            map! {"ring": ring, "pace": p, "step_ticks": npc_heal_step_ticks(ring, &pace(p)), "respawn_ticks": npc_respawn_ticks(ring, &pace(p))}
         })
         .collect();
 
-    let kill_pay: Vec<Json> = [0.5f32, 1.0, 4.0, 8.0, 40.0, 200.0]
-        .into_iter()
-        .map(|ratio| map! {"ratio": ratio, "pay": kill_pay_factor(ratio, 1.0)})
-        .collect();
+    let ratings: Vec<Json> = (1..=MAX_THREAT).map(|rating| map! {"rating": rating, "chart_value": chart_value(rating)}).collect();
 
     let exchange_spans: Vec<Json> = PACES
         .into_iter()
@@ -552,7 +540,6 @@ fn tables() -> Json {
         "rings": rings,
         "group_healing": group_healing,
         "ratings": ratings,
-        "kill_pay": kill_pay,
         "exchange_spans": exchange_spans,
         "exchange_returns": exchange_returns,
         "outpost_levels": outpost_levels,

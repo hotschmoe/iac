@@ -1696,10 +1696,10 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
         ServerMessage::Leaderboard(LeaderboardReply {
             tick: 4820,
             entries: vec![
-                LeaderboardEntry { rank: 1, name: "Admiral".into(), agent: false, score: 412.5, core: 380.0, combat: 40.25, explore: 0.0 },
-                LeaderboardEntry { rank: 2, name: "Claude-7".into(), agent: true, score: 389.0, core: 389.0, combat: 0.0, explore: 0.0 },
+                LeaderboardEntry { rank: 1, name: "Admiral".into(), agent: false, score: 412.5, buildings: 240.5, research: 120.0, fleet: 52.0, outpost: 0.0, defence: 0.0 },
+                LeaderboardEntry { rank: 2, name: "Claude-7".into(), agent: true, score: 389.0, buildings: 201.0, research: 98.0, fleet: 61.25, outpost: 28.75, defence: 0.0 },
             ],
-            you: Some(LeaderboardEntry { rank: 14, name: "Newbie".into(), agent: false, score: 3.5, core: 3.5, combat: 0.0, explore: 0.0 }),
+            you: Some(LeaderboardEntry { rank: 14, name: "Newbie".into(), agent: false, score: 3.5, buildings: 0.5, research: 0.0, fleet: 3.0, outpost: 0.0, defence: 0.0 }),
             bots: vec![],
         }),
     ));
@@ -1712,12 +1712,12 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
         ServerMessage::Leaderboard(LeaderboardReply {
             tick: 4820,
             entries: vec![
-                LeaderboardEntry { rank: 1, name: "Admiral".into(), agent: false, score: 412.5, core: 380.0, combat: 40.25, explore: 0.0 },
+                LeaderboardEntry { rank: 1, name: "Admiral".into(), agent: false, score: 412.5, buildings: 240.5, research: 120.0, fleet: 52.0, outpost: 0.0, defence: 0.0 },
             ],
             you: None,
             bots: vec![
-                LeaderboardEntry { rank: 1, name: "BOT-explorer-2".into(), agent: false, score: 505.0, core: 404.0, combat: 3.5, explore: 310.0 },
-                LeaderboardEntry { rank: 2, name: "BOT-turtle-1".into(), agent: false, score: 96.25, core: 96.25, combat: 0.0, explore: 0.0 },
+                LeaderboardEntry { rank: 1, name: "BOT-explorer-2".into(), agent: false, score: 505.0, buildings: 300.0, research: 150.0, fleet: 55.0, outpost: 0.0, defence: 0.0 },
+                LeaderboardEntry { rank: 2, name: "BOT-turtle-1".into(), agent: false, score: 96.25, buildings: 70.0, research: 17.25, fleet: 9.0, outpost: 0.0, defence: 0.0 },
             ],
         }),
     ));
@@ -2161,9 +2161,8 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             recovered_ship: Some(ShipClass::HeavyFighter),
             tech_cache: Some(ResearchType::ShieldingTechnology),
             relic: true,
-            points: 25.2,
         })),
-        ("", EventKind::ChartDelivered(ChartDeliveredEvent { fleet_id: 1, sectors: 12, points: 0.4 })),
+        ("", EventKind::ChartDelivered(ChartDeliveredEvent { fleet_id: 1, sectors: 12, paid: res(1430.0, 780.0, 390.0) })),
         ("", EventKind::Exchanged(ExchangedEvent { sector: h(0, 0), terms: sample_terms() })),
         ("started", EventKind::Queue(QueueEvent {
             player_id: Some(7),
@@ -2221,7 +2220,6 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             recovered_ship: None,
             tech_cache: None,
             relic: false,
-            points: 0.0,
         })),
         ("", EventKind::SiteAmbush(SiteAmbushEvent { fleet_id: 1, sector: h(2, -4), npc_fleet_id: 9100 })),
         ("", EventKind::PolicyAction(PolicyActionEvent {

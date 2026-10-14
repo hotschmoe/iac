@@ -1126,7 +1126,7 @@
           "harvest": 1.0,
           "hull": 400.0,
           "jump_fuel": 10.0,
-          "jump_ticks": 4,
+          "jump_ticks": 5,
           "power": 46.0,
           "requires": [
             {
@@ -1163,7 +1163,7 @@
           "harvest": 1.0,
           "hull": 1200.0,
           "jump_fuel": 50.0,
-          "jump_ticks": 3,
+          "jump_ticks": 4,
           "power": 127.5,
           "requires": [
             {
@@ -1362,7 +1362,7 @@
           "harvest": 5.0,
           "hull": 1600.0,
           "jump_fuel": 300.0,
-          "jump_ticks": 5,
+          "jump_ticks": 13,
           "power": 162.0,
           "requires": [
             {
@@ -1450,7 +1450,7 @@
           "harvest": 0.5,
           "hull": 7500.0,
           "jump_fuel": 1000.0,
-          "jump_ticks": 4,
+          "jump_ticks": 7,
           "power": 1800.0,
           "requires": [
             {
@@ -1523,7 +1523,7 @@
           "harvest": 0.5,
           "hull": 11000.0,
           "jump_fuel": 1000.0,
-          "jump_ticks": 4,
+          "jump_ticks": 5,
           "power": 3150.0,
           "requires": [
             {
@@ -1567,7 +1567,7 @@
           "harvest": 0.5,
           "hull": 900000.0,
           "jump_fuel": 1.0,
-          "jump_ticks": 23,
+          "jump_ticks": 250,
           "power": 295000.0,
           "requires": [
             {

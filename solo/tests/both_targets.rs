@@ -257,16 +257,12 @@ fn rows(of: &Value) -> Vec<&Value> {
     }
 }
 
-/// What a snapshot shows the bots to have done: players with combat points,
-/// players with exploration points, homes raided, sectors a kill has heated.
-fn deeds(snapshot: &Value) -> [usize; 4] {
+/// What a snapshot shows the bots to have done: empires that delivered a
+/// chart, homes raided, sectors a kill has heated.
+fn deeds(snapshot: &Value) -> [usize; 3] {
     let count = |of: &str, field: &str| rows(&snapshot[of]).iter().filter(|row| row[field].as_f64().unwrap_or(0.0) > 0.0).count();
-    [
-        count("players", "combat_points"),
-        count("players", "explore_points"),
-        count("raid_states", "last_raid_tick"),
-        count("sector_overrides", "kill_heat"),
-    ]
+    let charted: std::collections::BTreeSet<u64> = rows(&snapshot["charted"]).iter().filter_map(|pair| pair[0].as_u64()).collect();
+    [charted.len(), count("raid_states", "last_raid_tick"), count("sector_overrides", "kill_heat")]
 }
 
 /// The lanes from `home` to the nearest sector `wanted` accepts, the sector
@@ -309,11 +305,11 @@ fn a_blitz_of_hands_on_bots_is_one_world_past_the_tick_where_the_two_parted() {
         hurt += usize::from(fleets.iter().any(|fleet| damaged(fleet)));
     }
     assert_eq!(snapshot["tick"], 3000);
-    let [fought, explored, raided, heated] = deeds(&snapshot);
+    let [explored, raided, heated] = deeds(&snapshot);
     assert!(
-        fought >= 4 && explored >= 4 && raided >= 4 && heated >= 12,
-        "the world was meant to be busy: {fought} empires with combat points, {explored} with exploration points, \
-         {raided} homes raided, {heated} sectors heated by a kill"
+        explored >= 4 && raided >= 4 && heated >= 12,
+        "the world was meant to be busy: {explored} empires that delivered a chart, {raided} homes raided, \
+         {heated} sectors heated by a kill"
     );
     assert!(
         largest >= 8 && hurt >= 2,
@@ -331,13 +327,13 @@ fn a_season_day_of_sixteen_seats_is_one_world() {
         snapshot = twin.checkpoint();
     }
     assert_eq!((snapshot["tick"].as_u64(), rows(&snapshot["players"]).len()), (Some(86_400), 16));
-    let [fought, explored, raided, heated] = deeds(&snapshot);
+    let [explored, raided, heated] = deeds(&snapshot);
     // A season day at OGame's prices is an empire's first few Light
     // Fighters: the fighting of this world is the blitz's above.
     assert!(
-        fought >= 1 && explored >= 4 && raided >= 4 && heated >= 1,
-        "the world was meant to be busy: {fought} empires with combat points, {explored} with exploration points, \
-         {raided} homes raided, {heated} sectors heated by a kill"
+        explored >= 4 && raided >= 4 && heated >= 1,
+        "the world was meant to be busy: {explored} empires that delivered a chart, {raided} homes raided, \
+         {heated} sectors heated by a kill"
     );
 }
 

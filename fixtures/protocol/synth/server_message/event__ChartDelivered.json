@@ -1,3 +1,3 @@
 [
-{"canonical":{"fleet_id":67,"kind":"ChartDelivered","points":69.25,"sectors":68,"tick":59,"type":"event"},"input":{"fleet_id":67,"kind":"ChartDelivered","points":69.25,"sectors":68,"tick":59,"type":"event"}}
+{"canonical":{"fleet_id":67,"kind":"ChartDelivered","paid":{"crystal":70.25,"deuterium":71.25,"metal":69.25},"sectors":68,"tick":60,"type":"event"},"input":{"fleet_id":67,"kind":"ChartDelivered","paid":{"crystal":70.25,"deuterium":71.25,"metal":69.25},"sectors":68,"tick":60,"type":"event"}}
 ]
