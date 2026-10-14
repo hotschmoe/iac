@@ -11,6 +11,9 @@
 //   recovery   salvage_and_sites   mine_and_return         derelicts and wreckage that pay
 //   strike     patrol_home         salvage_and_sites       nearest group whose wreckage pays, else home
 //
+// Once kills no longer raise the score the strike wing's doctrines are the
+// recovery wing's: a patrol does not weigh a fight against its fuel.
+//
 // A turtle's ships and, once it has a cargo ship, a miner's warships are
 // the garrison: they are bought with what no order claimed, and stay home.
 //
@@ -142,14 +145,18 @@ impl Wing {
     }
 
     /// The doctrine a wing flies under, and the one it is tried on when the
-    /// first finds nothing to do.
-    fn doctrines(self) -> Option<[PolicyPreset; 2]> {
+    /// first finds nothing to do. A patrol's fights are not weighed against
+    /// its fuel as a pilot's are, and once kills no longer raise the score
+    /// the strike wing scoops and boards instead: in a season week its
+    /// patrols past the cap burned more deuterium than they brought home.
+    fn doctrines(self, points_wanted: bool) -> Option<[PolicyPreset; 2]> {
         match self {
             Wing::Garrison => None,
             Wing::Mining => Some([PolicyPreset::MineAndReturn, PolicyPreset::SalvageAndSites]),
             Wing::Survey => Some([PolicyPreset::Prospect, PolicyPreset::SalvageAndSites]),
             Wing::Recovery => Some([PolicyPreset::SalvageAndSites, PolicyPreset::MineAndReturn]),
-            Wing::Strike => Some([PolicyPreset::PatrolHome, PolicyPreset::SalvageAndSites]),
+            Wing::Strike if points_wanted => Some([PolicyPreset::PatrolHome, PolicyPreset::SalvageAndSites]),
+            Wing::Strike => Some([PolicyPreset::SalvageAndSites, PolicyPreset::MineAndReturn]),
         }
     }
 
@@ -458,7 +465,7 @@ impl<'a> Admiral<'a> {
     /// nothing to do under its orders and is given the wing's other doctrine.
     fn delegate(&mut self, unit: Unit, leaving: bool) {
         let fleet = unit.fleet;
-        let Some(doctrines) = unit.wing.doctrines() else { return };
+        let Some(doctrines) = unit.wing.doctrines(self.brief.points_wanted) else { return };
         if !self.can_return(unit) {
             self.dock(unit);
             return;
