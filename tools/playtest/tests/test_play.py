@@ -185,17 +185,17 @@ class State(unittest.TestCase):
 
     def test_score_row_and_headline(self):
         fs = fresh()
-        board = {"tick": fs["tick"], "entries": [{"rank": 1, "name": "Other", "agent": True, "score": 90, "core": 80, "combat": 10, "explore": 0},
-                                                 {"rank": 2, "name": fs["player"]["name"], "agent": True, "score": 40.04, "core": 30, "combat": 20, "explore": 0}]}
+        row = lambda rank, name, score, b, r, f: {"rank": rank, "name": name, "agent": True, "score": score, "buildings": b,
+                                                  "research": r, "fleet": f, "outpost": 0, "defence": 0}
+        board = {"tick": fs["tick"], "entries": [row(1, "Other", 90, 60, 20, 10), row(2, fs["player"]["name"], 40.04, 25.04, 10, 5)]}
         s = play.score_of(fs, board)
-        self.assertEqual((s["rank"], s["of"], s["score"]), (2, 2, 40.0))
-        self.assertTrue(s["bonus_capped"])
+        self.assertEqual((s["rank"], s["of"], s["score"], s["fleet"]), (2, 2, 40.0, 5))
         doc = play.build_state(fs, board, 5)
         head = play.headline("x", doc)
-        self.assertIn("SCORE 40.0 rank 2/2", head)
-        self.assertIn("CAPPED", head)
+        self.assertIn("SCORE 40.0 rank 2/2 (buildings 25.0, research 10.0, fleet 5.0)", head)
         self.assertIn("IDLE QUEUES", head)
         self.assertIn("Unspent stock scores 0", head)
+        self.assertIn("Defences score 0", head)
 
     def test_server_warnings_pass_through_when_present(self):
         fs = fresh()

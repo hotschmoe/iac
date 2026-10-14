@@ -155,15 +155,6 @@ def check_rings(sim, tables):
         check(f"derelict tier, ring {d}", row["derelict_tier"], sim.derelict_tier(d))
 
 
-def check_score(sim, tables):
-    for row in tables["ratings"]:
-        t = row["rating"]
-        check(f"chart points at T{t}", row["chart_points"], sim.chart_points(t), rel=1e-5)
-        check(f"discovery points at T{t}", row["discovery_points"], sim.discovery_points(t), rel=1e-5)
-    for row in tables["kill_pay"]:
-        check(f"kill pay at ratio {row['ratio']}", row["pay"], sim.kill_pay(row["ratio"]), rel=1e-6)
-
-
 def check_exchange(sim, tables):
     for row in tables["exchange_spans"]:
         pace = row["pace"]
@@ -200,7 +191,6 @@ def main():
     check_storage_and_raids(sim, tables)
     check_flight(sim, game, tables)
     check_rings(sim, tables)
-    check_score(sim, tables)
     check_exchange(sim, tables)
     check_outposts(sim, tables)
     if problems:
@@ -211,7 +201,7 @@ def main():
     print(f"sim.py's formulas agree with the game: {compared} values "
           "(costs and times by level behind the Robotics Factory, the Nanite Factory, the Research Lab and the Shipyard, "
           "energy and production, storage caps, raid power, a jump's fuel, tank and ticks, unit power, the ring gradient, "
-          "score points, exchange, outposts)")
+          "exchange, outposts)")
 
 
 if __name__ == "__main__":

@@ -277,6 +277,34 @@ fn a_defence_that_could_never_beat_the_raid_outlasts_it_for_six_rounds() {
 }
 
 #[test]
+fn defences_score_nothing_and_pay_in_the_wreckage_of_the_raids_they_beat() {
+    let mut e = garrison(&[(SmallCargo, 2)], &[], 0);
+    let pid = e.pid;
+    let home = e.engine.players[&pid].homeworld;
+    let bare = e.score_row();
+    fortify(&mut e.engine, pid, &[(LightLaser, 60)], 0);
+    let walled = e.score_row();
+    assert_eq!((walled.defence, walled.score), (0.0, bare.score), "sixty Light Lasers add nothing to the score");
+    let worth = iac_sim::score::score_of(&e.engine, &e.engine.players[&pid]).defences;
+    assert!((worth - 60.0 * scaling::resource_weight(&LightLaser.build_cost())).abs() < 1e-3, "what they cost: {worth}");
+
+    e.run(5);
+    let (mark, stock) = (e.mark(), e.engine.players[&pid].resources);
+    send_raid(&mut e.engine, pid, &[(LightFighter, 20)], 1.0, 3);
+    let told = sit_out(&mut e);
+    assert_eq!(told.resolved.outcome, Some(BattleOutcome::HostilesDestroyed), "the lasers destroy the raid");
+    let pile = LightFighter.build_cost().scale(20.0 * RAID_DEFENSE_SALVAGE_FRACTION);
+    assert_eq!(told.resolved.salvage_dropped, Some(pile), "which leaves its wreckage at home");
+    e.run(2);
+    let scooped = e.since(mark, |k| match k {
+        EventKind::SalvageCollected(c) if c.sector == home => Some(c.resources),
+        _ => None,
+    });
+    assert_eq!(scooped, [pile], "the docked fleet scoops it");
+    assert!(e.engine.players[&pid].resources.metal >= stock.metal + pile.metal, "into the stockpile, to be built with");
+}
+
+#[test]
 fn a_round_that_hurts_nobody_ends_a_raid_before_its_six() {
     let mut e = garrison(&[], &[(SmallShieldDome, 1), (RocketLauncher, 10)], 0);
     e.run(3);

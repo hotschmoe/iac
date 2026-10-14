@@ -403,12 +403,20 @@ fn hunt_pirates(e: &mut Empire, lair: Hex) {
             "a kill adds nothing to the score: it pays its wreckage",
         );
 
+        let fleet = e.fleet();
+        let mut room = fleet.cargo_capacity - fleet.cargo.total();
+        let mut take = |amount: f64| {
+            let taken = amount.min(room);
+            room -= taken;
+            taken
+        };
+        let fits = Resources { metal: take(pile.metal), crystal: take(pile.crystal), deuterium: take(pile.deuterium) };
         e.order(Command::CollectSalvage { fleet_id: fid }).expect("scoop the wreckage");
         let collected = e.since(mark, |k| match k {
             EventKind::SalvageCollected(c) => Some(c.resources),
             _ => None,
         });
-        assert_eq!(collected.last(), Some(&pile), "the hold takes exactly what was advertised");
+        assert_eq!(collected.last(), Some(&fits), "the hold takes what was advertised, as far as it has room");
     }
     assert!(piles.windows(2).all(|w| w[1] < w[0]), "each repeat kill leaves less: {piles:?}");
 

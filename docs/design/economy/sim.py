@@ -264,7 +264,7 @@ def ship_drive(c, r):
         return G['BOMBER_HYPERSPACE_SPEED'], s['fuel']
     return s['speed'], s['fuel']
 def jump_ticks(speed):
-    return max(1, math.ceil(math.sqrt(JUMP_SPEED_REF / speed)))
+    return max(1, math.ceil(JUMP_SPEED_REF / speed))
 def jump_fuel(c, r):
     return ship_drive(c, r)[1] * FUEL_RATE_MOD[r.get('energy', 0)]
 def ship_tank(c, r, deut_tank=0):
@@ -282,32 +282,21 @@ RAID_POWER_ROLL_MIN, RAID_POWER_ROLL_MAX = G['RAID_POWER_ROLL_MIN'], G['RAID_POW
 def raid_power(econ_pts):
     return RAID_POWER_FLOOR + RAID_POWER_PER_POINT * econ_pts ** RAID_POWER_EXPONENT
 
-# score
-SCORE_EXTRA_CAP = G['EXTRA_CAP']   # combat+exploration points may add at most 25% of core points
-KILL_SHARE = G['KILL_SHARE']       # a kill pays this share of the weight of the pile it leaves
-FULL_PAY_RATIO, MIN_PAY = G['FULL_PAY_RATIO'], G['MIN_PAY']   # full pay up to 4x the NPC power, then 4/ratio down to 5%
-BOARD_VALUE_SHARE = G['BOARD_VALUE_SHARE']   # first boarding: share of the loot weight ...
-DISCOVERY_POINTS = G['DISCOVERY_POINTS']     # ... plus this * T^1.5
-CHART_BASE_POINTS, CHART_THREAT_POINTS = G['CHART_BASE_POINTS'], G['CHART_THREAT_POINTS']   # per delivered new sector: base + threat * T^1.5
-THREAT_POINTS_EXPONENT = G['THREAT_POINTS_EXPONENT']
+# score: what the empire has built and keeps; kills, charts and derelicts pay in resources
 DEFENCE_SHARE = G['DEFENCE_SHARE']           # a defence structure scores this share of its cost
-RELIC_POINTS = G['RELIC_POINTS']
+RELIC_LOOT_MULT = G['RELIC_LOOT_MULT']       # a site with a relic aboard pays this many times its loot
 def relic_chance(t):
     return RATING[t]['relic_chance']
-FARM_DECAY = G['FARM_DECAY']   # each recent kill in a sector multiplies the next kill's loot and score by this
+def chart_value(t):                          # units of loot a delivered chart pays, at any pace
+    return RATING[t]['chart_value']
+FARM_DECAY = G['FARM_DECAY']   # each recent kill in a sector multiplies the next kill's wreckage by this
 FARM_HALF_LIFE_RESPAWNS = G['FARM_HALF_LIFE_RESPAWNS']
 def farm_steady(u):
-    """Mean loot/score share of a sector worked at utilisation u (kills taken / respawns offered)."""
+    """Mean wreckage share of a sector worked at utilisation u (kills taken / respawns offered)."""
     if u <= 0: return 1.0
     d = 0.5 ** (1.0 / (FARM_HALF_LIFE_RESPAWNS * u))
     h = d / (1.0 - d) if d < 1 else 1e9
     return FARM_DECAY ** h
-def kill_pay(r):
-    return max(MIN_PAY, min(1.0, FULL_PAY_RATIO / max(r, 1e-3)))
-def chart_points(t):
-    return CHART_BASE_POINTS + CHART_THREAT_POINTS * t ** THREAT_POINTS_EXPONENT
-def discovery_points(t):
-    return DISCOVERY_POINTS * t ** THREAT_POINTS_EXPONENT
 LOOT_SPLIT = tuple(G['LOOT_SPLIT'])   # metal, crystal and deuterium shares of any loot value
 LOOT_WEIGHT = LOOT_SPLIT[0] * W_RES[0] + LOOT_SPLIT[1] * W_RES[1] + LOOT_SPLIT[2] * W_RES[2]   # weight per unit of loot
 
@@ -471,7 +460,6 @@ class Sim:
         if mode in ('explore', 'raid', 'far'):
             self.share = {'b': 0.40, 'r': 0.20, 's': 0.40}   # fleet first: ships instead of mines
         self.charted = 3 * HOME_DIST * (HOME_DIST + 1)       # sectors within the sensors at start
-        self.boarded = defaultdict(float)                    # first boardings per ring
         self.milestones = {}
         self.income = defaultdict(float)     # source -> units (value-weighted by raw sum)
         self.income_by_ring = defaultdict(float)
@@ -483,7 +471,6 @@ class Sim:
         self.econ_pts = sum(wv(grown_cost(*BUILD[k], l)) for k, top in START_LEVELS.items() for l in range(1, top + 1))
         self.fleet_pts = sum(n * wv(SHIPS[c]['cost']) for c, n in START_SHIPS.items())
         self.def_pts = 0.0
-        self.combat_raw = 0.0; self.explore_raw = 0.0
         self.samples = []
         self.owned = {}            # mark (real seconds) -> what the player owns then
         self.pilot_rate = None; self.pilot_dirty = True; self.pilot_next = 0.0
@@ -1002,7 +989,7 @@ class Sim:
             for d in cand:
                 hops = max(1, abs(d - HOME_DIST) + 1)
                 nsec = min(6 * d, 6 * cH) * ring_coverage(d) * npc_presence(d) * (1 - npc_passive_frac(d))
-                kills.append((d, nsec / npc_respawn_h(d) * P, hops))
+                kills.append((d, nsec / npc_respawn_h(d) * P ** FINDS_EXP, hops))
             kills.sort(key=lambda x: -kill_loot_value(x[0]))
             room = hunt_cap; salv = 0.0
             for d, sup, hops in kills:
@@ -1035,7 +1022,8 @@ class Sim:
                 sup = sites / DERELICT_RESPAWN_H * P ** DERELICT_PACE_EXP
                 k = min(sup, room)
                 if k <= 0: break
-                val = derelict_value(d) * s * k * (1 - derelict_ambush(d) * 0.5)
+                relic = 1 + relic_chance(threat(d)) * (RELIC_LOOT_MULT - 1)
+                val = derelict_value(d) * relic * s * k * (1 - derelict_ambush(d) * 0.5)
                 hops = max(1, abs(d - HOME_DIST) + 1)
                 squad = min(1.0, 2.0 * ratio_req * npc_power(d) / cps)
                 burn = k / SITES_PER_ROUND * (2 * hops + SITES_PER_ROUND) * chop * squad * price
@@ -1092,21 +1080,6 @@ class Sim:
         self.loss_value += loss
         for i in range(3):
             self.res[i] -= loss * LOOT_SPLIT[i]
-        cps = self.combat_power()
-        for d, k in r['kills_ring'].items():
-            ratio = cps / npc_power(d)
-            v = kill_loot_value(d) * self.pilot_scale()
-            self.combat_raw += PILOT_SKILL * k * dt / 3600.0 * KILL_SHARE * v * LOOT_WEIGHT / 1000.0 * kill_pay(ratio) * r['farm'].get(d, 1.0)
-        for d, k in r['sites_ring'].items():
-            t = threat(d)
-            n = k * dt / 3600.0
-            n *= PILOT_SKILL
-            self.explore_raw += n * relic_chance(t) * RELIC_POINTS
-            total = derelict_sites_per_ring(d) * ring_coverage(d)
-            new = max(0.0, min(n, total - self.boarded[d]))
-            self.boarded[d] += new
-            v = derelict_value(d) * self.pilot_scale()
-            self.explore_raw += new * (BOARD_VALUE_SHARE * v * LOOT_WEIGHT / 1000.0 + discovery_points(t))
         fleets = {'explore': 2.0, 'near': 1.0}.get(self.mode, 0.0)
         if fleets and self.charted < 3 * (r['reach'] + 2) * (r['reach'] + 3):
             n = PILOT_SKILL * fleets * CHART_RATE_PER_FLEET_H * self.active_frac() * dt / 3600.0 * (0.5 if self.mode == 'near' else 1.0)
@@ -1114,7 +1087,10 @@ class Sim:
             while 3 * d * (d + 1) < self.charted:
                 d += 1
             self.charted += n
-            self.explore_raw += n * chart_points(threat(d))
+            for i in range(3):
+                amt = n * chart_value(threat(d)) * LOOT_SPLIT[i]
+                self.res[i] += amt
+                self.income['charts'] += amt
         for rg, v in r['ore_ring'].items():
             self.income_by_ring[('ore', rg)] += v * dt / 3600.0
         for rg, v in r['salv_ring'].items():
@@ -1168,9 +1144,7 @@ class Sim:
         self.t += dt
 
     def score(self):
-        core = self.econ_pts + self.fleet_pts + self.def_pts
-        extra = min(self.combat_raw + self.explore_raw, SCORE_EXTRA_CAP * core)
-        return core, extra
+        return self.econ_pts + self.fleet_pts + self.def_pts
 
     def inventory(self):
         """Everything the player owns now, and how it stands against the map and the next raid."""
@@ -1504,7 +1478,7 @@ def owns_table(s):
     row('home defence power (docked warships, satellites, defences)', lambda x: f"{x['def_power']:.0f}")
     row('the next raid, weakest to strongest', lambda x: f"{x['raid'][0]:.0f} to {x['raid'][1]:.0f}" + ('' if x['raided'] else ' (not raided yet)'))
     row('score: buildings and research + fleet + defences', lambda x: f"{x['econ_pts']:.0f} + {x['fleet_pts']:.0f} + {x['def_pts']:.0f}")
-    row('score: core + combat and exploration', lambda x: f"{x['score'][0]:.0f} + {x['score'][1]:.0f}")
+    row('score', lambda x: f"{x['score']:.0f}")
     L.append('')
     return '\n'.join(L)
 
@@ -1512,7 +1486,7 @@ OWNS_R = ('computer', 'energy', 'weapons', 'shielding', 'armour', 'combustion', 
 def owns_summary(results, mode='near'):
     """One line for each preset and mark."""
     L = ['| preset | at | game days | mines M/C/D | Solar / satellites | energy made/needed | Robotics/Shipyard/Lab | slots | research '
-         + '/'.join(''.join(w[0] for w in LABEL[k].split()) for k in OWNS_R) + ' | warships LF/HF/CR/BS | Small Cargo | defences | warships\' power | home defence | strongest raid | score core+extra |',
+         + '/'.join(''.join(w[0] for w in LABEL[k].split()) for k in OWNS_R) + ' | warships LF/HF/CR/BS | Small Cargo | defences | warships\' power | home defence | strongest raid | score |',
          '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for p in PRESETS:
         s = results.get((p.name, mode))
@@ -1525,7 +1499,7 @@ def owns_summary(results, mode='near'):
                      + '/'.join(str(x['r'].get(k, 0)) for k in OWNS_R) + ' | '
                      + '/'.join(str(x['ships'].get(k, 0)) for k in ('light_fighter', 'heavy_fighter', 'cruiser', 'battleship'))
                      + f" | {x['ships'].get('small_cargo', 0)} | {sum(x['defs'].values())} | {x['fleet_power']:.0f} | {x['def_power']:.0f} | "
-                     f"{x['raid'][1]:.0f} | {x['score'][0]:.0f}+{x['score'][1]:.0f} |")
+                     f"{x['raid'][1]:.0f} | {x['score']:.0f} |")
     return '\n'.join(L)
 
 def income_table(results, mode):
@@ -1602,13 +1576,12 @@ def pace_table(results):
     return '\n'.join(L)
 
 def score_table(results):
-    L = ['| preset | econ pts (build+research) | fleet pts | defence pts | combat+explore (capped) | total |', '|---|---|---|---|---|---|']
+    L = ['| preset | econ pts (build+research) | fleet pts | defence pts | total |', '|---|---|---|---|---|']
     for p in PRESETS:
         s = results.get((p.name, 'near'))
         if not s: continue
         s0 = s.runs[0]
-        core, extra = s0.score()
-        L.append(f'| {p.name} | {s0.econ_pts:.0f} | {s0.fleet_pts:.0f} | {s0.def_pts:.0f} | {extra:.0f} | {core+extra:.0f} |')
+        L.append(f'| {p.name} | {s0.econ_pts:.0f} | {s0.fleet_pts:.0f} | {s0.def_pts:.0f} | {s0.score():.0f} |')
     return '\n'.join(L)
 
 def ring_snapshot_table(s, label, when):
@@ -1631,7 +1604,7 @@ def ring_snapshot_table(s, label, when):
 
 def day_summary(s, title):
     """Per-day list of what completed: new building levels (max per building), research, ships, defences."""
-    L = [f'**{title}**', '', '| day | buildings reached | research done | ships/defences finished | score (core+extra) |', '|---|---|---|---|---|']
+    L = [f'**{title}**', '', '| day | buildings reached | research done | ships/defences finished | score |', '|---|---|---|---|---|']
     days = {}
     for t, k, tx in s.log:
         days.setdefault(int(t // 86400) + 1, []).append((k, tx))
@@ -1648,7 +1621,7 @@ def day_summary(s, title):
         sc = '-'
         for t, scr in s.daily:
             if int(t // 86400) == d:
-                sc = f'{scr[0]:.0f}+{scr[1]:.0f}'
+                sc = f'{scr:.0f}'
         L.append(f"| {d} | {levels_text(bl, bl)} | {levels_text(rs, rs)} | {counts_text(sh, sh)} | {sc} |")
     return '\n'.join(L)
 
@@ -1705,16 +1678,16 @@ def long_run():
     s = Sim(p, mode='near')
     end = p.horizon_h * 3600.0
     marks = [d * 86400.0 for d in (30, 60, 74, 90, 120, 150, 180, 240, 300, 365)]
-    L = ['| day | Metal/Crystal/Deut | Solar / satellites | Robotics | Shipyard | Lab | stores m/c/d | Cruisers | Battleships | defences | score (core+extra) | production /h |',
+    L = ['| day | Metal/Crystal/Deut | Solar / satellites | Robotics | Shipyard | Lab | stores m/c/d | Cruisers | Battleships | defences | score | production /h |',
          '|---|---|---|---|---|---|---|---|---|---|---|---|']
     mi = 0
     while s.t < end and mi < len(marks):
         s.step(p.dt)
         if s.t >= marks[mi]:
-            b = s.b; core, extra = s.score()
+            b = s.b
             L.append(f"| {marks[mi]/86400:.0f} | {b['metal']}/{b['crystal']}/{b['deut']} | {b['solar']} / {s.ships['satellite']} | {b['robotics']} | {b['shipyard']} | {b['lab']} | "
                      + '/'.join(str(b[n]) for n in STORES)
-                     + f" | {s.ships['cruiser']} | {s.ships['battleship']} | {sum(s.defs.values())} | {core:.0f}+{extra:.0f} | {sum(s.prod_h()):.0f} |")
+                     + f" | {s.ships['cruiser']} | {s.ships['battleship']} | {sum(s.defs.values())} | {s.score():.0f} | {sum(s.prod_h()):.0f} |")
             mi += 1
     return '\n'.join(L)
 
@@ -1736,8 +1709,9 @@ def sensitivity():
 COMPARE_MODES = (('none', 'builder'), ('explore', 'explorer'), ('raid', 'raider'), ('near', 'mixed'))
 
 def compare_scores(cases=(('blitz', 3600.0), ('season', 7 * 86400.0)), phases=(0.0, 6.0, 12.0)):
-    """Score at a fixed time (the arc a player is judged on) for the four play styles."""
-    L = ['| world | style | core | combat pts | explore pts | extra after cap | total | vs builder |', '|---|---|---|---|---|---|---|---|']
+    """Score at a fixed time (the arc a player is judged on) for the four play styles, with what the field paid
+    them: wreckage, derelicts and charts, each in the points it buys once built with."""
+    L = ['| world | style | score | wreckage | derelicts | charts | vs builder |', '|---|---|---|---|---|---|---|']
     for pname, until in cases:
         p = next(x for x in PRESETS if x.name == pname)
         rows = {}
@@ -1750,14 +1724,14 @@ def compare_scores(cases=(('blitz', 3600.0), ('season', 7 * 86400.0)), phases=(0
                 sm = Sim(p, mode=mode, phase_h=ph)
                 while sm.t < stop:
                     sm.step(p.dt)
-                core, extra = sm.score()
-                acc.append((core, sm.combat_raw, sm.explore_raw, extra))
+                paid = [sm.income[src] * LOOT_WEIGHT / 1000.0 for src in ('salv', 'der', 'charts')]
+                acc.append((sm.score(), *paid))
             n = len(acc)
             rows[label] = tuple(sum(a[i] for a in acc) / n for i in range(4))
         base = rows['builder'][0]
         for _, label in COMPARE_MODES:
-            core, c, e, extra = rows[label]
-            L.append(f"| {pname} | {label} | {core:.0f} | {c:.0f} | {e:.0f} | {extra:.0f} | {core + extra:.0f} | {100 * (core + extra) / base:.0f}% |")
+            score, salv, der, charts = rows[label]
+            L.append(f"| {pname} | {label} | {score:.0f} | {salv:.0f} | {der:.0f} | {charts:.0f} | {100 * score / base:.0f}% |")
     return '\n'.join(L)
 
 def main():

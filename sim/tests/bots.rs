@@ -109,7 +109,7 @@ fn a_check_in_builder_orders_only_the_ships_and_turrets_its_stockpile_covers() {
     let light_fighter = iac_shared::constants::ShipClass::LightFighter.build_cost();
     let started_with = iac_shared::scaling::resource_weight(&light_fighter) * 2.0 / 1000.0;
     assert!(
-        turtle.score.defence > 0.0 && turtle.score.fleet > started_with,
+        turtle.score.defences > 0.0 && turtle.score.fleet > started_with,
         "it did order turrets, and ships or Solar Satellites, which the yard builds as ships: {:?}",
         turtle.score
     );
@@ -165,7 +165,7 @@ fn bots_build_fly_and_delegate_with_orders_the_engine_accepts() {
 
     let turtle = player(&players, "turtle/hands-on");
     assert_eq!((turtle.field.sectors_charted, turtle.field.kills), (0, 0), "a turtle stays home");
-    assert!(turtle.score.defence > 0.0, "a turtle builds defences");
+    assert!(turtle.score.defences > 0.0, "a turtle builds defences");
 
     let absentee = player(&players, "explorer/check-in");
     assert!(

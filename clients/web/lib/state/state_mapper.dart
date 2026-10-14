@@ -87,7 +87,9 @@ List<String> quoteLines(proto.ExchangeQuote q) {
 List<String> boardLines(proto.LeaderboardReply b) => [
       for (final e in [...b.entries.take(5), if (b.you != null) b.you!])
         '#${e.rank} ${e.name}${e.agent ? ' [AI]' : ''}  ${e.score.toStringAsFixed(1)} '
-            '(core ${e.core.toStringAsFixed(1)}, combat ${e.combat.toStringAsFixed(1)}, explore ${e.explore.toStringAsFixed(1)})',
+            '(buildings ${e.buildings.toStringAsFixed(1)}, research ${e.research.toStringAsFixed(1)}, '
+            'fleet ${e.fleet.toStringAsFixed(1)}${e.outpost > 0 ? ', outpost ${e.outpost.toStringAsFixed(1)}' : ''}'
+            '${e.defence > 0 ? ', defence ${e.defence.toStringAsFixed(1)}' : ''})',
       if (b.bots.isNotEmpty) '${b.bots.length} built-in bots, unranked; best ${b.bots.first.name} ${b.bots.first.score.toStringAsFixed(1)}',
     ];
 
@@ -483,11 +485,11 @@ class StateMapper {
         msg = '${_fleet(k.fleetId)} derelict yielded ${amountsOf(k.resources)}'
             '${k.recoveredShip != null ? ', recovered ${k.recoveredShip!.label}' : ''}'
             '${k.techCache != null ? ', data core: ${k.techCache!.label}' : ''}'
-            '${k.relic ? ', ANCIENT RELIC' : ''}${k.points > 0 ? ' (+${k.points.toStringAsFixed(2)} explore)' : ''}';
+            '${k.relic ? ', an ancient relic among it' : ''}';
         level = EventLevel.bright;
       case proto.ChartDeliveredEvent():
-        msg = '${_fleet(k.fleetId)} delivered the chart of ${k.sectors} sectors '
-            '(+${k.points.toStringAsFixed(2)} explore)';
+        msg = '${_fleet(k.fleetId)} delivered the chart of ${k.sectors} sectors, '
+            'paid ${amountsOf(k.paid)} into the stockpile';
         level = EventLevel.bright;
       case proto.ExchangedEvent():
         final t = k.terms;

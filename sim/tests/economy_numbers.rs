@@ -268,6 +268,7 @@ fn game() -> Json {
             map! {
                 "rating": rating, "threat_band": threat_band(rating),
                 "derelict_ambush": derelict_ambush(rating), "relic_chance": relic_chance(rating),
+                "chart_value": chart_value(rating),
             }
         })
         .collect();
@@ -485,8 +486,6 @@ fn tables() -> Json {
         })
         .collect();
 
-    let ratings: Vec<Json> = (1..=MAX_THREAT).map(|rating| map! {"rating": rating, "chart_value": chart_value(rating)}).collect();
-
     let exchange_spans: Vec<Json> = PACES
         .into_iter()
         .map(|p| {
@@ -539,7 +538,6 @@ fn tables() -> Json {
         "raid_power": raid_power,
         "rings": rings,
         "group_healing": group_healing,
-        "ratings": ratings,
         "exchange_spans": exchange_spans,
         "exchange_returns": exchange_returns,
         "outpost_levels": outpost_levels,

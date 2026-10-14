@@ -1335,21 +1335,23 @@ fn a_jump_takes_the_ticks_the_fleet_reports() {
     let fighters: Classes = &[(S::LightFighter, 2)];
     let with_a_heavy: Classes = &[(S::LightFighter, 1), (S::HeavyFighter, 1)];
     // The drives as (Combustion, Impulse, Hyperspace). A fleet jumps at the
-    // speed of its slowest ship: max(1, ceil(sqrt(50,000 / speed))) ticks.
-    let cases: [(Classes, (u8, u8, u8), u16); 13] = [
+    // speed of its slowest ship: max(1, ceil(25,000 / speed)) ticks.
+    let cases: [(Classes, (u8, u8, u8), u16); 15] = [
         (fighters, (0, 0, 0), 2),
         (fighters, (9, 0, 0), 2),
         (with_a_heavy, (0, 0, 0), 3),
         (with_a_heavy, (0, 2, 0), 2),
         (&[(S::EspionageProbe, 2)], (0, 0, 0), 1),
-        (&[(S::SmallCargo, 1)], (0, 0, 0), 4),
-        (&[(S::SmallCargo, 1)], (2, 0, 0), 3),
+        (&[(S::SmallCargo, 1)], (0, 0, 0), 5),
+        (&[(S::SmallCargo, 1)], (2, 0, 0), 5),
+        (&[(S::SmallCargo, 1)], (5, 0, 0), 4),
         (&[(S::SmallCargo, 1)], (2, 5, 0), 2),
-        (&[(S::Recycler, 1), (S::Cruiser, 3)], (6, 4, 0), 4),
-        (&[(S::Cruiser, 3)], (0, 4, 0), 2),
+        (&[(S::Recycler, 1), (S::Cruiser, 3)], (6, 4, 0), 8),
+        (&[(S::Cruiser, 3)], (0, 3, 0), 2),
+        (&[(S::Cruiser, 3)], (0, 4, 0), 1),
         (&[(S::Battleship, 1)], (0, 0, 4), 2),
         (&[(S::Bomber, 1)], (0, 6, 8), 2),
-        (&[(S::Deathstar, 1)], (0, 0, 7), 13),
+        (&[(S::Deathstar, 1)], (0, 0, 7), 81),
     ];
     for (classes, drives, ticks) in cases {
         let mut e = Empire::join(world("test"), "Jumper");

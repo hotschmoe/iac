@@ -227,15 +227,15 @@
       "outpost_platform": [[], [["RocketLauncher", 4]], [["RocketLauncher", 8], ["LightLaser", 4]], [["RocketLauncher", 16], ["LightLaser", 8], ["HeavyLaser", 4]]]
     },
     "ratings": [
-      {"rating": 1, "threat_band": 1, "derelict_ambush": 0.1, "relic_chance": 0.0},
-      {"rating": 2, "threat_band": 1, "derelict_ambush": 0.13, "relic_chance": 0.0},
-      {"rating": 3, "threat_band": 1, "derelict_ambush": 0.16, "relic_chance": 0.0},
-      {"rating": 4, "threat_band": 2, "derelict_ambush": 0.19, "relic_chance": 0.0},
-      {"rating": 5, "threat_band": 2, "derelict_ambush": 0.22, "relic_chance": 0.0},
-      {"rating": 6, "threat_band": 2, "derelict_ambush": 0.25, "relic_chance": 0.02},
-      {"rating": 7, "threat_band": 3, "derelict_ambush": 0.28, "relic_chance": 0.04},
-      {"rating": 8, "threat_band": 3, "derelict_ambush": 0.31, "relic_chance": 0.06},
-      {"rating": 9, "threat_band": 3, "derelict_ambush": 0.34, "relic_chance": 0.08}
+      {"rating": 1, "threat_band": 1, "derelict_ambush": 0.1, "relic_chance": 0.0, "chart_value": 100.0},
+      {"rating": 2, "threat_band": 1, "derelict_ambush": 0.13, "relic_chance": 0.0, "chart_value": 191.42135623730948},
+      {"rating": 3, "threat_band": 1, "derelict_ambush": 0.16, "relic_chance": 0.0, "chart_value": 309.8076211353316},
+      {"rating": 4, "threat_band": 2, "derelict_ambush": 0.19, "relic_chance": 0.0, "chart_value": 450.0},
+      {"rating": 5, "threat_band": 2, "derelict_ambush": 0.22, "relic_chance": 0.0, "chart_value": 609.0169943749474},
+      {"rating": 6, "threat_band": 2, "derelict_ambush": 0.25, "relic_chance": 0.02, "chart_value": 784.8469228349535},
+      {"rating": 7, "threat_band": 3, "derelict_ambush": 0.28, "relic_chance": 0.04, "chart_value": 976.0129588726066},
+      {"rating": 8, "threat_band": 3, "derelict_ambush": 0.31, "relic_chance": 0.06, "chart_value": 1181.3708498984759},
+      {"rating": 9, "threat_band": 3, "derelict_ambush": 0.34, "relic_chance": 0.08, "chart_value": 1400.0}
     ],
     "rings": [
       {"ring": 1, "npc_class": "LightFighter", "npc_base_multiplier": 0.62, "npc_presence_pct": 27.5, "npc_passive_share": 0.5, "npc_respawn_hours": 2.25, "ore_density_odds": [0.388, 0.2976, 0.2072, 0.107200004]},
@@ -1199,17 +1199,6 @@
       {"ring": 60, "pace": 1.0, "step_ticks": 3060, "respawn_ticks": 61200},
       {"ring": 60, "pace": 10.0, "step_ticks": 968, "respawn_ticks": 19354},
       {"ring": 60, "pace": 600.0, "step_ticks": 125, "respawn_ticks": 2499}
-    ],
-    "ratings": [
-      {"rating": 1, "chart_value": 100.0},
-      {"rating": 2, "chart_value": 191.42135623730948},
-      {"rating": 3, "chart_value": 309.8076211353316},
-      {"rating": 4, "chart_value": 450.0},
-      {"rating": 5, "chart_value": 609.0169943749474},
-      {"rating": 6, "chart_value": 784.8469228349535},
-      {"rating": 7, "chart_value": 976.0129588726066},
-      {"rating": 8, "chart_value": 1181.3708498984759},
-      {"rating": 9, "chart_value": 1400.0}
     ],
     "exchange_spans": [
       {"pace": 1.0, "mines": [10, 9, 8], "window": 86400, "span": 6693.839999999999},

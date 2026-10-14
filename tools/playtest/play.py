@@ -22,14 +22,17 @@ WEIGHT = {"metal": 1.0, "crystal": 1.5, "deuterium": 2.0}
 WAIT_DEFAULT, WAIT_MAX = 45, 60
 SEND_GAP = 0.25
 ACK_CAP = 1.6
-SCORE_RULE = ("score = core + min(combat + explore, 25% of core); core = built levels, living ships and half of "
-              "defences at cost (metal 1: crystal 1.5: deut 2). Unspent stock scores 0: spend it. Kills pay in full "
-              "up to 4x your strength and less above; repeat kills in one sector pay less; charts pay when a fleet "
-              "docks with them; derelicts pay on first boarding.")
+SCORE_RULE = ("score = what your empire has built and keeps: buildings + research + the ships you have now "
+              "(Solar Satellites included) + outpost levels, each at cost (metal 1: crystal 1.5: deut 2). Defences "
+              "score 0. A fleet destroyed leaves the score. Unspent stock scores 0: spend it. Kills, charts and "
+              "derelicts score nothing themselves: they pay in resources (a kill's wreckage, worth scooping and "
+              "bringing home; a repelled raid's wreckage at home; charts paid into the stockpile when a fleet docks "
+              "with them; a derelict's loot), which score once you build with them.")
 QUEUE_NAMES = {"build": "Building", "research": "Research", "ship": "Ship"}
+SCORE_PARTS = ("buildings", "research", "fleet", "outpost", "defence")
 ALERT_LEVELS = ("Warning", "Critical")
-CHART_MARKS = {"aboard": "aboard one of your fleets; it scores when that fleet docks at home alive",
-               "delivered": "delivered (already scored; no need to visit again)"}
+CHART_MARKS = {"aboard": "aboard one of your fleets; it pays when that fleet docks at home or your outpost alive",
+               "delivered": "delivered (already paid; no need to visit again)"}
 NOTABLE = {"BuildingCompleted", "ResearchCompleted", "ShipBuilt", "DefenceBuilt", "FleetArrived", "CombatStarted",
            "CombatEnded", "ShipsLost", "FleetDestroyed", "RaidIncoming", "RaidResolved", "SiteExplored", "SiteAmbush",
            "SalvageCollected", "ChartDelivered", "ScanCompleted", "Exchanged"}
@@ -890,10 +893,9 @@ def score_of(fs, board):
     if not mine:
         return None
     total = max([e["rank"] for e in rows] or [0])
-    return {"score": round(mine["score"], 1), "rank": mine["rank"], "of": total, "core": round(mine["core"], 1),
-            "combat": round(mine["combat"], 1), "explore": round(mine["explore"], 1),
-            "age_s": max(fs["tick"] - board.get("tick", fs["tick"]), 0),
-            "bonus_capped": mine["combat"] + mine["explore"] > 0.25 * mine["core"]}
+    return {"score": round(mine["score"], 1), "rank": mine["rank"], "of": total,
+            **{part: round(mine[part], 1) for part in SCORE_PARTS},
+            "age_s": max(fs["tick"] - board.get("tick", fs["tick"]), 0)}
 
 
 def build_state(fs, board=None, left=None, alerts=None):
@@ -1026,8 +1028,9 @@ def wait_reasons(base, cur, events, until="any"):
 
 def headline(name, doc):
     s = doc["score"]
-    sc = (f"SCORE {s['score']:.1f} rank {s['rank']}/{s['of']} (core {s['core']:.1f}, combat {s['combat']:.1f}, explore {s['explore']:.1f}"
-          + (", bonus CAPPED at 25% of core" if s["bonus_capped"] else "") + ")") if s else "SCORE unknown yet"
+    sc = (f"SCORE {s['score']:.1f} rank {s['rank']}/{s['of']} ("
+          + ", ".join(f"{part} {s[part]:.1f}" for part in SCORE_PARTS if s[part] or part in ("buildings", "research", "fleet"))
+          + ")") if s else "SCORE unknown yet"
     idle = ", ".join(doc["idle"]) if doc["idle"] else "none"
     left = doc["minutes_left"]
     return (f"{sc} | {'' if left is None else '%.0f min left | ' % left}IDLE QUEUES: {idle}\n"
@@ -1318,14 +1321,15 @@ def cmd_score(name, limit=10):
     if not board:
         print("No answer from the server yet. Try again shortly.")
         return
-    print("rank  name                  score    core  combat  explore   (one table for humans and AI agents)")
+    parts = lambda e: " ".join(f"{e[part]:>9.1f}" for part in SCORE_PARTS)
+    print("rank  name                    score buildings  research     fleet   outpost   defence   (one table for humans and AI agents)")
     for e in board["entries"] + ([board["you"]] if board.get("you") else []):
         tag = "AI " if e["agent"] else "   "
-        print(f"{e['rank']:>4}  {e['name']:<20} {tag}{e['score']:>7.1f} {e['core']:>7.1f} {e['combat']:>7.1f} {e['explore']:>8.1f}")
+        print(f"{e['rank']:>4}  {e['name']:<20} {tag}{e['score']:>7.1f} {parts(e)}")
     if board.get("bots"):
         print("built-in bots (names start BOT-; they play by your rules and are not ranked with you):")
         for e in board["bots"]:
-            print(f" BOT  {e['name']:<20}    {e['score']:>7.1f} {e['core']:>7.1f} {e['combat']:>7.1f} {e['explore']:>8.1f}")
+            print(f" BOT  {e['name']:<20}    {e['score']:>7.1f} {parts(e)}")
     print(board.get("rule") or SCORE_RULE)
 
 

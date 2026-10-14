@@ -1220,17 +1220,17 @@ fn a_fleet_as_fast_as_the_pack_it_leaves_is_followed_two_hexes_and_never_caught(
 
 #[test]
 fn a_fleet_two_ticks_slower_than_the_pack_is_fired_on_for_two_rounds_at_every_hex_it_is_followed() {
-    use ShipClass::{LightFighter, SmallCargo};
-    let (mut e, lane) = skirmish("persistent", &[(SmallCargo, 300)], &[(LightFighter, 160)], NpcBehaviorType::Aggressive);
+    use ShipClass::{LargeCargo, LightFighter};
+    let (mut e, lane) = skirmish("persistent", &[(LargeCargo, 100)], &[(LightFighter, 150)], NpcBehaviorType::Aggressive);
     let fid = e.fid;
     let quote = e.fleet().flight.expect("a quote");
-    assert_eq!((quote.ticks, quote.rounds), (4, 3), "a Small Cargo jumps in four ticks: three rounds under fire");
+    assert_eq!((quote.ticks, quote.rounds), (4, 3), "a Large Cargo jumps in four ticks: three rounds under fire");
     assert_eq!(
         quote.chase.as_ref().map(|c| (c.hexes, c.jump_ticks, c.rounds_per_hex)),
         Some((2, 2, 2)),
         "and Light Fighters jump in two: two rounds at each of two hexes",
     );
-    let set_out_with = e.engine.fleets[&fid].ships.total();
+    let set_out_with = hull_held(&e.engine, fid);
 
     let mark = jump(&mut e, lane[1]);
     assert_eq!(rounds_stood(&e, mark), vec![(lane[0], true, 0); 3], "the parting rounds");
@@ -1238,7 +1238,7 @@ fn a_fleet_two_ticks_slower_than_the_pack_is_fired_on_for_two_rounds_at_every_he
     assert_eq!((trail.from, trail.arrives_in, trail.catches, trail.hexes_left), (lane[0], 2, true, 1));
 
     for (hex, last) in [(1, false), (2, true)] {
-        let before = e.engine.fleets[&fid].ships.total();
+        let before = hull_held(&e.engine, fid);
         let mark = jump(&mut e, lane[hex + 1]);
         assert_eq!(
             rounds_stood(&e, mark),
@@ -1264,15 +1264,106 @@ fn a_fleet_two_ticks_slower_than_the_pack_is_fired_on_for_two_rounds_at_every_he
                 lane[hex + 1],
             )],
         );
-        assert!(e.engine.fleets[&fid].ships.total() < before, "and it lost ships there");
+        assert!(hull_held(&e.engine, fid) < before, "and it was hurt there");
         assert_eq!(e.fleet().pursued_by.is_some(), !last, "the pack follows two hexes and no further");
     }
-    let lost = set_out_with - e.engine.fleets[&fid].ships.total();
-    assert!(lost > 0 && e.engine.fleets[&fid].ships.total() > 0, "{lost} of {set_out_with} lost on the run");
+    let lost = set_out_with - hull_held(&e.engine, fid);
+    assert!(lost > 0 && e.engine.fleets[&fid].ships.total() > 0, "{lost} of {set_out_with} hull lost on the run");
     let fleet = e.fleet();
     assert!(fleet.hull < fleet.hull_max && fleet.repair.is_some(), "and what is left carries its damage until a dock");
     e.run(4);
     assert_eq!(e.engine.npc_fleets[&PACK].location, lane[0], "the pack is home again");
+}
+
+#[test]
+fn a_cruiser_on_impulse_drive_4_jumps_in_one_tick_and_outruns_the_pack_it_leaves() {
+    use ShipClass::Cruiser;
+    let (mut e, lane) = skirmish("persistent", &[(Cruiser, 20)], &[(Cruiser, 24)], NpcBehaviorType::Aggressive);
+    let (pid, fid) = (e.pid, e.fid);
+    let impulse = |e: &mut Empire, level: u8| {
+        edit(&mut e.engine, |s| s.players.get_mut(&pid).expect("player").research.impulse_drive = level);
+        (e.fleet().jump_ticks, e.fleet().flight.expect("a quote"))
+    };
+    let (ticks, _) = impulse(&mut e, 3);
+    assert_eq!(ticks, 2, "on Impulse Drive 3 a Cruiser flies 24,000: two ticks a jump, as fast as the pack");
+    let (ticks, quote) = impulse(&mut e, 4);
+    assert_eq!(
+        (ticks, quote.ticks, quote.rounds),
+        (1, 2, 1),
+        "on Impulse Drive 4 it flies 27,000: one tick a jump, and a jump out of a fight takes its one parting round",
+    );
+    assert_eq!(
+        quote.chase.map(|c| (c.hexes, c.jump_ticks, c.rounds_per_hex)),
+        Some((2, 2, 0)),
+        "the pack would follow two hexes, a tick behind at each",
+    );
+
+    let mark = jump(&mut e, lane[1]);
+    assert_eq!(rounds_stood(&e, mark), vec![(lane[0], true, 0)], "the parting round");
+    let got_away_with = e.engine.fleets[&fid].ships.clone();
+    let trail = e.fleet().pursued_by.expect("the pack sets out after it");
+    assert_eq!((trail.arrives_in, trail.catches), (2, false), "and lands a tick after the fleet has gone on");
+    for &next in &lane[2..5] {
+        jump(&mut e, next);
+    }
+    let chased = pursuits(&e, mark);
+    assert!(chased.iter().any(|p| p.phase == PursuitPhase::Abandoned), "{chased:?}");
+    assert_eq!(e.engine.fleets[&fid].ships, got_away_with, "nothing fired on the fleet after it left");
+    assert!(e.engine.active_combats.is_empty() && e.fleet().pursued_by.is_none());
+}
+
+#[test]
+fn a_fleet_destroyed_takes_its_ships_out_of_the_score() {
+    use ShipClass::{Cruiser, LightFighter};
+    let mut e = Empire::join(world("persistent"), "Doomed");
+    let fid = e.fid;
+    let home = e.engine.players[&e.pid].homeworld;
+    let at = open_lane(&e.engine, home, 2)[0];
+    muster(&mut e.engine, fid, &[(LightFighter, 6)], at);
+    horde(&mut e.engine, PACK, at, &[(Cruiser, 30)], 1.0);
+    let before = e.score_row();
+    let weight = scaling::resource_weight(&LightFighter.build_cost());
+    assert!((before.fleet - 6.0 * weight).abs() < 1e-3, "the fleet scores its six ships: {before:?}");
+    e.order(Command::Attack { fleet_id: fid, target_fleet_id: PACK }).expect("the fleet opens fire");
+    e.run_until(30, |e| e.engine.active_combats.is_empty());
+    assert!(e.engine.fleets.get(&fid).is_none_or(|f| f.ships.is_empty()), "thirty Cruisers destroy six Light Fighters");
+    let after = e.score_row();
+    assert_eq!(after.fleet, 0.0, "a fleet destroyed leaves the score");
+    assert!((before.score - after.score - before.fleet).abs() < 1e-3, "and nothing else moved: {before:?} {after:?}");
+}
+
+#[test]
+fn a_pack_of_the_outer_ring_is_found_short_when_it_is_fought_again_before_it_mends() {
+    use ShipClass::{HeavyFighter, LightFighter};
+    let mut e = Empire::join(world("season"), "Returner");
+    let (pid, fid) = (e.pid, e.fid);
+    let ring = 12;
+    let (class, generated, _) = scaling::npc_composition(ring);
+    assert!(class == LightFighter && generated >= 3, "a group past the Inner Ring is a pack: {generated} {class:?}");
+    let at = lair(&e.engine, ring, |behavior| behavior == Passive);
+    let id = template_npc_id(at);
+    let out = e.engine.world_gen.connected_neighbors(at).slice().iter().copied()
+        .find(|n| e.engine.world_gen.generate_sector(*n).npc_template.is_none())
+        .expect("a quiet sector beside the lair");
+    muster(&mut e.engine, fid, &[(HeavyFighter, 3)], at);
+    empower(&mut e.engine, pid, fid);
+    e.order(Command::Attack { fleet_id: fid, target_fleet_id: id }).expect("the fleet opens fire");
+    e.run_until(10, |e| e.engine.npc_fleets.get(&id).is_some_and(|g| g.ships.total() < u32::from(generated)));
+    jump(&mut e, out);
+    let left = e.engine.npc_fleets[&id].ships.total();
+    assert!((1..u32::from(generated)).contains(&left), "the pack keeps {left} of its {generated}");
+
+    let step = scaling::npc_heal_step_ticks(ring, &e.engine.pace());
+    assert!(step > 60, "at season a step of its mending is {step} ticks");
+    deploy(&mut e.engine, fid, at, None);
+    let mark = e.mark();
+    e.order(Command::Attack { fleet_id: fid, target_fleet_id: id }).expect("the fleet comes back for it");
+    e.run(1);
+    let met: Vec<u32> = e.since(mark, |k| match k {
+        EventKind::BattleRound(r) => Some(r.hostiles.groups[0].units.iter().map(|u| u.count + u.lost).sum()),
+        _ => None,
+    });
+    assert_eq!(met.first(), Some(&left), "it is met short of the ships it lost");
 }
 
 #[test]
@@ -1611,13 +1702,13 @@ fn home_ground_is_quiet_and_an_unscouted_lair_is_as_strong_as_the_chart_says() {
 }
 
 #[test]
-fn a_starter_fleet_wins_through_ring_seven_gambles_at_ring_eight_and_dies_past_the_inner_ring() {
+fn a_starter_fleet_wins_through_ring_seven_gambles_at_ring_eight_and_seldom_lives_past_the_inner_ring() {
     use RatioLabel::{Deadly, Even, Favourable, Risky, Safe};
     let rings = [
         (5, Favourable, Safe, 60..=60),
         (7, Even, Even, 50..=60),
         (8, Risky, Risky, 25..=55),
-        (9, Deadly, Deadly, 0..=3),
+        (9, Risky, Risky, 2..=12),
         (10, Deadly, Deadly, 0..=3),
     ];
     for (ring, least, most, wins) in rings {
@@ -1639,17 +1730,18 @@ fn a_label_tells_the_outcome_whatever_the_classes() {
     use RatioLabel::{Deadly, Even, Favourable, Safe};
     use ShipClass::{Battleship, Cruiser, HeavyFighter, LightFighter};
     let cases = [
-        (LightFighter, 3, 10, Deadly),
-        (LightFighter, 8, 10, Even),
-        (LightFighter, 16, 10, Favourable),
-        (LightFighter, 40, 10, Safe),
-        (HeavyFighter, 2, 13, Deadly),
-        (HeavyFighter, 8, 13, Favourable),
-        (HeavyFighter, 20, 13, Safe),
+        (LightFighter, 2, 10, Deadly),
+        (LightFighter, 4, 10, Favourable),
+        (LightFighter, 8, 10, Safe),
+        (HeavyFighter, 1, 13, Deadly),
+        (HeavyFighter, 3, 13, Favourable),
+        (HeavyFighter, 8, 13, Safe),
         (Cruiser, 1, 11, Safe),
-        (Cruiser, 4, 17, Even),
-        (Cruiser, 4, 15, Favourable),
-        (Cruiser, 8, 15, Safe),
+        (Cruiser, 1, 17, Deadly),
+        (Cruiser, 2, 17, Even),
+        (Cruiser, 3, 17, Favourable),
+        (Cruiser, 1, 15, Even),
+        (Cruiser, 2, 15, Safe),
         (Battleship, 1, 20, Deadly),
         (Battleship, 12, 20, Safe),
     ];
@@ -1685,7 +1777,9 @@ fn a_default_patrol_holds_where_power_alone_said_engage_and_fights_what_it_beats
     let convoy = |scouts: u32| {
         let mut engine = world("persistent");
         let (pid, fid) = join(&mut engine, "Warden");
-        let at = lair(&engine, 9, |b| b == Passive);
+        let home = engine.players[&pid].homeworld;
+        let at = open_lane(&engine, home, 3)[1];
+        horde(&mut engine, template_npc_id(at), at, &[(ShipClass::Cruiser, 1)], 0.29);
         muster(&mut engine, fid, &[(ShipClass::LightFighter, scouts)], at);
         (engine, pid, fid, at)
     };
