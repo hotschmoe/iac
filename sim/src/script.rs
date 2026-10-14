@@ -29,6 +29,7 @@
 // clocks, no OS randomness; randomness is seeded from what `seated` hands
 // over and the tick) so a run replays from the world seed.
 
+use iac_shared::pace::Pace;
 use iac_shared::protocol::{Command, GameState, PolicyUpdate, ServerMessage, TickUpdate};
 
 use crate::engine::{AuthError, GameEngine};
@@ -46,8 +47,8 @@ pub trait ScriptedPlayer {
     fn name(&self) -> String;
 
     /// Called once when the player takes its seat.
-    fn seated(&mut self, world_seed: u64, player_id: u64) {
-        let _ = (world_seed, player_id);
+    fn seated(&mut self, world_seed: u64, pace: Pace, player_id: u64) {
+        let _ = (world_seed, pace, player_id);
     }
 
     /// Whether the player will look at the world at `tick` or right after
@@ -117,8 +118,8 @@ impl<P: ScriptedPlayer + ?Sized> ScriptedPlayer for Box<P> {
         (**self).name()
     }
 
-    fn seated(&mut self, world_seed: u64, player_id: u64) {
-        (**self).seated(world_seed, player_id);
+    fn seated(&mut self, world_seed: u64, pace: Pace, player_id: u64) {
+        (**self).seated(world_seed, pace, player_id);
     }
 
     fn watching(&self, tick: u64) -> bool {
@@ -173,7 +174,7 @@ impl<P: ScriptedPlayer> Seat<P> {
 
     /// Seat a player on an account the host already knows is its own.
     pub fn resume(engine: &GameEngine, player_id: u64, mut player: P) -> Seat<P> {
-        player.seated(engine.world_gen.world_seed, player_id);
+        player.seated(engine.world_gen.world_seed, engine.pace(), player_id);
         Seat { player_id, player, view: None, questions: Vec::new(), orders: Vec::new(), turns: 0, accepted: 0, refused: 0 }
     }
 

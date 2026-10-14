@@ -45,8 +45,16 @@ pub(super) enum Hull {
 
 /// The line a role is filled from, heaviest first.
 const SCOUTS: &[ShipClass] = &[ShipClass::EspionageProbe];
-const WARSHIPS: &[ShipClass] =
-    &[ShipClass::Battleship, ShipClass::Cruiser, ShipClass::HeavyFighter, ShipClass::LightFighter];
+const WARSHIPS: &[ShipClass] = &[
+    ShipClass::Deathstar,
+    ShipClass::Destroyer,
+    ShipClass::Battlecruiser,
+    ShipClass::Bomber,
+    ShipClass::Battleship,
+    ShipClass::Cruiser,
+    ShipClass::HeavyFighter,
+    ShipClass::LightFighter,
+];
 const HAULERS: &[ShipClass] = &[ShipClass::LargeCargo, ShipClass::SmallCargo];
 const MINERS: &[ShipClass] = &[ShipClass::Recycler, ShipClass::LargeCargo, ShipClass::SmallCargo];
 
@@ -75,10 +83,16 @@ struct Profile {
     /// Fleet value held, as a share of building and research points.
     fleet_share: f32,
     hulls: &'static [(Hull, f32)],
+    /// Espionage Probes kept: a scout is a count, not a share of the fleet.
+    /// One aboard gives a fleet the long scan; more chart no faster.
+    probes: u16,
     /// What its haulers are: a miner's line begins with the Recycler.
     haulers: &'static [ShipClass],
     /// Structure power held, as a multiple of the next raid's expected power.
     defence_margin: f32,
+    /// What no order has claimed goes into defences before warships, until
+    /// they stand `WALL_HEIGHT` times the next raid.
+    walls: bool,
 }
 
 /// Computer Technology opens building slots, which every plan is short of.
@@ -132,6 +146,24 @@ const DEFENCE_TECH_APPETITE: f32 = 1.5;
 const KEEP_AT_HOME: f32 = 0.85;
 const TOP_UP: f32 = 0.5;
 const MOST_DEFENCE: f32 = 6.0;
+/// How much a defence's worth falls as it makes up more of what stands.
+const MIX: f32 = 3.0;
+/// A wall this many times the next raid's power has nothing left to prove:
+/// the turtle's surplus goes into warships kept at home beyond it.
+const WALL_HEIGHT: f32 = 12.0;
+/// Game hours at pace 1 of deuterium a Fusion Reactor level is charged for
+/// when its energy is priced against the Solar Plant's.
+const FUSION_HORIZON_HOURS: f64 = 72.0;
+/// A Solar Satellite's energy is priced at this many times its cost: a
+/// raid destroys satellites first, and not all come back.
+const SATELLITE_RISK: f32 = 2.0;
+
+/// Where the next energy comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Plant(BuildingType),
+    Satellites,
+}
 
 use ResearchType as T;
 
@@ -150,8 +182,10 @@ const TURTLE: Profile = Profile {
     ],
     fleet_share: 0.0,
     hulls: &[],
+    probes: 0,
     haulers: HAULERS,
     defence_margin: 1.5,
+    walls: true,
 };
 
 const MINER: Profile = Profile {
@@ -171,8 +205,10 @@ const MINER: Profile = Profile {
     ],
     fleet_share: 0.10,
     hulls: &[(Hull::Hauler, 1.0)],
+    probes: 0,
     haulers: MINERS,
     defence_margin: 1.15,
+    walls: false,
 };
 
 const RAIDER: Profile = Profile {
@@ -201,8 +237,10 @@ const RAIDER: Profile = Profile {
     ],
     fleet_share: 0.30,
     hulls: &[(Hull::Warship, 0.85), (Hull::Hauler, 0.15)],
+    probes: 0,
     haulers: HAULERS,
     defence_margin: 1.15,
+    walls: false,
 };
 
 const EXPLORER: Profile = Profile {
@@ -226,9 +264,11 @@ const EXPLORER: Profile = Profile {
         (T::ShieldingTechnology, 2),
     ],
     fleet_share: 0.20,
-    hulls: &[(Hull::Scout, 0.10), (Hull::Warship, 0.60), (Hull::Hauler, 0.30)],
+    hulls: &[(Hull::Warship, 0.65), (Hull::Hauler, 0.35)],
+    probes: 4,
     haulers: HAULERS,
     defence_margin: 1.15,
+    walls: false,
 };
 
 const MIXED: Profile = Profile {
@@ -255,9 +295,11 @@ const MIXED: Profile = Profile {
         (T::CombustionDrive, 6),
     ],
     fleet_share: 0.25,
-    hulls: &[(Hull::Scout, 0.05), (Hull::Warship, 0.70), (Hull::Hauler, 0.25)],
+    hulls: &[(Hull::Warship, 0.75), (Hull::Hauler, 0.25)],
+    probes: 2,
     haulers: HAULERS,
     defence_margin: 1.15,
+    walls: false,
 };
 
 impl Profile {
@@ -293,6 +335,13 @@ impl Profile {
             Hull::Warship => WARSHIPS,
             Hull::Hauler => self.haulers,
         }
+    }
+
+    /// Every line the empire builds from: its hulls' and, when it keeps
+    /// probes, the scouts'.
+    fn lines(&self) -> impl Iterator<Item = &'static [ShipClass]> + '_ {
+        let fleet = self.hulls.iter().filter(|_| self.fleet_share > 0.0).map(|&(hull, _)| self.line(hull));
+        fleet.chain((self.probes > 0).then_some(SCOUTS))
     }
 }
 
@@ -369,6 +418,8 @@ struct Planner<'a> {
     home: &'a HomeworldState,
     profile: &'static Profile,
     pace: Pace,
+    /// How long the player will be gone after this look; None for one who stays.
+    away_for: Option<u64>,
     built: BuildingLevels,
     plan: Projection,
     /// What stands once the orders under way have finished. A batch pays
@@ -396,20 +447,18 @@ struct Planner<'a> {
 /// Returns what the shipyard is saving for: a batch cannot be ordered ahead
 /// of the resources, so nothing in the queues says so.
 pub(super) fn plan(state: &GameState, personality: Personality, away_for: Option<u64>, orders: &mut Vec<Order>) -> Resources {
-    let Some(mut planner) = Planner::new(state, personality) else { return Resources::default() };
+    let Some(mut planner) = Planner::new(state, personality, away_for) else { return Resources::default() };
     planner.research(away_for.is_some(), orders);
     planner.shipyard(orders);
     planner.buildings(away_for, orders);
-    if away_for.is_some() {
-        planner.surplus(orders);
-    }
+    planner.surplus(orders);
     planner.yard_saving
 }
 
 /// What `plan` would do with one free place in each queue, asked in the
 /// order `plan` works. Nothing is ordered.
 pub(super) fn outlook(state: &GameState, personality: Personality, away_for: Option<u64>) -> Option<Outlook> {
-    let mut planner = Planner::new(state, personality)?;
+    let mut planner = Planner::new(state, personality, away_for)?;
     let research = planner.research_want();
     let shipyard = planner.shipyard_want(away_for.is_some());
     let building = planner.building_want(away_for);
@@ -417,7 +466,7 @@ pub(super) fn outlook(state: &GameState, personality: Personality, away_for: Opt
 }
 
 impl<'a> Planner<'a> {
-    fn new(state: &'a GameState, personality: Personality) -> Option<Planner<'a>> {
+    fn new(state: &'a GameState, personality: Personality, away_for: Option<u64>) -> Option<Planner<'a>> {
         let pace = Pace::new(state.world.pace).ok()?;
         let home = &state.homeworld;
         let mut built = BuildingLevels::default();
@@ -435,6 +484,7 @@ impl<'a> Planner<'a> {
             home,
             profile: Profile::of(personality),
             pace,
+            away_for,
             built,
             plan: Projection::of(home, true),
             started: Projection::of(home, false),
@@ -477,7 +527,7 @@ impl<'a> Planner<'a> {
         if !called_for.is_empty() {
             return Want::Order { covered: called_for.iter().any(|item| fits(item.unit_cost(), self.stock)) };
         }
-        let covered = self.surplus_item().is_some_and(|item| fits(item.unit_cost(), self.spare));
+        let covered = self.surplus_item(self.spare).is_some_and(|item| fits(item.unit_cost(), self.spare));
         if leaving && covered { Want::Order { covered } } else { Want::NotYet { covered } }
     }
 
@@ -530,14 +580,25 @@ impl<'a> Planner<'a> {
     }
 
     /// Every tech level the profile still calls for, in the order it is
-    /// considered: the personality's plan, then the rest.
+    /// considered: the personality's plan, what the next class up each of
+    /// its lines needs, the defences' research, then the rest.
     fn tech_ladder(&self) -> Vec<Rung> {
         let yardstick = self.yardstick();
         let profile = self.profile;
         let planned = profile.research.iter().map(|&(tech, level)| (tech, level, profile.tech));
+        let hulls: Vec<(ResearchType, u8, f32)> = self
+            .next_classes()
+            .into_iter()
+            .flat_map(|class| scaling::ship_prerequisites(class).iter())
+            .filter_map(|&(p, level)| match p {
+                PrereqRef::Research(tech) => Some((tech, level, profile.tech)),
+                PrereqRef::Building(_) => None,
+            })
+            .collect();
         let defence = DEFENCE_RESEARCH.iter().map(|&(tech, level)| (tech, level, DEFENCE_TECH_APPETITE));
         let rest = T::ALL.into_iter().map(|tech| (tech, scaling::research_max_level(tech), SPARE_TECH_APPETITE));
         planned
+            .chain(hulls)
             .chain(defence)
             .chain(rest)
             .filter_map(|(tech, goal, appetite)| {
@@ -625,16 +686,7 @@ impl<'a> Planner<'a> {
                 }
             }
         }
-        if self.profile.fleet_share <= 0.0 {
-            return;
-        }
-        for &(hull, _) in self.profile.hulls {
-            let line = self.profile.line(hull);
-            let have = line.iter().position(|&class| self.plan.unlocked(ShipyardItem::Ship(class))).unwrap_or(line.len());
-            let Some(&next) = have.checked_sub(1).and_then(|i| line.get(i)) else { continue };
-            if scaling::resource_weight(&next.build_cost()) > CLASS_APPETITE * yardstick {
-                continue;
-            }
+        for next in self.next_classes() {
             let prereqs = scaling::ship_prerequisites(next);
             let researched = prereqs.iter().all(|&(p, level)| match p {
                 PrereqRef::Research(tech) => self.plan.research.get(tech) >= level,
@@ -649,6 +701,20 @@ impl<'a> Planner<'a> {
                 }
             }
         }
+    }
+
+    /// The next class up each line the empire builds from, once the economy
+    /// has grown into its price: what its yard and its research work toward.
+    fn next_classes(&self) -> Vec<ShipClass> {
+        let yardstick = self.yardstick();
+        self.profile
+            .lines()
+            .filter_map(|line| {
+                let have = line.iter().position(|&class| self.plan.unlocked(ShipyardItem::Ship(class))).unwrap_or(line.len());
+                have.checked_sub(1).and_then(|i| line.get(i)).copied()
+            })
+            .filter(|next| scaling::resource_weight(&next.build_cost()) <= CLASS_APPETITE * yardstick)
+            .collect()
     }
 
     fn shipyard(&mut self, orders: &mut Vec<Order>) {
@@ -710,21 +776,33 @@ impl<'a> Planner<'a> {
         true
     }
 
-    /// What is in stock beyond every order placed would sit there scoring
-    /// nothing until the next look-in. An empire that flies puts it into
-    /// the defence that answers the next raid; one that does not, into the
-    /// heaviest warship it can build, and into that defence while it can
-    /// build none. Only stock no order has claimed is spent, so no queued
-    /// order is kept waiting by it.
+    /// What is in stock beyond every order placed scores nothing while it
+    /// sits there: the score counts what is built. It goes into the heaviest
+    /// warship it pays for, which scores in full and fights, and into the
+    /// defence that answers the next raid while it pays for none. Only stock
+    /// no order has claimed is spent, so no queued order is kept waiting by
+    /// it; a player who stays also keeps the price of the next Metal Mine
+    /// level, which it orders one level at a time.
     fn surplus(&mut self, orders: &mut Vec<Order>) {
-        if let Some(item) = self.surplus_item() {
-            self.batch(item, MAX_SURPLUS_BATCH, self.spare, orders);
+        let reserve = match self.away_for {
+            Some(_) => Resources::default(),
+            None => scaling::building_cost(BuildingType::MetalMine, self.plan.buildings.metal_mine + 1),
+        };
+        while let Some(item) = self.surplus_item(self.spare.sub(reserve)) {
+            if !self.batch(item, MAX_SURPLUS_BATCH, self.spare.sub(reserve), orders) {
+                break;
+            }
         }
     }
 
-    fn surplus_item(&self) -> Option<ShipyardItem> {
-        let hull = self.started.heaviest(WARSHIPS).map(ShipyardItem::Ship).filter(|_| self.profile.fleet_share <= 0.0);
-        let item = hull.or_else(|| self.answer().map(ShipyardItem::Defence))?;
+    fn surplus_item(&self, purse: Resources) -> Option<ShipyardItem> {
+        let walling = self.profile.walls && self.standing_defence() < WALL_HEIGHT * self.raid_power();
+        let ship = WARSHIPS
+            .iter()
+            .map(|&class| ShipyardItem::Ship(class))
+            .filter(|_| !walling)
+            .find(|&item| self.started.unlocked(item) && fits(item.unit_cost(), purse));
+        let item = ship.or_else(|| self.answer().map(ShipyardItem::Defence))?;
         (self.started.unlocked(item) && fits(item.unit_cost(), self.cap())).then_some(item)
     }
 
@@ -745,11 +823,50 @@ impl<'a> Planner<'a> {
         scaling::home_power(buildings, &self.plan.research, self.home.satellites + coming, true, &self.pace)
     }
 
-    /// Solar Satellites, once the Solar Plant can rise no further and the
-    /// mines planned are still short of energy.
+    /// What one unit of energy costs from each source the empire can raise
+    /// next, in points, cheapest first: the next level of the Solar Plant
+    /// and of the Fusion Reactor, the reactor with the deuterium it burns
+    /// over `FUSION_HORIZON_HOURS`, and a Solar Satellite, which raids eat,
+    /// at `SATELLITE_RISK` times its price.
+    fn energy_sources(&self) -> Vec<(f32, Source)> {
+        let research = &self.plan.research;
+        let mut sources = Vec::new();
+        for plant in [BuildingType::SolarPlant, BuildingType::FusionReactor] {
+            let level = self.plan.buildings.get(plant);
+            if level >= scaling::MAX_BUILDING_LEVEL
+                || !scaling::building_prerequisites_met(plant, &self.plan.buildings, research)
+                || !fits(scaling::building_cost(plant, level + 1), self.cap())
+            {
+                continue;
+            }
+            let cost = scaling::resource_weight(&scaling::building_cost(plant, level + 1));
+            let (gain, burn) = match plant {
+                BuildingType::FusionReactor => {
+                    let energy = |l| scaling::fusion_energy(l, research.energy_technology);
+                    let burn = scaling::fusion_burn_per_hour(level + 1) - scaling::fusion_burn_per_hour(level);
+                    let deuterium = Resources { deuterium: f64::from(burn) * FUSION_HORIZON_HOURS, ..Resources::default() };
+                    (energy(level + 1).saturating_sub(energy(level)), scaling::resource_weight(&deuterium))
+                }
+                _ => (scaling::solar_plant_energy(level + 1) - scaling::solar_plant_energy(level), 0.0),
+            };
+            if gain > 0 {
+                sources.push(((cost + burn) / gain as f32, Source::Plant(plant)));
+            }
+        }
+        let satellite = ShipyardItem::Ship(ShipClass::SolarSatellite);
+        if self.started.unlocked(satellite) && fits(satellite.unit_cost(), self.cap()) {
+            let price = scaling::resource_weight(&satellite.unit_cost()) / scaling::satellite_energy() as f32;
+            sources.push((SATELLITE_RISK * price, Source::Satellites));
+        }
+        sources.sort_by(|a, b| a.0.total_cmp(&b.0));
+        sources
+    }
+
+    /// Solar Satellites, once they are the cheapest energy there is and the
+    /// mines planned are short of it.
     fn satellites_wanted(&self) -> Option<u16> {
         let item = ShipyardItem::Ship(ShipClass::SolarSatellite);
-        if self.plan.buildings.solar_plant < scaling::MAX_BUILDING_LEVEL || !self.started.unlocked(item) {
+        if self.energy_sources().first().map(|s| s.1) != Some(Source::Satellites) {
             return None;
         }
         let power = self.planned_power(&self.plan.buildings);
@@ -767,7 +884,9 @@ impl<'a> Planner<'a> {
     /// the yard can build, the one that buys the most power for its cost
     /// once the rapid fire of what the raid flies against it is counted.
     /// Against Light Fighters alone that is the cheapest; a wall of it
-    /// brings the class that shreds it, and the answer moves on.
+    /// brings the class that shreds it, and the answer moves on. A kind is
+    /// worth less the more of the standing defence it already is (`MIX`):
+    /// a wall of one kind is what one class's rapid fire eats.
     fn answer(&self) -> Option<DefenceKind> {
         let raid = &self.home.raid.ships;
         let flown: f32 = raid.iter().map(|s| s.count as f32 * scaling::ship_power(s.ship_class)).sum();
@@ -784,7 +903,14 @@ impl<'a> Planner<'a> {
                 .sum();
             shots / flown
         };
-        let worth = |kind: DefenceKind| self.power_of(kind) / scaling::resource_weight(&kind.build_cost()) / exposure(kind);
+        let standing: f32 = self.home.defences.iter().map(|d| d.count as f32 * d.power).sum();
+        let share = |kind: DefenceKind| {
+            let of_kind = self.home.defences.iter().find(|d| d.kind == kind).map_or(0.0, |d| d.count as f32 * d.power);
+            if standing > 0.0 { of_kind / standing } else { 0.0 }
+        };
+        let worth = |kind: DefenceKind| {
+            self.power_of(kind) / scaling::resource_weight(&kind.build_cost()) / exposure(kind) / (1.0 + MIX * share(kind))
+        };
         ARSENAL
             .into_iter()
             .filter(|&kind| self.started.unlocked(ShipyardItem::Defence(kind)) && fits(kind.build_cost(), self.cap()))
@@ -811,11 +937,22 @@ impl<'a> Planner<'a> {
     /// hold the profile's margin over the raid's power, and, while the
     /// server's forecast of the raid against what stands at home is worse
     /// than a raid destroyed with little lost, more of it at each look.
+    /// The power of the next raid: the server's forecast, or what the
+    /// planned empire draws when that is more.
+    fn raid_power(&self) -> f32 {
+        let econ = scaling::econ_points(&self.plan.buildings, &self.plan.research);
+        self.home.raid.power.max(scaling::raid_power_base(econ))
+    }
+
+    fn standing_defence(&self) -> f32 {
+        self.home.defences.iter().map(|d| d.count as f32 * d.power).sum()
+    }
+
     fn defences_wanted(&self) -> Option<(DefenceKind, u16)> {
         let kind = self.answer()?;
         let forecast = &self.home.raid;
-        let raid = forecast.power.max(scaling::raid_power_base(scaling::econ_points(&self.plan.buildings, &self.plan.research)));
-        let standing: f32 = self.home.defences.iter().map(|d| d.count as f32 * d.power).sum();
+        let raid = self.raid_power();
+        let standing = self.standing_defence();
         let coming: f32 = self
             .ordered()
             .filter_map(|(item, left)| match item {
@@ -832,7 +969,23 @@ impl<'a> Planner<'a> {
         (count >= 1.0).then_some((kind, count as u16))
     }
 
+    /// The Espionage Probes the profile keeps that are neither flying nor on
+    /// order: probes lost are replaced, and no more.
+    fn probes_wanted(&self) -> Option<(ShipClass, u16)> {
+        let probe = ShipClass::EspionageProbe;
+        if self.profile.probes == 0 || !self.started.unlocked(ShipyardItem::Ship(probe)) {
+            return None;
+        }
+        let flying: u32 = self.state.fleets.iter().flat_map(|f| f.ships.iter()).filter(|s| s.ship_class == probe).map(|s| s.count).sum();
+        let coming: u32 = self.ordered().filter(|(item, _)| *item == ShipyardItem::Ship(probe)).map(|(_, left)| u32::from(left)).sum();
+        let missing = u32::from(self.profile.probes).saturating_sub(flying + coming);
+        (missing > 0).then_some((probe, missing as u16))
+    }
+
     fn ships_wanted(&self) -> Option<(ShipClass, u16)> {
+        if let Some(probes) = self.probes_wanted() {
+            return Some(probes);
+        }
         let mut built_research = ResearchLevels::default();
         for r in &self.home.research {
             built_research.set(r.tech, r.level);
@@ -892,10 +1045,11 @@ impl<'a> Planner<'a> {
         away_for.map_or(0.0, |ticks| scaling::resource_weight(&stock) + scaling::resource_weight(&income) * ticks as f32)
     }
 
-    /// First of: a store under pressure, what a planned tech or ship waits
-    /// on, support buildings that are due, the best mine. `place_worth` is
-    /// what one queue place should absorb (see `mines`). Whatever is chosen,
-    /// the Solar Plant goes before a mine that would run short of energy,
+    /// First of: a store that will be under pressure before the player looks
+    /// again, what a planned tech or ship waits on, support buildings that
+    /// are due, the best mine. `place_worth` is what one queue place should
+    /// absorb (see `mines`). Whatever is chosen, the cheapest plant goes
+    /// before a mine that would run short of energy,
     /// the mine an order starves for before the order, and the store a cost
     /// does not fit before the cost.
     fn next_building(&self, place_worth: f32) -> Option<BuildingType> {
@@ -903,14 +1057,15 @@ impl<'a> Planner<'a> {
         let stock = self.state.player.resources;
         let planned = |b: BuildingType| self.plan.buildings.get(b) > self.built.get(b);
 
+        let coming = self.home.production.scale(self.away_for.unwrap_or(0) as f64);
         let mut wanted: Vec<BuildingType> = ResourceKind::ALL
             .into_iter()
-            .filter(|&k| stock.get(k) >= STORAGE_PRESSURE * cap.get(k))
+            .filter(|&k| stock.get(k) + coming.get(k).max(0.0) >= STORAGE_PRESSURE * cap.get(k))
             .map(scaling::storage_building)
             .filter(|&store| !planned(store))
             .collect();
         if self.short_of_power(&self.plan.buildings) {
-            wanted.push(BuildingType::SolarPlant);
+            wanted.extend(self.cheapest_plant());
         }
         wanted.extend(self.needs.iter().filter(|&&(b, level)| self.plan.buildings.get(b) < level).map(|&(b, _)| self.unlocks(b)));
         wanted.extend(self.support());
@@ -949,18 +1104,24 @@ impl<'a> Planner<'a> {
         power.needed > power.made
     }
 
-    /// The Solar Plant, when the next level of `building` would leave the
-    /// mines short of energy and the plant can still rise and be paid for.
+    /// The plant that makes energy cheapest, while it is a building: the
+    /// Solar Satellites the yard orders instead go beside the building.
+    fn cheapest_plant(&self) -> Option<BuildingType> {
+        match self.energy_sources().first()?.1 {
+            Source::Plant(plant) => Some(plant),
+            Source::Satellites => None,
+        }
+    }
+
+    /// The cheapest plant, when the next level of `building` would leave the
+    /// mines short of energy.
     fn power_for(&self, building: BuildingType) -> Option<BuildingType> {
-        let plant = BuildingType::SolarPlant;
-        let level = self.plan.buildings.get(plant) + 1;
+        if matches!(building, BuildingType::SolarPlant | BuildingType::FusionReactor) {
+            return None;
+        }
         let mut raised = self.plan.buildings.clone();
         raised.set(building, raised.get(building) + 1);
-        (building != plant
-            && level <= scaling::MAX_BUILDING_LEVEL
-            && self.short_of_power(&raised)
-            && fits(scaling::building_cost(plant, level), self.cap()))
-        .then_some(plant)
+        if self.short_of_power(&raised) { self.cheapest_plant() } else { None }
     }
 
     /// Ticks until the planned mines have produced what `cost` lacks, per resource.
@@ -1043,10 +1204,8 @@ impl<'a> Planner<'a> {
         ranked.into_iter().map(|(_, mine)| mine).collect()
     }
 
-    /// Points one unit of energy costs at the Solar Plant's next level.
+    /// Points one unit of energy costs from the cheapest source.
     fn energy_price(&self) -> f32 {
-        let level = self.plan.buildings.solar_plant.min(scaling::MAX_BUILDING_LEVEL - 1);
-        let gain = scaling::solar_plant_energy(level + 1) - scaling::solar_plant_energy(level);
-        scaling::resource_weight(&scaling::building_cost(BuildingType::SolarPlant, level + 1)) / gain.max(1) as f32
+        self.energy_sources().first().map_or(0.0, |s| s.0)
     }
 }

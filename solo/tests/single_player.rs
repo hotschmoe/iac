@@ -545,16 +545,16 @@ fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
     let (_, reply) = load(T0, other_generator.as_bytes());
     assert!(reply["refused"].as_str().unwrap().contains("worldgen version 2, this build runs version 4"), "{reply}");
 
-    assert_eq!(SAVE_FORMAT, 12);
-    let before_a_round_said_what_entered_it = text.replacen("\"format\":12", "\"format\":11", 1);
-    let (_, reply) = load(T0, before_a_round_said_what_entered_it.as_bytes());
+    assert_eq!(SAVE_FORMAT, 13);
+    let before_a_bot_remembered_its_lairs = text.replacen("\"format\":13", "\"format\":12", 1);
+    let (_, reply) = load(T0, before_a_bot_remembered_its_lairs.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert_eq!(reply["refused"], "this save is format 11, this build reads format 12; start a new game");
+    assert_eq!(reply["refused"], "this save is format 12, this build reads format 13; start a new game");
 
-    let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":13", 1);
+    let other_format = text.replacen(&format!("\"format\":{SAVE_FORMAT}"), "\"format\":14", 1);
     let (_, reply) = load(T0, other_format.as_bytes());
     assert_eq!(reply["world"], Value::Null);
-    assert!(reply["refused"].as_str().unwrap().contains(&format!("format 13, this build reads format {SAVE_FORMAT}")), "{reply}");
+    assert!(reply["refused"].as_str().unwrap().contains(&format!("format 14, this build reads format {SAVE_FORMAT}")), "{reply}");
 
     let (_, reply) = load(T0, &document[..document.len() - 40]);
     assert_eq!(reply["refused"], "this save cannot be read: its contents do not match its checksum");

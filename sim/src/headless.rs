@@ -91,8 +91,11 @@ pub struct FieldTally {
     /// Rounds fought, and the most ships one fleet took into a round.
     pub rounds: u32,
     pub largest_fleet: u32,
-    /// Deuterium paid at the homeworld to fill fleet tanks.
+    /// Deuterium paid at the homeworld to fill fleet tanks again after a trip.
     pub refuel_deuterium: f64,
+    /// Deuterium paid at the homeworld for tanks that grew: ships joining a
+    /// fleet, a larger Deuterium Tank.
+    pub fill_deuterium: f64,
     /// Raids on the homeworld: those repelled, and the part of them in
     /// which no raider was left (the rest were outlasted); those lost, and
     /// the part of them that found nothing in their way.
@@ -750,7 +753,7 @@ struct Counting<'a> {
     /// Whether any meter is kept.
     metered: bool,
     /// Every fleet before the tick: its fuel, and whether it was moving.
-    tanks: Vec<(u64, f64, bool)>,
+    tanks: Vec<(u64, f64, f64, bool)>,
     /// Every fleet's fuel and the deuterium in its hold as the last tick left them.
     fuel_left: &'a mut Vec<(u64, f64, f64)>,
     /// Every outpost before the tick: its store, and whether a raid arriving
@@ -763,7 +766,7 @@ impl Watch<Seats> for Counting<'_> {
         match phase {
             Phase::Turns => {
                 self.count_refining(engine);
-                self.tanks = engine.fleets.values().map(|f| (f.id, f.fuel, f.state == FleetStatus::Moving)).collect();
+                self.tanks = engine.fleets.values().map(|f| (f.id, f.fuel, f.fuel_max, f.state == FleetStatus::Moving)).collect();
                 let mending = engine.current_tick() + 1;
                 self.stores = engine
                     .outposts
@@ -920,8 +923,10 @@ impl Counting<'_> {
 
     /// Fuel only rises at the homeworld, where it is bought; a fleet that
     /// jumped out during the tick is filled again before it leaves the sector.
+    /// The part of it that fills the tanks of ships joining a fleet is
+    /// counted apart: it is the price of a hull, not of a trip.
     fn count_refuelling(&mut self, engine: &GameEngine) {
-        for &(fleet_id, fuel, was_moving) in &self.tanks {
+        for &(fleet_id, fuel, fuel_max, was_moving) in &self.tanks {
             let Some(fleet) = engine.fleets.get(&fleet_id) else { continue };
             let at_home = engine.players.get(&fleet.owner_id).is_some_and(|p| p.homeworld == fleet.location);
             if !at_home {
@@ -933,7 +938,9 @@ impl Counting<'_> {
             if bought > 0.0
                 && let Some(t) = tally_of(self.entries, Some(fleet.owner_id))
             {
-                t.refuel_deuterium += bought * FUEL_DEUT_PER_UNIT;
+                let joined = (fleet.fuel_max - fuel_max).clamp(0.0, bought);
+                t.fill_deuterium += joined * FUEL_DEUT_PER_UNIT;
+                t.refuel_deuterium += (bought - joined) * FUEL_DEUT_PER_UNIT;
             }
         }
     }

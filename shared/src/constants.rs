@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 13;
+pub const ECONOMY_VERSION: u32 = 14;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 4;
 

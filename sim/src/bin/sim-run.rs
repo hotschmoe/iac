@@ -416,7 +416,7 @@ fn loss_table(players: &[PlayerSummary]) -> String {
     let classes: Vec<ShipClass> =
         ShipClass::ALL.into_iter().filter(|c| players.iter().any(|p| p.field.lost_by_class.contains_key(c))).collect();
     let mut out = String::new();
-    let _ = write!(out, "{:<22} {:>9} {:>9}", "lost", "refuel", "refined");
+    let _ = write!(out, "{:<22} {:>9} {:>9} {:>9}", "lost", "refuel", "fill", "refined");
     for class in &classes {
         let name: String = class.label().chars().filter(|c| *c != ' ').take(9).collect();
         let _ = write!(out, " {name:>9}");
@@ -424,7 +424,7 @@ fn loss_table(players: &[PlayerSummary]) -> String {
     let _ = writeln!(out);
     for p in players {
         let f = &p.field;
-        let _ = write!(out, "{:<22} {:>9.0} {:>9.0}", p.name, f.refuel_deuterium, f.refined_deuterium);
+        let _ = write!(out, "{:<22} {:>9.0} {:>9.0} {:>9.0}", p.name, f.refuel_deuterium, f.fill_deuterium, f.refined_deuterium);
         for class in &classes {
             let _ = write!(out, " {:>9}", f.lost_by_class.get(class).copied().unwrap_or(0));
         }
@@ -717,7 +717,7 @@ fn main() {
         );
         println!("score = core + extra; core = econ + fleet + defence; {}", rule_text(args.rule));
         println!("haul and raidsal: resources from the field and from repelled raids, in the points they buy");
-        println!("refuel: deuterium paid to fill fleet tanks");
+        println!("refuel: deuterium paid to fill fleet tanks again after their trips");
         println!("spilled: share of what the mines made that a full store turned away");
         println!("field h: hours away from home, summed over fleets; unpaid: the part of them flown while");
         println!("  one more combat or exploration point would not have counted\n");
@@ -731,8 +731,8 @@ fn main() {
         println!("  cost: the ships, satellites and defences that did not come back, at the weight of what they cost");
         println!("  taken: what lost raids took from the stockpile. wreckage: what was scooped at home. Both in the points they buy\n");
         println!("{}", raid_table(&players));
-        println!("ships lost by class, in fights and raids; refuel: deuterium paid at the dock for fuel; refined: deuterium");
-        println!("  turned into fuel from holds\n");
+        println!("ships lost by class, in fights and raids; refuel: deuterium paid at the dock for the fuel trips burned;");
+        println!("  fill: for tanks that grew (new ships, a larger Deuterium Tank); refined: deuterium turned into fuel from holds\n");
         println!("{}", loss_table(&players));
         if let Some(order) = args.outpost {
             println!(

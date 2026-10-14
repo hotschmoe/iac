@@ -42,10 +42,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use iac_shared::constants::{
-    EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, MAX_FLEET_SHIPS,
-    POLICY_DEFAULT_FUEL_BUDGET_PCT, SCAN_COOLDOWN, ShipClass,
+    Resources, ShipClass, EXPLORE_DURATION_TICKS, FUEL_DEUT_PER_UNIT, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL,
+    MAX_FLEET_SHIPS, POLICY_DEFAULT_FUEL_BUDGET_PCT, SCAN_COOLDOWN,
 };
 use iac_shared::hex::Hex;
+use iac_shared::pace::Pace;
 use iac_shared::protocol::{
     Command, FleetState, FleetStatus, GameState, HarvestResource, MAX_ODDS_SECTORS, NpcBehavior, PolicyParams,
     PolicyPreset, PolicyUpdate, RaidLabel, SectorState, ShipCount, SiteBrief, SiteRisk, ThreatBasis,
@@ -55,6 +56,7 @@ use serde::{Deserialize, Serialize};
 
 use super::home::Hull;
 use super::Personality;
+use crate::score;
 use crate::script::Order;
 
 /// Odds ratio (`SectorOdds::ratio`) at which a pilot accepts a fight: won
@@ -93,6 +95,12 @@ const REACH: u32 = 48;
 const MIN_ORE: f64 = 3.0;
 const WAIT: u64 = 30;
 const REST: u64 = 3;
+/// A trip is flown for what it brings home when that is worth this many
+/// times the deuterium it burns: the odds, the pile and the lanes home are
+/// all estimates.
+const PAYS: f32 = 1.5;
+/// Heat below which a lair is remembered as fresh.
+const COLD: f32 = 0.05;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Wing {
@@ -107,9 +115,13 @@ impl Wing {
     const ALL: [Wing; 5] = [Wing::Garrison, Wing::Mining, Wing::Survey, Wing::Recovery, Wing::Strike];
     const FIELD: [Wing; 4] = [Wing::Mining, Wing::Survey, Wing::Recovery, Wing::Strike];
 
-    fn of(personality: Personality, class: ShipClass) -> Wing {
+    /// The wing a ship of `class` flies with. A miner mines with whatever it
+    /// has until it has a cargo ship (`hauls`); after that its warships,
+    /// which its surplus buys, stay home.
+    fn of(personality: Personality, class: ShipClass, hauls: bool) -> Wing {
         match (personality, Hull::of(class)) {
             (Personality::Turtle, _) => Wing::Garrison,
+            (Personality::Miner, Hull::Warship) if hauls => Wing::Garrison,
             (Personality::Miner, _) => Wing::Mining,
             (Personality::Explorer | Personality::Mixed, Hull::Scout) => Wing::Survey,
             (Personality::Raider | Personality::Mixed, Hull::Warship) => Wing::Strike,
@@ -168,6 +180,24 @@ pub(super) struct Route {
     path: Vec<Hex>,
     next: usize,
     homeward: bool,
+}
+
+/// The kills a player remembers making in one lair: each one heats it, and
+/// the heat cools as the game's farm heat does (`scaling::farm_factor`).
+/// Other empires' kills there are not seen.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(super) struct Heat {
+    sector: Hex,
+    heat: f32,
+    tick: u64,
+}
+
+impl Heat {
+    fn at(&self, tick: u64, pace: &Pace) -> f32 {
+        let respawn = pace.econ_ticks(f64::from(scaling::npc_respawn_hours(self.sector.dist_from_origin())) * 3600.0);
+        let half_life = (respawn as f32 * scaling::FARM_HALF_LIFE_RESPAWNS).ceil() as u64;
+        scaling::farm_heat_after(self.heat, tick.saturating_sub(self.tick), half_life)
+    }
 }
 
 struct Chart<'a> {
@@ -260,17 +290,24 @@ impl Unit<'_> {
 /// by fleet id and sector key.
 pub(super) type Odds = BTreeMap<(u64, u32), f32>;
 
+/// The empire has a cargo ship somewhere.
+fn hauls(state: &GameState) -> bool {
+    state.fleets.iter().flat_map(|f| f.ships.iter()).any(|s| Hull::of(s.ship_class) == Hull::Hauler)
+}
+
 fn units(state: &GameState, personality: Personality) -> Vec<Unit<'_>> {
+    let hauls = hauls(state);
     state
         .fleets
         .iter()
         .filter_map(|fleet| {
             let mut count = [0u32; Wing::ALL.len()];
             for ship in &fleet.ships {
-                count[Wing::of(personality, ship.ship_class) as usize] += ship.count;
+                count[Wing::of(personality, ship.ship_class, hauls) as usize] += ship.count;
             }
             let wing = Wing::ALL.into_iter().max_by_key(|&w| count[w as usize])?;
-            (wing != Wing::Garrison).then_some(Unit { fleet, wing, pure: count[wing as usize] == fleet.ship_count })
+            let pure = count[wing as usize] == fleet.ship_count;
+            (wing != Wing::Garrison || !pure).then_some(Unit { fleet, wing, pure })
         })
         .collect()
 }
@@ -281,7 +318,7 @@ fn units(state: &GameState, personality: Personality) -> Vec<Unit<'_>> {
 /// sector; every fleet against home, if a fight waits there.
 pub(super) fn questions(state: &GameState, brief: Brief, questions: &mut Vec<Command>) {
     let home = state.player.homeworld;
-    for unit in units(state, brief.personality) {
+    for unit in units(state, brief.personality).into_iter().filter(|u| u.wing != Wing::Garrison) {
         let fleet = unit.fleet;
         let fighting = fleet.flight.is_some();
         let manual = (unit.free() || fighting) && fleet.policy.is_none();
@@ -316,14 +353,17 @@ fn fuel_money(state: &GameState, brief: Brief) -> f64 {
     state.player.resources.deuterium - building - research - brief.yard_deuterium
 }
 
-/// A wing that flies for points has nothing to gain once the score cap is
-/// reached; the wings that bring resources home always do.
+/// The survey wing flies for chart points and has nothing to gain once the
+/// score cap is reached. The others bring resources home, the strike wing
+/// as wreckage, and work while a trip pays its fuel.
 fn has_work(brief: Brief, wing: Wing) -> bool {
-    brief.points_wanted || matches!(wing, Wing::Mining | Wing::Recovery)
+    brief.points_wanted || wing != Wing::Survey
 }
 
 /// How long a fleet docked at home stays there whatever the map looks like:
-/// no work, a tank still filling, no fleet slot away, no fuel to spare.
+/// no work, a tank still filling, no fleet slot away, no fuel to spare. A
+/// wing flown for charts wants a tank to spare beyond the next orders; the
+/// others are held to what each trip burns when they choose it.
 fn held_at_home(state: &GameState, brief: Brief, unit: Unit) -> Option<u64> {
     let fleet = unit.fleet;
     let home = state.player.homeworld;
@@ -335,8 +375,8 @@ fn held_at_home(state: &GameState, brief: Brief, unit: Unit) -> Option<u64> {
         return Some(5);
     }
     let deployed = state.fleets.iter().filter(|f| f.location != home).count();
-    let fuelled = fuel_money(state, brief) >= FUEL_DEUT_PER_UNIT * fleet.fuel_max;
-    (deployed >= MAX_FLEETS_PER_PLAYER || !fuelled).then_some(WAIT)
+    let spare = if unit.wing == Wing::Survey { FUEL_DEUT_PER_UNIT * fleet.fuel_max } else { 0.0 };
+    (deployed >= MAX_FLEETS_PER_PLAYER || fuel_money(state, brief) < spare).then_some(WAIT)
 }
 
 /// What the admiral is told about the player it serves this turn.
@@ -355,13 +395,23 @@ pub(super) struct Brief {
 pub(super) struct Admiral<'a> {
     state: &'a GameState,
     brief: Brief,
+    pace: Pace,
     routes: &'a mut BTreeMap<u64, Route>,
+    heat: &'a mut BTreeMap<u32, Heat>,
     odds: &'a Odds,
     orders: &'a mut Vec<Order>,
     chart: Chart<'a>,
     home: Hex,
     units: Vec<Unit<'a>>,
     busy: BTreeSet<u64>,
+    claimed: BTreeSet<(Claim, u32)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Claim {
+    Wreck,
+    Site,
+    Group,
 }
 
 impl<'a> Admiral<'a> {
@@ -369,20 +419,26 @@ impl<'a> Admiral<'a> {
         state: &'a GameState,
         brief: Brief,
         routes: &'a mut BTreeMap<u64, Route>,
+        heat: &'a mut BTreeMap<u32, Heat>,
         odds: &'a Odds,
         orders: &'a mut Vec<Order>,
     ) -> Admiral<'a> {
         let units = units(state, brief.personality);
+        let pace = Pace::new(state.world.pace).unwrap_or_default();
+        heat.retain(|_, lair| lair.at(state.tick, &pace) > COLD);
         Admiral {
             state,
             brief,
+            pace,
             routes,
+            heat,
             odds,
             orders,
             chart: Chart::new(&state.known_sectors),
             home: state.player.homeworld,
             units,
             busy: BTreeSet::new(),
+            claimed: BTreeSet::new(),
         }
     }
 
@@ -431,6 +487,7 @@ impl<'a> Admiral<'a> {
     /// At home: split fleets that mix wings, then merge fleets of one wing.
     fn organize(&mut self) {
         let docked: Vec<Unit> = self.units.iter().copied().filter(|u| u.fleet.location == self.home && u.free()).collect();
+        let hauls = hauls(self.state);
         for unit in docked.iter().filter(|u| !u.pure) {
             if self.state.fleets.len() >= MAX_FLEETS_TOTAL {
                 break;
@@ -439,7 +496,7 @@ impl<'a> Admiral<'a> {
                 .fleet
                 .ships
                 .iter()
-                .filter(|s| Wing::of(self.brief.personality, s.ship_class) != unit.wing)
+                .filter(|s| Wing::of(self.brief.personality, s.ship_class, hauls) != unit.wing)
                 .map(|s| ShipCount { ship_class: s.ship_class, count: s.count })
                 .collect();
             self.busy.insert(unit.fleet.id);
@@ -491,6 +548,8 @@ impl<'a> Admiral<'a> {
         for unit in self.units.clone() {
             if self.busy.contains(&unit.fleet.id) {
                 idle_for = 1;
+            } else if unit.wing == Wing::Garrison {
+                continue;
             } else if closing {
                 self.delegate(unit, true);
             } else if unit.fleet.policy.is_some() {
@@ -521,20 +580,24 @@ impl<'a> Admiral<'a> {
         let load = fleet.cargo.total();
 
         if !at_home {
-            if here.salvage.is_some() && load < fleet.cargo_capacity {
+            if here.salvage.is_some() && load < fleet.cargo_capacity && self.claim(Claim::Wreck, here.location) {
                 self.command(Command::CollectSalvage { fleet_id: fleet.id });
                 return 1;
             }
-            if here.site.is_some_and(|site| boardable(self.odds, fleet, here, site)) {
+            if here.site.is_some_and(|site| boardable(self.odds, fleet, here, site)) && self.claim(Claim::Site, here.location) {
                 self.command(Command::ExploreSite { fleet_id: fleet.id });
                 return u64::from(EXPLORE_DURATION_TICKS);
             }
         }
+        let refinable = if at_home { 0.0 } else { fleet.refine.map_or(0.0, |r| r.fuel) };
         if fleet.fuel < fleet.jump_fuel {
+            if refinable > 0.0 {
+                return self.refine(fleet);
+            }
             return WAIT;
         }
         if at_home {
-            if self.raid_threatens() {
+            if self.raid_threatens() || (self.raid_announced() && !armed(fleet)) {
                 return self.step_aside(unit);
             }
             if let Some(wait) = held_at_home(self.state, self.brief, unit) {
@@ -547,15 +610,19 @@ impl<'a> Admiral<'a> {
             return self.head_home(unit);
         } else {
             let hold_full = fleet.cargo_capacity > 0.0 && load >= RETURN_LOAD * fleet.cargo_capacity;
-            let fuel_low = fleet.fuel < fleet.home_fuel + 2.0 * fleet.jump_fuel + FUEL_MARGIN * fleet.fuel_max;
-            if hold_full || fuel_low {
+            let enough = fleet.home_fuel + 2.0 * fleet.jump_fuel + FUEL_MARGIN * fleet.fuel_max;
+            if !hold_full && fleet.fuel < enough && fleet.fuel + refinable >= enough {
+                return self.refine(fleet);
+            }
+            if hold_full || fleet.fuel < enough {
                 return self.head_home(unit);
             }
         }
         match unit.wing {
             Wing::Strike => self.hunt(unit, here),
             Wing::Mining => self.mine(unit, here),
-            Wing::Garrison | Wing::Survey | Wing::Recovery => self.survey(unit),
+            Wing::Survey | Wing::Recovery => self.survey(unit),
+            Wing::Garrison => WAIT,
         }
     }
 
@@ -580,6 +647,18 @@ impl<'a> Admiral<'a> {
         raid.arrival_tick.is_some() && matches!(raid.odds.label, RaidLabel::AtRisk | RaidLabel::Lost)
     }
 
+    /// A raid is on its way. A fleet with no warship adds nothing to the
+    /// defence and is what the raiders' rapid fire eats first.
+    fn raid_announced(&self) -> bool {
+        self.state.homeworld.raid.arrival_tick.is_some()
+    }
+
+    /// Turn the deuterium in the hold into fuel.
+    fn refine(&mut self, fleet: &FleetState) -> u64 {
+        self.command(Command::Refine { fleet_id: fleet.id });
+        1
+    }
+
     /// A raid is being fought at home.
     fn raid_fought(&self) -> bool {
         self.state.battles.iter().any(|battle| battle.sector == self.home && battle.raid.is_some())
@@ -587,14 +666,86 @@ impl<'a> Admiral<'a> {
 
     /// Jump to a sector beside the homeworld, where no raider follows.
     fn step_aside(&mut self, unit: Unit) -> u64 {
+        let home = self.home;
+        if unit.fleet.location == home && self.state.fleets.iter().filter(|f| f.location != home).count() >= MAX_FLEETS_PER_PLAYER {
+            return REST;
+        }
         let beside = self.chart.get(self.home).and_then(|home| home.connections.first().copied());
         beside.map_or(WAIT, |target| self.jump(unit, target))
     }
 
-    /// After `hops` more jumps to `sector` the fleet still has the way home in the tank.
+    /// After `hops` more jumps to `sector` the fleet still has the way home
+    /// in the tank, counting what its hold would refine away from home.
     fn in_range(&self, fleet: &FleetState, sector: &SectorState, hops: u32) -> bool {
         let home_hops = u32::from(Hex::distance(&sector.location, &self.home));
-        fleet.fuel >= f64::from(hops + home_hops + 1) * fleet.jump_fuel + FUEL_MARGIN * fleet.fuel_max
+        let refinable = if fleet.location == self.home { 0.0 } else { fleet.refine.map_or(0.0, |r| r.fuel) };
+        fleet.fuel + refinable >= f64::from(hops + home_hops + 1) * fleet.jump_fuel + FUEL_MARGIN * fleet.fuel_max
+    }
+
+    /// Whether a trip of `hops` jumps to `sector` brings in `worth` points
+    /// enough for the deuterium the detour burns, out and back home. From
+    /// home the stockpile must also have that deuterium to spare beyond the
+    /// next orders: the dock fills the tank again ahead of every queue.
+    fn pays(&self, fleet: &FleetState, sector: &SectorState, hops: u32, worth: f32) -> bool {
+        let back = |at: &Hex| f64::from(Hex::distance(at, &self.home));
+        let jumps = (f64::from(hops) + back(&sector.location) - back(&fleet.location)).max(1.0);
+        let deuterium = jumps * fleet.jump_fuel * FUEL_DEUT_PER_UNIT;
+        let burned = scaling::resource_weight(&Resources { deuterium, ..Resources::default() });
+        let spared = fleet.location != self.home || deuterium <= fuel_money(self.state, self.brief);
+        spared && worth >= PAYS * burned
+    }
+
+    /// Points of `load` the fleet has room to carry.
+    fn carried(fleet: &FleetState, load: Resources) -> f32 {
+        let room = (fleet.cargo_capacity - fleet.cargo.total()).max(0.0);
+        let units = load.total();
+        if units <= 0.0 {
+            return 0.0;
+        }
+        scaling::resource_weight(&load.scale((room / units).min(1.0)))
+    }
+
+    /// Whether killing what waits in `sector`, `hops` away, pays: the
+    /// wreckage the fleet can carry home, as the lair's own kills have left
+    /// it (`scaling::wreck_value`, the finds factor, the farm heat it
+    /// remembers), against the deuterium of the detour and the worth the
+    /// server's odds say the fleet will lose. No part of the score enters it:
+    /// a fight is for what it brings home, and a ship lost is score lost.
+    fn fight_pays(&self, fleet: &FleetState, sector: &SectorState, hops: u32) -> bool {
+        let groups = sector.hostiles.as_ref().map_or(0, |list| list.len()).max(1);
+        let power = scaling::npc_group_power(sector.location.dist_from_origin());
+        let heat = self.heat.get(&sector.location.to_key()).map_or(0.0, |lair| lair.at(self.state.tick, &self.pace));
+        let worth = self.pace.finds_mult() * f64::from(scaling::farm_factor(heat));
+        let pile = scaling::split_loot(scaling::wreck_value(power) * groups as f64).scale(worth);
+        let lost = ratio(self.odds, fleet, sector).map_or(f32::INFINITY, |ratio| worth_lost(ratio) * fleet_worth(fleet));
+        self.pays(fleet, sector, hops, Self::carried(fleet, pile) - lost)
+    }
+
+    /// What the wreck in `sector`, and the derelict when it is to be
+    /// boarded, would bring in.
+    fn findings(&self, fleet: &FleetState, sector: &SectorState, board: bool) -> f32 {
+        let mut found = sector.salvage.unwrap_or_default();
+        if board {
+            found = found.add(self.derelict(sector));
+        }
+        Self::carried(fleet, found)
+    }
+
+    /// What a derelict in `sector` holds on average.
+    fn derelict(&self, sector: &SectorState) -> Resources {
+        scaling::split_loot(scaling::derelict_value(sector.location.dist_from_origin()) * self.pace.finds_mult())
+    }
+
+    /// The first fleet to want what lies in `sector` this turn takes it; a
+    /// second would be refused, the pile scooped or the group engaged.
+    fn claim(&mut self, what: Claim, sector: Hex) -> bool {
+        self.claimed.insert((what, sector.to_key()))
+    }
+
+    fn note_kill(&mut self, sector: Hex) {
+        let (tick, pace) = (self.state.tick, self.pace);
+        let lair = self.heat.entry(sector.to_key()).or_insert(Heat { sector, heat: 0.0, tick });
+        *lair = Heat { sector, heat: lair.at(tick, &pace) + 1.0, tick };
     }
 
     fn jump(&mut self, unit: Unit, target: Hex) -> u64 {
@@ -629,11 +780,15 @@ impl<'a> Admiral<'a> {
 
     fn head_home(&mut self, unit: Unit) -> u64 {
         let fleet = unit.fleet;
+        if fleet.location != self.home && fleet.fuel < fleet.home_fuel && fleet.refine.is_some() {
+            return self.refine(fleet);
+        }
         if fleet.fuel < fleet.jump_fuel {
             return WAIT;
         }
         let beside_home = self.chart.get(fleet.location).is_some_and(|here| here.connections.contains(&self.home));
-        if beside_home && (self.raid_threatens() || self.raid_fought()) {
+        let unwelcome = self.raid_threatens() || self.raid_fought() || (self.raid_announced() && !armed(fleet));
+        if beside_home && unwelcome {
             return REST;
         }
         if let Some(wait) = self.follow(unit, true) {
@@ -659,14 +814,14 @@ impl<'a> Admiral<'a> {
         if sector.location == self.home {
             return false;
         }
-        if sector.site.is_some_and(|site| boardable(self.odds, fleet, sector, site)) {
-            return true;
-        }
+        let wanted = self.brief.points_wanted;
+        let rating = sector.threat.rating;
+        let chart = if sector.chart.is_none() && wanted { score::chart_points(rating) } else { 0.0 };
+        let board = sector.site.is_some_and(|site| boardable(self.odds, fleet, sector, site));
+        let boarding = if board && wanted { score::board_points(self.derelict(sector), rating) } else { 0.0 };
         let lasts = sector.salvage_despawn_tick.is_some_and(|t| t > self.state.tick + 3 * u64::from(hops));
-        if sector.salvage.is_some() && lasts && fleet.cargo.total() < fleet.cargo_capacity {
-            return true;
-        }
-        sector.chart.is_none()
+        let scoop = sector.salvage.is_some() && lasts && fleet.cargo.total() < fleet.cargo_capacity;
+        (chart > 0.0 || board || scoop) && self.pays(fleet, sector, hops, chart + boarding + self.findings(fleet, sector, board))
     }
 
     /// A sector within scan range that the chart does not hold.
@@ -704,10 +859,15 @@ impl<'a> Admiral<'a> {
         if self.blind_spot(here, range) {
             return self.scan(fleet);
         }
-        let edge = self.chart.nearest(fleet.location, open, |s, hops| {
-            open(s) && self.in_range(fleet, s, hops) && self.blind_spot(s, range)
+        let edge = self.brief.points_wanted.then(|| {
+            self.chart.nearest(fleet.location, open, |s, hops| {
+                open(s)
+                    && self.in_range(fleet, s, hops)
+                    && self.blind_spot(s, range)
+                    && self.pays(fleet, s, hops, score::chart_points(s.threat.rating))
+            })
         });
-        match edge {
+        match edge.flatten() {
             Some(path) => self.set_out(unit, path, false),
             None if fleet.location != self.home => self.head_home(unit),
             None => WAIT,
@@ -716,9 +876,14 @@ impl<'a> Admiral<'a> {
 
     fn hunt(&mut self, unit: Unit, here: &SectorState) -> u64 {
         let (fleet, odds) = (unit.fleet, self.odds);
+        let fought = self.state.battles.iter().any(|battle| battle.sector == here.location);
         if let Some(group) = here.hostiles.as_ref().and_then(|list| list.first())
+            && !fought
             && beats(odds, fleet, here)
+            && self.fight_pays(fleet, here, 0)
+            && self.claim(Claim::Group, here.location)
         {
+            self.note_kill(here.location);
             self.command(Command::Attack { fleet_id: fleet.id, target_fleet_id: group.id });
             return 2;
         }
@@ -726,17 +891,32 @@ impl<'a> Admiral<'a> {
             return wait;
         }
         let prey = self.chart.nearest(fleet.location, |s| enterable(odds, s, fleet), |s, hops| {
-            s.hostiles.is_some() && beats(odds, fleet, s) && self.in_range(fleet, s, hops)
+            s.hostiles.is_some()
+                && beats(odds, fleet, s)
+                && self.in_range(fleet, s, hops)
+                && self.fight_pays(fleet, s, hops)
         });
         match prey {
             Some(path) => self.set_out(unit, path, false),
-            None => self.survey(unit),
+            None => self.nothing_pays(unit),
+        }
+    }
+
+    /// No trip pays its fuel: a wing that may still earn points looks for
+    /// them as the survey wing does; any other goes home and waits.
+    fn nothing_pays(&mut self, unit: Unit) -> u64 {
+        if self.brief.points_wanted {
+            self.survey(unit)
+        } else if unit.fleet.location != self.home {
+            self.head_home(unit)
+        } else {
+            WAIT
         }
     }
 
     fn mine(&mut self, unit: Unit, here: &SectorState) -> u64 {
         let fleet = unit.fleet;
-        if ore(here) > 0.5 && fleet.cargo.total() < fleet.cargo_capacity {
+        if ore(here).total() > 0.5 && fleet.cargo.total() < fleet.cargo_capacity {
             self.command(Command::Harvest { fleet_id: fleet.id, resource: HarvestResource::Auto });
             return REST;
         }
@@ -746,17 +926,26 @@ impl<'a> Admiral<'a> {
         let odds = self.odds;
         let open = |s: &SectorState| enterable(odds, s, fleet);
         let seam = self.chart.nearest(fleet.location, open, |s, hops| {
-            ore(s) >= MIN_ORE && open(s) && self.in_range(fleet, s, hops)
+            let reserve = ore(s);
+            reserve.total() >= MIN_ORE
+                && open(s)
+                && self.in_range(fleet, s, hops)
+                && self.pays(fleet, s, hops, Self::carried(fleet, reserve))
         });
         match seam {
             Some(path) => self.set_out(unit, path, false),
-            None => self.survey(unit),
+            None => self.nothing_pays(unit),
         }
     }
 }
 
-fn ore(sector: &SectorState) -> f64 {
-    sector.ore_reserve.map_or(0.0, |o| o.metal.units + o.crystal.units + o.deuterium.units)
+/// What the ore tiles of `sector` hold, in raw units.
+fn ore(sector: &SectorState) -> Resources {
+    sector.ore_reserve.map_or_else(Resources::default, |o| Resources {
+        metal: o.metal.units,
+        crystal: o.crystal.units,
+        deuterium: o.deuterium.units,
+    })
 }
 
 /// Entering may start a fight: a group that is not passive, or a lair seen
@@ -772,6 +961,32 @@ fn guarded(sector: &SectorState) -> bool {
 /// prey, or a derelict that may be guarded.
 fn decides(sector: &SectorState) -> bool {
     guarded(sector) || sector.hostiles.is_some() || sector.site.is_some_and(|site| site.risk != SiteRisk::Quiet)
+}
+
+/// What the fleet's ships cost to build, in points.
+fn fleet_worth(fleet: &FleetState) -> f32 {
+    fleet.ships.iter().map(|s| s.count as f32 * scaling::resource_weight(&s.ship_class.build_cost())).sum()
+}
+
+/// The share of its worth a fleet is expected to lose in a fight at odds
+/// `ratio`, read off the table the odds are made from
+/// (`scaling::RATIO_MARGINS`, what a fleet that wins keeps). The odds stop
+/// at the table's last row, which any much stronger fleet reads, so that
+/// row is taken as a fight that costs nothing.
+fn worth_lost(ratio: f32) -> f32 {
+    let table = scaling::RATIO_MARGINS;
+    let last = table.len() - 1;
+    let kept = |at: usize| if at == last { 1.0 } else { table[at].1 };
+    let at = table.iter().position(|&(edge, _)| ratio < edge).unwrap_or(last + 1);
+    let kept = match at {
+        0 => kept(0),
+        at if at > last => 1.0,
+        at => {
+            let (low, high) = (table[at - 1].0, table[at].0);
+            kept(at - 1) + (kept(at) - kept(at - 1)) * (ratio - low) / (high - low)
+        }
+    };
+    (1.0 - kept.max(0.0)).min(1.0)
 }
 
 fn ratio(odds: &Odds, fleet: &FleetState, sector: &SectorState) -> Option<f32> {
