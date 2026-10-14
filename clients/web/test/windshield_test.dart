@@ -568,6 +568,14 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     await key(tester, LogicalKeyboardKey.keyX, 'x');
     expect(stops(), [1, 1], reason: 'a fleet that has arrived has no jump to call off');
+    expect(simOf(tester).warp?.waiting, isFalse, reason: 'the arrival is still being drawn');
+    await key(tester, LogicalKeyboardKey.keyA, 'a');
+    expect((moves(), c.commands.whereType<proto.MoveCommand>().last.target), (4, here),
+        reason: 'a gate key pressed while the arrival is drawn is taken: the order goes out at once and the picture goes with it');
+    await key(tester, LogicalKeyboardKey.keyA, 'a');
+    expect(moves(), 4);
+    expect(find.descendant(of: find.byType(ToastLayer), matching: find.textContaining('is charging a jump already')), findsOneWidget,
+        reason: 'and a second press while that jump charges is answered, not dropped');
     await tester.pump(const Duration(seconds: 3));
     await finish(tester, c);
   });
@@ -791,6 +799,12 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('battle-dismiss')));
       await tester.pump(const Duration(milliseconds: 100));
       expect(panel, findsNothing, reason: 'Dismiss puts the report away');
+      await tester.ensureVisible(find.byKey(const ValueKey('fights-open')));
+      await tester.tap(find.byKey(const ValueKey('fights-open')));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(tester.widget<Text>(find.byKey(const Key('bv-outcome'))).data, 'HOSTILES DESTROYED',
+          reason: 'a fight put away is still held, and the fleet status opens the battle view on it');
+      await key(tester, LogicalKeyboardKey.escape, '');
       await tester.pump(const Duration(seconds: 4));
       await finish(tester, c);
     }
@@ -852,6 +866,10 @@ void main() {
           hullDamage: side.hullDamage,
           destroyed: side.destroyed);
       final next = proto.BattleRoundEvent(sector: here, round: 8, fleets: round.fleets, hostiles: without(round.hostiles), mine: true);
+      await tester.pump(const Duration(milliseconds: 700));
+      expect(scope.floats, hasLength(2 * flying.length), reason: 'when the fire has landed every class has what the round took printed over it');
+      await tester.pump(const Duration(milliseconds: 1100));
+      expect(scope.floats, isEmpty, reason: 'and that is off the scope before the next round is fought');
       expect(scope.mark('g77', probe), isNotNull);
       c.ev.add(proto.GameEvent(tick: 502, kind: proto.BattleRoundKind(next)));
       c.push(at(next, 388).copyWith(tick: 502));
@@ -983,7 +1001,7 @@ void main() {
       expect(few > 0 && many > few * 3 && many <= MarkShape.pipsFor(5000), isTrue,
           reason: 'and a block behind it, larger for five thousand than for two hundred ($few and $many pips) and never a ship each');
       expect((two.shown.count, hundreds.shown.count, thousands.shown.count), (2, 200, 5000));
-      if (size.width > 1000) expect((two.shape.label, hundreds.shape.label, thousands.shape.label), ('SC 2', 'LF 200', 'BS 5,000'));
+      if (size.width > 1000) expect((two.shape.label, hundreds.shape.label, thousands.shape.label), ('SCG 2', 'LFT 200', 'BSH 5,000'));
       expect((hundreds.shown.damaged, hundreds.shown.atRisk, thousands.shown.damaged), (40, 20, 0), reason: 'the bar\'s three parts are the state\'s counts');
       expect(of('g77', proto.ShipClass.lightFighter).shape.pips.length ~/ 2, lessThanOrEqualTo(MarkShape.pipsFor(5000)));
       expect(scope.marks.fold(0, (n, m) => n + m.shape.glyphs.length + m.shape.pips.length ~/ 2) < 400, isTrue,

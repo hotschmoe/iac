@@ -297,7 +297,6 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     final f = _fleet;
     if (f == null) return;
     final leaving = f.fleeing;
-    if (sim.warp != null && leaving == null) return;
     final here = _sec(f.sector);
     final target = f.sector + d.v;
     if (here == null || !here.connections.contains(target)) {
@@ -306,6 +305,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     }
     if (leaving != null) {
       _toast('Leaving already', '${fleeingLine(leaving)}. $stopFlightRule');
+      return;
+    }
+    if (sim.warp?.waiting ?? false) {
+      _toast('Jump under way', '${f.name} is charging a jump already. Stop (X) calls it off.');
       return;
     }
     if (f.flight case final quote?) {
@@ -358,7 +361,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     final f = _fleet;
     if (f == null) return;
     final jumping = sim.warp;
-    if (jumping != null && f.fleeing == null && !(id == 'stop' && jumping.waiting)) return;
+    if (jumping != null && f.fleeing == null && (jumping.waiting ? id != 'stop' : id == 'stop')) return;
     final s = _sec(f.sector);
     final th = SectorThreat.of(s);
     final why = _reason(id, f, th, s);
@@ -480,6 +483,18 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     con.play('click');
   }
 
+  /// Open the battle view on the fight the selected fleet is in or has just
+  /// left, or else on the newest of the fights the console holds.
+  void _openBattleView() {
+    final f = _fleet;
+    final fight = (f == null ? null : con.state.battleOf(f)) ?? con.state.fights.firstOrNull;
+    if (fight == null) {
+      _toast('No fight to show', 'The battle view shows a fight round by round. None has been fought since this page was opened.');
+    } else {
+      con.openBattle(fight.id);
+    }
+  }
+
   void _fire(ui.FleetState f, SectorThreat th) {
     final s = _sec(f.sector);
     final id = s?.hostiles?.firstOrNull?.id;
@@ -533,13 +548,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       return true;
     }
     if (ch == 'i') {
-      final f = _fleet;
-      final fight = f == null ? null : con.state.battleOf(f);
-      if (fight == null) {
-        _toast('No fight here', 'The battle view shows a fight round by round. This fleet is in none, and none has just ended here.');
-      } else {
-        con.openBattle(fight.id);
-      }
+      _openBattleView();
       return true;
     }
     const m = {'v': 'scan', 'h': 'harvest', 'f': 'fire', 'c': 'collect', 'b': 'board', 'r': 'recall', 'x': 'stop', 't': 'trade', 'l': 'load'};
@@ -703,6 +712,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           footer: Wrap(spacing: 6, runSpacing: 6, children: [
             GuideTarget('orders', child: ConsoleButton(_orders ? 'Hide orders' : 'Orders', key: const ValueKey('orders-toggle'), small: true, keyHint: 'P', active: _orders, onPressed: _toggleOrders)),
             ConsoleButton(_manage ? 'Hide fleet' : 'Manage fleet', key: const ValueKey('manage-toggle'), small: true, active: _manage, onPressed: () => setState(() => _manage = !_manage)),
+            if (battle == null && st.fights.isNotEmpty)
+              ConsoleButton('Fights', key: const ValueKey('fights-open'), small: true, keyHint: 'I', semanticsLabel: 'Open the battle view on the last fight', onPressed: _openBattleView),
           ]),
         ),
         if (_manage) ...[const SizedBox(height: 8), FleetManagePanel(controller: con.game)],

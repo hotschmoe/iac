@@ -353,7 +353,7 @@ class, the fleet below the centre line and what it faces above. Up to four
 ships of a class are drawn a glyph each. More are one glyph leading a block
 of pips that grows with the square root of the count, so two, two hundred
 and two thousand are told apart at a glance and five thousand is still a
-block. Under a mark stand its short name and its count (`LF 2,000`) and a
+block. Under a mark stand its three letters and its count (`LFT 2,000`) and a
 bar in three parts, whole, damaged and at risk, which the block's pips are
 tinted by as well; every figure is the state's. Both sides are drawn at one
 size, the largest that fits them. The pointer, or a tap, names a mark in

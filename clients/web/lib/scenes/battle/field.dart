@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui';
 
 import '../../console/battle.dart' show groupName, shortCount, volleysByWeight;
+import '../../console/threat.dart' show unitAbbr;
 import '../../design/symbols.dart';
 import '../../models/fleet.dart' as ui;
 import '../../models/game_state.dart';
@@ -138,34 +139,6 @@ class Sides {
   }
 }
 
-/// The short name a mark carries: the command bar's where it has one of
-/// two or three letters.
-String tagOf(proto.ShipyardItem u) => switch (u.ship) {
-      proto.ShipClass.smallCargo => 'SC',
-      proto.ShipClass.largeCargo => 'LC',
-      proto.ShipClass.lightFighter => 'LF',
-      proto.ShipClass.heavyFighter => 'HF',
-      proto.ShipClass.cruiser => 'CR',
-      proto.ShipClass.battleship => 'BS',
-      proto.ShipClass.recycler => 'REC',
-      proto.ShipClass.espionageProbe => 'PRB',
-      proto.ShipClass.bomber => 'BB',
-      proto.ShipClass.solarSatellite => 'SAT',
-      proto.ShipClass.destroyer => 'DST',
-      proto.ShipClass.deathstar => 'DS',
-      proto.ShipClass.battlecruiser => 'BC',
-      null => switch (u.defence!) {
-          proto.DefenceKind.rocketLauncher => 'RL',
-          proto.DefenceKind.lightLaser => 'LL',
-          proto.DefenceKind.heavyLaser => 'HL',
-          proto.DefenceKind.gaussCannon => 'GC',
-          proto.DefenceKind.ionCannon => 'IC',
-          proto.DefenceKind.plasmaTurret => 'PT',
-          proto.DefenceKind.smallShieldDome => 'SD',
-          proto.DefenceKind.largeShieldDome => 'LD',
-        },
-    };
-
 /// Half the height a kind of unit's glyph is drawn at, in pixels at full
 /// size: a drawing size, larger for the heavier hulls.
 double glyphPx(proto.ShipyardItem u) => switch (u.ship) {
@@ -236,7 +209,7 @@ class MarkShape {
   /// [dense] is for a ground with more marks than it has room for: the
   /// block is a strip two pips deep and the label is the count alone.
   factory MarkShape(proto.ShipyardItem unit, int count, {double zoom = 1, double scale = 1, bool dense = false}) {
-    final label = dense ? shortCount(count) : '${tagOf(unit)} ${shortCount(count)}';
+    final label = dense ? shortCount(count) : '${unitAbbr(unit)} ${shortCount(count)}';
     final font = (10.5 * (.6 + .4 * zoom) * scale.clamp(.9, 1.14)).clamp(8.0, 12.0);
     final labelWide = label.length * font * .62;
     final shown = count.clamp(1, literal);

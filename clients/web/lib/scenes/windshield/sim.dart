@@ -343,8 +343,11 @@ class WindshieldSim {
     _cue?.call('scan');
   }
 
+  /// A jump ordered on this screen. One ordered while the arrival of the
+  /// last is still being drawn takes its place: the order has been sent,
+  /// and the picture goes with it.
   void startWarp(Dir d) {
-    if (warp != null) return;
+    if (warp?.waiting ?? false) return;
     _charge(d);
     _cue?.call('jump');
   }

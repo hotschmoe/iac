@@ -6,6 +6,7 @@ import 'package:flutter/painting.dart' show FontWeight, TextStyle;
 
 import '../../console/battle.dart' show shortCount;
 import '../../console/intel.dart' show groupDigits;
+import '../../console/threat.dart' show unitAbbr;
 import '../../design/draw.dart';
 import '../../design/symbols.dart';
 import '../../design/tokens.dart';
@@ -139,7 +140,7 @@ class FieldPainter {
     final labelY = m.hostile ? mid.dy - half + 4 + (font + 2) / 2 : mid.dy - half + shape.cluster.height + 3 + (font + 2) / 2;
     final barY = m.hostile ? mid.dy - half : mid.dy - half + shape.cluster.height + font + 6;
     final count = shortCount(m.shown.count);
-    final tag = shape.dense ? '' : '${tagOf(m.unit)} ';
+    final tag = shape.dense ? '' : '${unitAbbr(m.unit)} ';
     final tagStyle = T.mono(size: font, color: C.text3.withValues(alpha: alpha));
     final countStyle = T.mono(size: font, color: (m.fallen ? C.text3 : C.text).withValues(alpha: alpha), weight: FontWeight.w500);
     final tagWide = tag.isEmpty ? 0.0 : Draw.tp(tag, tagStyle).width;
