@@ -9460,3 +9460,130 @@ measured. No knob of the five slices was fitted against play: pirate
 strength, raid size and what raiders fly, the heal rate, how far a group
 chases, the tanks, the harvest powers, the level ceiling of 20, the bots'
 rule that a wing without a warship picks no fight.
+
+## 2026-10-14: a patrol brings the salvage home
+
+The owner asked for `patrol_home` to collect salvage and come home when the
+hold is full, since fighting and bringing the salvage home looked like good
+income, and then told the builder to do what he recommended. The decision,
+its wording and what undoes it are in `docs/design/decisions.md` under
+today's date.
+
+**What the patrol does now.** It hunts within its range at its engage ratio
+as before; between fights it goes to the nearest contact or pile of
+wreckage in range that repays its fuel on an empty hold, by the rule the
+hauling doctrines use (`Reach::wreck_repays`, which `salvage_and_sites` now
+calls too). A pile whose share that the room left would take no longer
+repays is a reason to unload first. It goes home at `cargo_return_pct`
+("returning to unload the salvage: cargo 100%"), before a pile that would
+not fit, and when nothing is left; the dock unloads, refuels, refits and
+mends it, and it goes out again. A pile it scoops is "the wreckage of the
+kill" in the sector of its last fight (`FleetPolicy::work_sector`, which
+for a patrol now holds that sector) and "wreckage at X that it did not
+make" anywhere else. Every fleet under orders that docks with a hold says
+`unload` and what it unloaded. `ECONOMY_VERSION` is 14; `SAVE_FORMAT` stays
+12 (nothing new is stored).
+
+**What the old patrol already did.** It scooped its own kill where it stood
+and went home at `cargo_return_pct`, which the docking unloaded. So the
+change is the piles it did not make, the leftovers of its own kills it
+used to leave once it had gone home, the turn home before a pile that
+would not fit, and the words.
+
+**Tests.** `sim/tests/scenarios_world.rs`: the patrol scenario is
+`a_patrol_hunts_out_to_its_range_brings_home_what_its_kills_leave_and_waits_at_the_dock`,
+which also requires an `unload`, the new jump reason among the ones a
+patrol may give, the new hold reason and an empty hold at the end.
+`sim/tests/fleet_logistics.rs`, on a beat whose lairs are cleared: a pile
+it did not make, flown to, scooped and brought home; a full hold taken
+home, unloaded, a damaged ship mended, and the patrol back for the rest of
+the pile; a pile that would not fit the room left, unloaded first; a pile
+not worth the fuel passed over and a larger one fetched; and the same
+200,000-unit pile two hops out worked for 600 ticks by ten Light Fighters
+and by ten Light Fighters with a Small Cargo.
+
+**Measured: the bots** (`sim-run`, the default seats, master `7cd4e33`
+against this branch). The check-in raider and mixed empires fly their
+strike wings under `patrol_home`.
+
+| run | empire | combat | salvage | ships lost | total |
+|---|---|---|---|---|---|
+| season, 7 days | raider/check-in | 13.7 -> 12.0 | 505.8 -> 449.7 | 23 -> 19 | 7972.7 -> 8661.3 |
+| season, 7 days | mixed/check-in | 16.1 -> 15.5 | 296.8 -> 423.6 | 45 -> 19 | 6003.4 -> 6206.8 |
+| blitz, 1 day | raider/check-in | 369.2 -> 469.3 | 685.0 -> 707.7 | 6 -> 16 | 12233.2 -> 4289.9 |
+| blitz, 1 day | mixed/check-in | 161.7 -> 439.3 | 1133.7 -> 850.7 | 2 -> 3 | 12511.3 -> 10704.1 |
+
+The sum of totals: season 123,166.5 -> 121,596.6; blitz 246,503.8 ->
+241,453.4. By style, season: turtle check-in -16.6%, explorer check-in
+-11.7%, raider check-in +8.6%, explorer hybrid -7.4%, explorer hands-on
+-6.2%, raider hybrid -5.5%, the rest within 4%; the hands-on turtle,
+raider and the hybrid turtle unchanged. Blitz: raider check-in -64.9%,
+raider hybrid +18.3%, mixed check-in -14.4%, explorer hybrid +11.5%,
+explorer check-in -9.4%, mixed hybrid +6.3%, the rest within 3.3%.
+
+The blitz raider's fall is not the patrol's haul. Its strike wing, busy
+with the convoys that respawn beside its home, had 581 kills in the first
+144 minutes against 10 on master (in a world of the same seats less the
+idle one, its wings spent 16.2 fleet-hours under `patrol_home` against
+10.9; why master's left the doctrine sooner was not traced), and the
+empire's second session queued two Research Lab levels that kept its lab
+blocked for half the day; its economy ended at 1,479 points against 6,951.
+On three more seeds (1, 2, 3; blitz, one day) the raider check-in totals
+moved +0.02%, -2.1% and -0.6% and the mixed check-in -1.3%, +2.0% and
++0.5%, while single styles that fly no patrol moved by up to 18% (raider
+hybrid -18.1% on seed 1, miner hybrid -17.5% on seed 3): one changed fight
+reseeds what follows. The sum of totals fell in all five runs, by 0.5 to
+2.0%; whether that is the change or the spread was not settled.
+
+**Measured: one patrol.** One empire alone in the default world, its fleet
+under default orders with fuel unbounded and Weapons, Shielding and Armour
+6, the stockpile's mines off, counting only what the fleet unloaded on
+arriving home (a scratch program outside the repository; the same on master
+and on this branch):
+
+| pace, time | fleet | salvage home, points | combat | fuel burned, points |
+|---|---|---|---|---|
+| blitz, 1 hour | 10 LF, seat 1 | 154.3 -> 139.5 | 112.5 -> 96.7 | 10.3 |
+| blitz, 1 hour | 10 LF + 1 SC, seat 1 | 182.6 -> 124.6 | 100.9 -> 50.2 | 13.9 -> 15.1 |
+| blitz, 1 hour | 10 LF, seat 2 | 224.0 -> 206.0 | 120.3 -> 127.2 | 15.2 -> 13.9 |
+| blitz, 1 hour | 10 LF + 1 SC, seat 2 | 170.2, the same | 90.9 | 12.7 |
+| blitz, 1 hour | 20 LF, seat 2 | 221.8, the same | 38.3 | 39.2 |
+| blitz, 1 hour | 20 LF + 2 SC, seat 2 | 189.1, the same | 30.0 | 34.1 |
+| season, 1 day | 10 LF, seat 1 | 34.4, the same | 16.3 | 94.1 |
+| season, 1 day | 10 LF + 1 SC, seat 1 | 35.2, the same | 19.2 | 93.1 |
+| season, 1 day | 10 LF, seat 2 | 24.2, the same | 8.1 | 117.8 |
+| season, 1 day | 10 LF + 1 SC, seat 2 | 24.1, the same | 7.7 | 121.6 |
+| season, 1 day | 20 LF, seat 2 | 24.2, the same | 4.0 | 234.7 |
+| season, 1 day | 20 LF + 2 SC, seat 2 | 24.1, the same | 3.8 | 243.6 |
+
+Most runs are the same to the unit before and after: alone, a patrol meets
+no pile it did not make, and it already scooped its own. A hold is not
+what limits it. A Light Fighter carries 50 times the square root of the
+pace (1,225 at blitz, 158 at season), more than a kill leaves at those
+rings; a patrol turns home for fuel long before the hold fills. So a Small
+Cargo along adds nothing measurable at season, and at blitz it slows the
+fleet (four ticks a jump against two) and brought home less in all three
+pairs on this branch (two of three on master): a player would not send one with a patrol for the hold. It
+pays only where piles outweigh the warships' hold, which the
+200,000-unit scenario builds by hand. Where the runs differ before and
+after, the difference is one fight going another way and everything after
+it, as in the bots' worlds. At season a patrol of ten or twenty
+Light Fighters burned four to ten times as many points of deuterium as it
+brought home in salvage; on the default fuel budget it would wait at the
+dock for most of the day instead.
+
+**Run.** `cargo build --workspace --all-targets`; `cargo clippy --workspace
+--all-targets`, silent; `cargo test --workspace --no-fail-fast`: 202
+passed, 0 failed (197 and the five new); `python3
+tools/check_sim_constants.py` agrees on 4,410 values; `flutter analyze`
+clean; `flutter test` under `timeout -k 20 300`, six runs: the first failed
+one test, the patrol's hold sentence in `windshield_test.dart`, which the
+change falsified and which now reads the engine's new sentence; then 517
+passed, then one failure (a ratio of 0.00 where 0.31 is written), then 12
+failures in route planning in `map_test.dart`, then 517 and 517. The two
+in between are the machine's flake: neither touches what changed.
+
+**Not verified.** No person or agent flew the new patrol. The bundle and
+`tool/solo_e2e.dart` were not run. The one-patrol figures are one world, two
+seats and default orders with the fuel bound lifted; the bots' figures are
+one seed per pace and three more at blitz.

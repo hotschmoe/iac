@@ -1967,7 +1967,7 @@ void main() {
 
     await tester.pump(const Duration(seconds: 1));
     expect(head(), startsWith('HOLDING FOR'));
-    expect(reason(), 'no contact within 4 hops of home that the fleet rates 1.5x against');
+    expect(reason(), 'no contact within 4 hops of home that the fleet rates 1.5x against, and no wreckage that repays the fuel');
     expect(find.descendant(of: find.byKey(const Key('status-hold')), matching: find.text(reason())), findsOneWidget);
     expect(tester.widget<ConsoleButton>(find.byKey(const ValueKey('orders-set'))).onPressed, isNull);
     expect(find.descendant(of: find.byKey(const Key('orders-why')), matching: find.text('These are the orders in force.')), findsOneWidget);
@@ -1988,7 +1988,7 @@ void main() {
     expect(c.state.policyActs[101]!.map((a) => a.reason), contains('doctrine set: patrol home (range 3, engage 1.5x, disengage 0.9x, fuel unbounded)'));
     expect(tester.widget<Text>(find.byKey(const Key('orders-settings'))).data, 'RANGE 3 HEXES - ENGAGE 1.5X - FUEL NO BOUND\nLEAVES A FIGHT BELOW 0.9X');
     await tester.pump(const Duration(seconds: 1));
-    expect(reason(), 'no contact within 3 hops of home that the fleet rates 1.5x against');
+    expect(reason(), 'no contact within 3 hops of home that the fleet rates 1.5x against, and no wreckage that repays the fuel');
 
     c.send(const proto.PolicyUpdate(fleetId: 101, preset: proto.PolicyPreset.patrolHome, params: proto.PolicyParams(maxRange: 2)));
     await tester.pump(const Duration(milliseconds: 100));

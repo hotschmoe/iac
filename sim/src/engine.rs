@@ -892,8 +892,9 @@ enum Homeward {
 pub struct FleetPolicy {
     pub preset: PolicyPreset,
     pub params: PolicyParams,
-    /// The sector this doctrine works (set when assigned; MineAndReturn
-    /// shuttles between here and home).
+    /// The sector this doctrine works: MineAndReturn's claim, staked where
+    /// the orders are given and shuttled between it and home; the sector of
+    /// PatrolHome's last fight, whose wreckage is its own kill's.
     pub work_sector: Option<Hex>,
     /// Next tick the autopilot will reconsider this fleet.
     pub next_eval_tick: u64,
@@ -988,6 +989,8 @@ struct Reach<'a> {
     range: u8,
     /// Score weight of the deuterium one jump burns.
     jump_weight: f32,
+    /// Cargo units the hold takes when empty.
+    hold: f64,
     /// Cargo units the hold can still take.
     room: f64,
     /// Sectors where a hostile group stands, and whether one of them
@@ -1127,6 +1130,12 @@ impl Reach<'_> {
     /// the fuel of flying `hops` jumps out and as many back.
     fn repays(&self, weight: f32, hops: u32) -> bool {
         weight >= POLICY_FUEL_PAYBACK * self.jump_weight * 2.0 * hops as f32
+    }
+
+    /// Whether the wreckage in `coord`, as much of it as `room` units of
+    /// hold take, repays the fuel of fetching it from `hops` jumps out.
+    fn wreck_repays(&self, coord: Hex, room: f64, hops: u32) -> bool {
+        self.repays(self.engine.wreck_worth(coord, room), hops)
     }
 
     /// The first jump of the way home and, when no lane meets the engage
@@ -2136,6 +2145,9 @@ impl GameEngine {
                 fleet.state = if fleet.ships.is_empty() { FleetStatus::Docked } else { FleetStatus::Idle };
             }
             owners.extend(self.players.get(&fleet.owner_id).map(|p| p.name.clone()));
+            if let Some(patrol) = self.policies.get_mut(fid).filter(|p| p.preset == PolicyPreset::PatrolHome) {
+                patrol.work_sector = Some(sector);
+            }
         }
 
         let (fallen, standing): (Vec<u64>, Vec<u64>) = combat.npc_fleet_ids.iter().copied()
@@ -6503,7 +6515,7 @@ impl GameEngine {
         let policy = FleetPolicy {
             preset,
             params,
-            work_sector: Some(location),
+            work_sector: (preset == PolicyPreset::MineAndReturn).then_some(location),
             next_eval_tick: self.current_tick + 1,
             last_hold: None,
             fuel_credit,
@@ -6782,8 +6794,11 @@ impl GameEngine {
         {
             return Some(true);
         }
-        let (Homeward::Fuel(why) | Homeward::Cargo(why)) = reason;
-        Some(self.policy_head_home(fleet_id, preset, &format!("returning: {why}")))
+        let why = match reason {
+            Homeward::Cargo(full) if preset == PolicyPreset::PatrolHome => format!("returning to unload the salvage: {full}"),
+            Homeward::Fuel(why) | Homeward::Cargo(why) => format!("returning: {why}"),
+        };
+        Some(self.policy_head_home(fleet_id, preset, &why))
     }
 
     /// A fleet whose orders have `refine` set turns the deuterium in its
@@ -6886,6 +6901,7 @@ impl GameEngine {
     /// What the doctrine of `fleet` lets it do this evaluation.
     fn policy_reach<'a>(&'a self, fleet: &'a Fleet, params: &PolicyParams, home: Hex) -> Reach<'a> {
         let range = self.policy_effective_range(fleet, params);
+        let hold = fleet_cargo_capacity(fleet, &self.world.pace);
         Reach {
             engine: self,
             fleet,
@@ -6899,7 +6915,8 @@ impl GameEngine {
                 deuterium: self.hop_fuel_cost(fleet) * FUEL_DEUT_PER_UNIT,
                 ..Resources::default()
             }),
-            room: (fleet_cargo_capacity(fleet, &self.world.pace) - fleet.cargo.total()).max(0.0),
+            hold,
+            room: (hold - fleet.cargo.total()).max(0.0),
             groups: self.npc_fleets.values().filter(|n| !n.ships.is_empty()).fold(KeyMap::default(), |mut groups, n| {
                 *groups.entry(n.location.to_key()).or_insert(false) |=
                     n.behavior != iac_shared::world::NpcBehaviorType::Passive;
@@ -7228,7 +7245,7 @@ impl GameEngine {
         // Otherwise the nearest payday it may reach and work.
         let plan = {
             let reach = self.policy_reach(&fleet, &params, home);
-            let wreck = |n: Hex, hops: u32| reach.repays(self.wreck_worth(n, reach.room), hops);
+            let wreck = |n: Hex, hops: u32| reach.wreck_repays(n, reach.room, hops);
             let contact = |n: Hex, hops: u32| {
                 n != home && n != location && (wreck(n, hops) || self.derelict_site_at(n).is_some())
             };
@@ -7270,8 +7287,11 @@ impl GameEngine {
     }
 
     /// PatrolHome: hunt the hostiles inside `max_range` of home that the
-    /// fleet rates at its engage ratio, scoop what the kill leaves, and wait
-    /// at the dock when there is nothing to hunt.
+    /// fleet rates at its engage ratio, and between fights collect the
+    /// wreckage in range that repays its fuel, the kill's or any other,
+    /// nearest first. It takes the hold home when it is full, when the next
+    /// pile would not fit what room is left, and when there is nothing left
+    /// to fight or collect; there it unloads, is mended and goes out again.
     fn policy_patrol_home(&mut self, fleet_id: u64) -> Result<bool, Box<dyn std::error::Error>> {
         let preset = PolicyPreset::PatrolHome;
         let Some(fleet) = self.fleets.get(&fleet_id).cloned() else { return Ok(false); };
@@ -7304,24 +7324,54 @@ impl GameEngine {
         }
 
         if !at_home && self.has_wreckage(location) && self.handle_collect_salvage(owner, fleet_id).is_ok() {
-            self.push_policy_event(fleet_id, preset, "salvage", "scooping the wreckage of the kill");
+            let killed_here = self.policies.get(&fleet_id).is_some_and(|p| p.work_sector == Some(location));
+            let why = if killed_here {
+                "scooping the wreckage of the kill".to_string()
+            } else {
+                format!("scooping wreckage at {location} that it did not make")
+            };
+            self.push_policy_event(fleet_id, preset, "salvage", &why);
             return Ok(true);
         }
 
-        let plan = {
+        enum Next {
+            Go(Hex, String),
+            Unload(String),
+            Idle(String),
+        }
+        let next = {
             let reach = self.policy_reach(&fleet, &params, home);
-            let contact = |n: Hex, _: u32| n != home && reach.has_hostiles(n);
-            match reach.path_through(location, &contact) {
-                Some(path) => Ok(path[0]),
-                None => Err(format!(
-                    "no contact {} that the fleet rates {:.1}x against",
+            let target = |n: Hex, hops: u32| {
+                n != home && (reach.has_hostiles(n) || reach.wreck_repays(n, reach.hold, hops))
+            };
+            match reach.path_through(location, &target) {
+                Some(path) => {
+                    let (at, hops) = (path[path.len() - 1], path.len() as u32);
+                    if reach.has_hostiles(at) {
+                        Next::Go(path[0], "intercepting contact".to_string())
+                    } else if reach.wreck_repays(at, reach.room, hops) {
+                        Next::Go(path[0], format!("collecting the wreckage at {at}"))
+                    } else {
+                        let pile = self.sector_overrides.get(&at.to_key()).and_then(|o| o.salvage).unwrap_or_default();
+                        Next::Unload(format!(
+                            "the hold has room for {:.0} of the {:.0} units of wreckage at {at}",
+                            reach.room, pile.total(),
+                        ))
+                    }
+                }
+                None => Next::Idle(format!(
+                    "no contact {} that the fleet rates {:.1}x against, and no wreckage that repays the fuel",
                     Self::range_phrase(reach.range, &params), reach.need,
                 )),
             }
         };
-        Ok(match plan {
-            Ok(step) => self.policy_move(fleet_id, step, false, preset, "intercepting contact"),
-            Err(why) => self.policy_stand_down(fleet_id, preset, at_home, &why),
+        Ok(match next {
+            Next::Go(step, why) => self.policy_move(fleet_id, step, false, preset, &why),
+            Next::Unload(why) if at_home => {
+                self.hold_policy(fleet_id, preset, &format!("waiting at the dock for the store to take the cargo aboard: {why}"))
+            }
+            Next::Unload(why) => self.policy_head_home(fleet_id, preset, &format!("returning to unload the salvage: {why}")),
+            Next::Idle(why) => self.policy_stand_down(fleet_id, preset, at_home, &why),
         })
     }
 
@@ -7424,7 +7474,9 @@ impl GameEngine {
 
         // Deposit cargo and refuel; docked fleets stay separate until the
         // player merges them.
+        let aboard = fleet.cargo;
         self.unload_cargo(fleet_id);
+        self.report_unload(fleet_id, aboard);
         self.deliver_charts(fleet_id);
 
         let player = self.players.get(&player_id).ok_or("Player not found")?;
@@ -7435,6 +7487,24 @@ impl GameEngine {
         self.tend_at_home(fleet_id, true);
 
         Ok(())
+    }
+
+    /// A fleet under orders that docks with a hold says what went into the
+    /// stockpile, and what stays aboard for want of room.
+    fn report_unload(&mut self, fleet_id: u64, aboard: Resources) {
+        let Some(preset) = self.policies.get(&fleet_id).map(|p| p.preset) else { return; };
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        let (left, stored) = (fleet.cargo, aboard.sub(fleet.cargo));
+        if stored.total() <= 0.0 { return; }
+        let why = if left.total() > 0.0 {
+            format!(
+                "unloaded {} into the stockpile; {} stay aboard until the store has room",
+                crate::commands::amount_words(stored), crate::commands::amount_words(left),
+            )
+        } else {
+            format!("unloaded {} into the stockpile", crate::commands::amount_words(stored))
+        };
+        self.push_policy_event(fleet_id, preset, "unload", &why);
     }
 
     fn check_npc_encounter(&mut self, fleet_id: u64) -> Result<(), Box<dyn std::error::Error>> {

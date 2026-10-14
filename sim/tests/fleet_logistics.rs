@@ -17,7 +17,7 @@ use iac_shared::protocol::{
 };
 use iac_shared::scaling::{ratio_label, ship_tank, RatioLabel, ResearchLevels};
 use iac_shared::world::{self, NpcBehaviorType};
-use iac_sim::engine::{template_npc_id, Errand, FleetStatus, Ships};
+use iac_sim::engine::{template_npc_id, Errand, FleetStatus, SectorOverride, Ships};
 use iac_sim::snapshot::ExploreCredit;
 use iac_sim::GameEngine;
 
@@ -1151,6 +1151,182 @@ fn a_patrol_that_fought_the_convoy_over_its_own_dock_is_mended_there_and_never_w
     );
     assert_eq!((e.fleet().hull, e.fleet().repair.is_none()), (e.fleet().hull_max, true));
     assert!(reports(&e, mark).iter().all(|(_, why)| !why.contains("mended")), "so the patrol never waited for it: {:?}", reports(&e, mark));
+}
+
+/// A patrol of `ships` at home under `params`, its fuel unbounded, every
+/// lair within a hex of its beat cleared: only the wreckage put out for it
+/// decides where it flies.
+fn quiet_patrol(name: &str, ships: &[(ShipClass, u32)], params: PolicyParams) -> (Empire, Hex) {
+    let mut e = Empire::join(world("persistent"), name);
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let lairs: Vec<u32> = iac_shared::hex::hex_spiral(home, u16::from(params.max_range) + 1)
+        .filter(|h| e.engine.world_gen.generate_sector(*h).npc_template.is_some())
+        .map(|h| h.to_key())
+        .collect();
+    muster(&mut e.engine, fid, ships, home);
+    edit(&mut e.engine, |s| {
+        let player = s.players.get_mut(&pid).unwrap();
+        (player.buildings.metal_storage, player.buildings.deuterium_tank) = (8, 8);
+        player.resources = Resources { metal: 20_000.0, crystal: 20_000.0, deuterium: 50_000.0 };
+        for key in lairs {
+            s.sector_overrides.entry(key).or_insert_with(SectorOverride::default).npc_cleared_tick = Some(s.tick);
+        }
+    });
+    let params = PolicyParams { fuel_budget_pct: 100, ..params };
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, Some(params)).expect("patrol orders");
+    (e, home)
+}
+
+fn drop_wreckage(e: &mut Empire, at: Hex, pile: Resources) {
+    edit(&mut e.engine, |s| {
+        let ov = s.sector_overrides.entry(at.to_key()).or_insert_with(SectorOverride::default);
+        ov.salvage = Some(pile);
+        ov.salvage_despawn_tick = Some(s.tick + 1_000_000);
+    });
+}
+
+const BEAT: PolicyParams = PolicyParams {
+    min_fuel_pct: 10,
+    cargo_return_pct: 85,
+    max_range: 3,
+    engage_ratio_x10: 15,
+    disengage_ratio_x10: 9,
+    fuel_budget_pct: 100,
+    refine: false,
+};
+
+#[test]
+fn a_patrol_flies_out_for_wreckage_it_did_not_make_and_brings_it_home() {
+    let (mut e, home) = quiet_patrol("Gleaner", &[(ShipClass::LightFighter, 10)], BEAT);
+    let fid = e.fid;
+    let at = outward_chain(&e.engine, home, 2)[1];
+    drop_wreckage(&mut e, at, Resources { metal: 300.0, crystal: 100.0, deuterium: 0.0 });
+
+    let mark = e.mark();
+    e.run_until(1200, |e| wreckage(e, at).total() == 0.0 && e.engine.fleets[&fid].location == home);
+    let acts = reports(&e, mark);
+    assert_eq!(
+        acts.iter().filter(|(action, _)| action != "move").cloned().collect::<Vec<_>>(),
+        [
+            ("salvage".to_string(), format!("scooping wreckage at {at} that it did not make")),
+            ("unload".to_string(), "unloaded 300 metal and 100 crystal into the stockpile".to_string()),
+        ],
+        "{acts:?}",
+    );
+    let moves = policy_reasons(&e, mark, "move");
+    assert_eq!(moves[0], format!("collecting the wreckage at {at}"), "{moves:?}");
+    assert!(
+        moves[moves.len() - 1].starts_with("returning: no contact within 3 hops of home that the fleet rates 1.5x against, and no wreckage"),
+        "with the pile aboard and nothing left in range it goes home: {moves:?}",
+    );
+    assert_eq!(e.engine.fleets[&fid].cargo.total(), 0.0);
+}
+
+#[test]
+fn a_patrol_with_a_full_hold_takes_it_home_unloads_is_mended_and_goes_back_for_the_rest() {
+    let (mut e, home) = quiet_patrol("Hauler", &[(ShipClass::LightFighter, 10)], BEAT);
+    let fid = e.fid;
+    let at = outward_chain(&e.engine, home, 1)[0];
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.ships = squadron(ShipClass::LightFighter, 9, &[350]);
+        fleet.location = at;
+    });
+    let hold = e.fleet().cargo_capacity;
+    drop_wreckage(&mut e, at, Resources { metal: 1.6 * hold, crystal: 0.0, deuterium: 0.0 });
+
+    let mark = e.mark();
+    e.run_until(1200, |e| wreckage(e, at).total() == 0.0);
+    assert_eq!(
+        reports(&e, mark),
+        [
+            ("salvage".to_string(), format!("scooping wreckage at {at} that it did not make")),
+            ("move".to_string(), "returning to unload the salvage: cargo 100%".to_string()),
+            ("unload".to_string(), format!("unloaded {} metal into the stockpile", hold.ceil())),
+            ("move".to_string(), format!("collecting the wreckage at {at}")),
+            ("salvage".to_string(), format!("scooping wreckage at {at} that it did not make")),
+        ],
+    );
+    let told = mended(&e, mark);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].starts_with(&format!("fleet {fid} was mended at the home dock: 1 ship(s) made whole")), "{}", told[0]);
+    assert_eq!(e.fleet().hull, e.fleet().hull_max);
+}
+
+#[test]
+fn a_patrol_whose_next_pile_would_not_fit_the_room_left_unloads_first() {
+    let (mut e, home) = quiet_patrol("Tidy", &[(ShipClass::LightFighter, 10)], PolicyParams { cargo_return_pct: 100, ..BEAT });
+    let fid = e.fid;
+    let chain = outward_chain(&e.engine, home, 2);
+    let hold = e.fleet().cargo_capacity;
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.location = chain[0];
+        fleet.cargo.metal = hold - 1.0;
+    });
+    drop_wreckage(&mut e, chain[1], Resources { metal: hold, crystal: 0.0, deuterium: 0.0 });
+
+    let mark = e.mark();
+    e.run_until(1200, |e| wreckage(e, chain[1]).total() == 0.0);
+    let acts = reports(&e, mark);
+    assert_eq!(
+        acts[..3],
+        [
+            (
+                "move".to_string(),
+                format!("returning to unload the salvage: the hold has room for 1 of the {hold:.0} units of wreckage at {}", chain[1]),
+            ),
+            ("unload".to_string(), format!("unloaded {} metal into the stockpile", (hold - 1.0).ceil())),
+            ("move".to_string(), format!("collecting the wreckage at {}", chain[1])),
+        ],
+        "{acts:?}",
+    );
+}
+
+#[test]
+fn a_patrol_passes_over_wreckage_not_worth_the_fuel_to_fetch_it() {
+    let (mut e, home) = quiet_patrol("Frugal", &[(ShipClass::LightFighter, 10)], BEAT);
+    let fid = e.fid;
+    let at = outward_chain(&e.engine, home, 3)[2];
+    let burned = 6.0 * e.engine.hop_fuel_cost(&e.engine.fleets[&fid]) * FUEL_DEUT_PER_UNIT;
+    assert!(burned < e.fleet().cargo_capacity, "the pile fits the hold: {burned:.0}");
+
+    drop_wreckage(&mut e, at, Resources { metal: burned, crystal: 0.0, deuterium: 0.0 });
+    let mark = e.mark();
+    e.run(300);
+    assert!(policy_reasons(&e, mark, "move").is_empty(), "{burned:.0} metal for {burned:.0} deuterium of fuel: {:?}", reports(&e, mark));
+    let held = policy_reasons(&e, mark, "hold");
+    assert!(
+        !held.is_empty()
+            && held.iter().all(|why| why == "no contact within 3 hops of home that the fleet rates 1.5x against, and no wreckage that repays the fuel"),
+        "{held:?}",
+    );
+
+    let hold = e.fleet().cargo_capacity;
+    drop_wreckage(&mut e, at, Resources { metal: hold, crystal: 0.0, deuterium: 0.0 });
+    let mark = e.mark();
+    e.run_until(300, |e| wreckage(e, at).total() == 0.0);
+    assert_eq!(policy_reasons(&e, mark, "move")[0], format!("collecting the wreckage at {at}"));
+}
+
+#[test]
+fn a_patrol_with_a_small_cargo_in_it_brings_home_more_of_the_same_wreckage() {
+    let haul = |ships: &[(ShipClass, u32)]| {
+        let (mut e, home) = quiet_patrol("Convoy", ships, BEAT);
+        let at = outward_chain(&e.engine, home, 2)[1];
+        drop_wreckage(&mut e, at, Resources { metal: 200_000.0, crystal: 0.0, deuterium: 0.0 });
+        let mark = e.mark();
+        e.run(600);
+        let trips = policy_reasons(&e, mark, "unload").len();
+        (200_000.0 - wreckage(&e, at).metal - e.fleet().cargo.metal, trips, e.fleet().cargo_capacity)
+    };
+    let (warships, trips, hold) = haul(&[(ShipClass::LightFighter, 10)]);
+    let (with_cargo, cargo_trips, cargo_hold) = haul(&[(ShipClass::LightFighter, 10), (ShipClass::SmallCargo, 1)]);
+    assert!(
+        with_cargo > 3.0 * warships,
+        "{warships:.0} metal home in {trips} trips with a hold of {hold:.0}, {with_cargo:.0} in {cargo_trips} with a Small Cargo and a hold of {cargo_hold:.0}",
+    );
 }
 
 #[test]

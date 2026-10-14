@@ -3,6 +3,97 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-14 (a patrol brings the salvage home)
+
+`patrol_home` hunted the groups in range of home, scooped the wreckage of
+its own kill where it stood, and went home only when the beat was clear or
+the hold reached `cargo_return_pct`. The owner asked:
+
+> i would like patrol home to also collect salvage and return when cargo
+> full or does another policy do that? like fighting and returning with
+> salvage it good income it seems.
+
+Asked which gap he meant, he answered:
+
+> for patrol-home salvage tweak do what you recommend
+
+**The decision.** `patrol_home` hunts within its range at its engage ratio
+as it did, and between fights it collects salvage: any pile within its
+range that it can reach on lanes it may enter, not only the wreck of its own
+kill, nearest first, and a pile worth the fuel to fetch it by the rule the
+hauling doctrines use. It keeps doing so while its hold has room. When the
+hold is full (`cargo_return_pct`), or the next pile it would fetch would not
+fit, or there is nothing left within range to fight or collect, it flies
+home, unloads, is mended and refitted there as any docked fleet is, and goes
+out again. Its fuel budget, its disengage ratio, its refine switch and its
+way home under bad odds are as they were. Every act says why.
+
+**What undoes it.** `GameEngine::policy_patrol_home` (`sim/src/engine.rs`):
+its search for the next target takes a contact or a pile that repays its
+fuel on an empty hold (`Reach::wreck_repays` with `hold`); taking `|| ...`
+out of that goal is the old patrol, which still scooped what lay where it
+stood.
+
+**What the builder decided within it.** None of it was put to the owner.
+
+- *Contact and pile are one search.* The patrol goes to the nearest of
+  either, by lanes it may enter (`path_through`, fights on the way allowed,
+  as the patrol always flew). A pile in a sector with a group is a contact.
+  Undo: two searches, contacts first.
+- *"Would not fit"* is read with the one rule: the nearest pile is judged on
+  an empty hold, and if what the room left would take of it no longer
+  repays the fuel, the fleet goes home to unload first ("returning to unload
+  the salvage: the hold has room for 40 of the 900 units of wreckage at
+  [5,-3]"). A pile that repays on the room left is fetched, and the
+  `cargo_return_pct` threshold brings it home after. Undo: the `Unload`
+  branch of the patrol.
+- *One rule of "worth the fuel"*: `Reach::wreck_repays`, which
+  `salvage_and_sites` now calls too; it is `repays` on `wreck_worth`, as
+  that doctrine's closure was.
+- *Its own kill's wreck, or another's.* `FleetPolicy::work_sector`, unused
+  by every doctrine but `mine_and_return`, holds for a patrol the sector of
+  its last fight, set when a fight it stood in ends; a pile scooped there is
+  "the wreckage of the kill", anywhere else "wreckage at X that it did not
+  make". New orders other than `mine_and_return` start with no
+  `work_sector` (they started with the sector the fleet stood in, which
+  nothing but `mine_and_return` read). Nothing new is stored, so
+  `SAVE_FORMAT` stays 12; what a stored world plays next moves, so
+  `ECONOMY_VERSION` is 14. Undo: the line in `end_combat`'s loop over the
+  fleets.
+- *Turning home with a full hold* is worded for the patrol "returning to
+  unload the salvage: cargo 87%" (the hauling doctrines still say
+  "returning: cargo 87%"). With nothing left the hold reason is the old one
+  and ", and no wreckage that repays the fuel".
+- *Unloading is said by every doctrine.* A fleet under orders that docks at
+  home with a hold reports `unload` ("unloaded 500 metal and 120 crystal
+  into the stockpile", and what stays aboard for want of room). It is
+  `report_unload` beside `dock_fleet`, so `mine_and_return` and
+  `salvage_and_sites` say it too; making it the patrol's alone would have
+  been a doctrine's name inside docking. Undo: the call in `dock_fleet`.
+- *The bots are not touched.* Their check-in strike wings fly
+  `patrol_home` and now bring salvage home. What it did to them is in
+  `docs/journal.md`.
+
+**Unsure of.**
+
+- Whether it is the income the owner expected. Measured, a patrol alone
+  brings home what it did before to the unit in most runs: the old patrol
+  already scooped its own kills and went home at `cargo_return_pct`, and a
+  Light Fighter's hold (50 times the square root of the pace) is such that
+  a few of them carry what a kill near home leaves, so the hold seldom
+  limits it; fuel does. At
+  season pace ten Light Fighters burned more points of deuterium in a day
+  than they brought home in salvage. The new rule matters where piles the
+  patrol did not make lie in its range: other empires' fights and losses,
+  and the leftovers of its own big kills. The figures are in the journal.
+- A Small Cargo merged into a patrol carries the salvage and works under
+  the doctrine (the scenario shows it), but in the measured runs it only
+  slowed the fleet. The README and the rules say so.
+- The bots' strike wings stay under the doctrine longer, since it now
+  finds work more often, and a world of bots plays differently after the
+  first changed fight. The sum of all totals fell by 0.5 to 2.0% in all
+  five runs measured, inside a spread where single styles moved 18%.
+
 ## 2026-10-14 (Solar Satellites that fall in a raid are rebuilt as defences are)
 
 Since slice 4 a raid at the homeworld is a fight in which the Solar

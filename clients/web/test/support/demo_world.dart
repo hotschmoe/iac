@@ -2057,7 +2057,8 @@ class DemoWorld {
             PolicyPreset.prospect => 'every lane within 32 hops of ${f.location} is charted $within',
             PolicyPreset.mineAndReturn => 'no seam $within repays the fuel to fetch it (stripped tiles refill over hours)',
             PolicyPreset.salvageAndSites => 'board is clear $within: no derelict, no wreckage that repays the fuel',
-            PolicyPreset.patrolHome => 'no contact $within that the fleet rates ${(params.engageRatioX10 / 10).toStringAsFixed(1)}x against',
+            PolicyPreset.patrolHome =>
+              'no contact $within that the fleet rates ${(params.engageRatioX10 / 10).toStringAsFixed(1)}x against, and no wreckage that repays the fuel',
             PolicyPreset.manual => '',
           }));
     }
