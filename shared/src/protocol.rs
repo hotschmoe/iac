@@ -1734,6 +1734,10 @@ pub struct HomeworldState {
     /// Typical power of the next raid, from the empire's building and
     /// research points; the actual raid rolls 0.80 to 1.15 times this.
     pub next_raid_estimate_power: f32,
+    /// A raid can come to this empire: its Shipyard stands at
+    /// `RAID_MIN_SHIPYARD` or it has a defence. While false, `raid` is only
+    /// the raid it would get if it did, and none is on the clock.
+    pub raids_possible: bool,
     /// The raid being fought (`rounds_left`), else the one announced
     /// (`arrival_tick`), else one of typical size were it announced now:
     /// what it flies, and how it would end against the ships, satellites
@@ -2093,6 +2097,22 @@ pub struct BuildingOption {
     pub requires: Vec<Requirement>,
     /// What the building does at its level and at the next.
     pub effects: Vec<Effect>,
+    /// The homeworld's energy once `next` has finished, everything else as
+    /// it stands now; absent at `max_level`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub energy_after: Option<EnergyAfter>,
+}
+
+/// The homeworld's energy as it would stand after one upgrade.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct EnergyAfter {
+    pub made: u32,
+    pub needed: u32,
+    /// `made / needed`, at most 1, as `EnergyState.fraction` is.
+    pub fraction: f64,
+    /// The Solar Plant stands at `MAX_BUILDING_LEVEL`: no further level of
+    /// it can close a shortfall, only satellites and the Fusion Reactor.
+    pub plant_maxed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2181,9 +2201,11 @@ impl HomeworldCatalog {
         research: &ResearchLevels,
         defences: &[u32; DefenceKind::COUNT],
         committed: &[u32; DefenceKind::COUNT],
-        energy_made: u32,
+        satellites: u32,
+        fusion_fed: bool,
         pace: &Pace,
     ) -> Self {
+        let energy_made = scaling::home_power(buildings, research, satellites, fusion_fed, pace).made;
         let building_options = BuildingType::ALL
             .into_iter()
             .map(|b| {
@@ -2199,6 +2221,17 @@ impl HomeworldCatalog {
                     }),
                     requires: building_requirements(buildings, research, b),
                     effects: building_effects(b, buildings, research, pace),
+                    energy_after: (level < scaling::MAX_BUILDING_LEVEL).then(|| {
+                        let mut with = buildings.clone();
+                        with.set(b, level + 1);
+                        let power = scaling::home_power(&with, research, satellites, fusion_fed, pace);
+                        EnergyAfter {
+                            made: power.made,
+                            needed: power.needed,
+                            fraction: power.fraction(),
+                            plant_maxed: buildings.solar_plant >= scaling::MAX_BUILDING_LEVEL,
+                        }
+                    }),
                 }
             })
             .collect();

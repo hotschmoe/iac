@@ -231,7 +231,12 @@ class RaidForecastReadout extends StatelessWidget {
   /// Print where the raid stands. Off for a survey's forecast, which is of
   /// no raid in particular.
   final bool headline;
-  const RaidForecastReadout(this.raid, {super.key, required this.tick, required this.tag, this.rule = true, this.headline = true});
+
+  /// A raid can come at all (`HomeworldState.raids_possible`). When it
+  /// cannot, a forecast of none announced is what a raid would be.
+  final bool possible;
+  const RaidForecastReadout(this.raid,
+      {super.key, required this.tick, required this.tag, this.rule = true, this.headline = true, this.possible = true});
 
   @override
   Widget build(BuildContext context) {
@@ -240,6 +245,7 @@ class RaidForecastReadout extends StatelessWidget {
     final (stands, hot, note) = switch ((raid.roundsLeft, raid.arrivalTick)) {
       (final left?, _) => ('RAID BEING FOUGHT', true, roundsLeftOf(left).toUpperCase()),
       (null, final at?) => ('RAID IN ${clockFmt(at > tick ? at - tick : 0)}', true, 'AGAINST WHAT STANDS HERE NOW'),
+      _ when !possible => ('NO RAID CAN COME', false, 'THE RAID YOU WOULD GET ONCE THE SHIPYARD IS RAISED OR A DEFENCE STANDS'),
       _ => ('NO RAID ANNOUNCED', false, 'ONE OF TYPICAL SIZE, WERE IT ANNOUNCED NOW'),
     };
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [

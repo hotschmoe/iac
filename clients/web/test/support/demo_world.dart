@@ -469,6 +469,7 @@ class DemoWorld {
       satellitePower: 0,
       structurePower: 0,
       nextRaidEstimatePower: _raidEstimate,
+      raidsPossible: true,
       raid: const RaidForecast(
           power: 0, ships: [], odds: RaidOdds(label: RaidLabel.repelled, destroyed: 1, outlasted: 0, lost: 0, kept: 1, raidersKept: 0)),
     );

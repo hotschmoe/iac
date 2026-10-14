@@ -524,8 +524,14 @@ def odds_words(o):
             f"the raiders {o['raiders_kept'] * 100:.0f}% of theirs)")
 
 
-def forecast_words(raid, now):
-    """The raid a `raid` forecast describes: when, what it flies, and how it would end against what stands there now."""
+def forecast_words(raid, now, possible=True):
+    """The raid a `raid` forecast describes: when, what it flies, and how it would end against what stands there now.
+    `possible` is `HomeworldState.raids_possible`: while it is false a forecast of typical size is only what a
+    raid would be, and none is on the clock."""
+    if not possible and raid.get("arrival_tick") is None and raid.get("rounds_left") is None:
+        return (f"NO RAID IS ON THE CLOCK: no raid comes while the Shipyard is below the raid threshold and no defence "
+                f"stands. This is the raid you would get once one does: power {raid['power']:.0f}, flying "
+                f"{units_text(raid['ships'], 'class')}; forecast {odds_words(raid['odds'])}")
     when = (f"RAID BEING FOUGHT, {raid['rounds_left']} round(s) left at the most" if raid.get("rounds_left") is not None
             else f"RAID ARRIVES in {age(raid['arrival_tick'] - now)}" if raid.get("arrival_tick") is not None
             else "next raid, at its typical size")
@@ -929,7 +935,7 @@ def derived_alerts(fs, fleets):
         elif cap and have / cap >= 0.85:
             out.append(f"{k} stockpile at {100 * have / cap:.0f}% of cap")
     raid = hw.get("raid")
-    if raid and raid["odds"]["label"] in ("lost", "at_risk"):
+    if raid and hw.get("raids_possible", True) and raid["odds"]["label"] in ("lost", "at_risk"):
         out.append(forecast_words(raid, fs["tick"]))
     for f in fleets:
         if f.get("cargo_blocked"):
@@ -1017,6 +1023,12 @@ def build_state(fs, board=None, left=None, alerts=None):
                 cover = short_cover(short, hw.get("production") or {})
                 if cover is not None:
                     d["covered_in_s"] = math.ceil(cover)
+        after = next((b.get("energy_after") for b in hw["catalog"]["buildings"] if b["building_type"] == label), None) \
+            if section == "buildings" else None
+        if after:
+            d["energy_after"] = round(after["fraction"], 3)
+            if after["plant_maxed"]:
+                d["solar_plant_maxed"] = True
         nxt.setdefault(section, {})[label] = d
     idle = [n for n, q in qs.items() if q["open"] > 0]
     docked = {s["class"]: s["count"] for s in hw.get("docked_ships") or []}
@@ -1033,7 +1045,8 @@ def build_state(fs, board=None, left=None, alerts=None):
         "levels": {"buildings": {b["building_type"]: b["level"] for b in hw["buildings"]},
                    "research": {r["tech"]: r["level"] for r in hw["research"]}},
         "queues": qs, "idle": idle, "next": nxt, "fleets": fleets, "docked": docked,
-        "defence": {"power": round(hw.get("home_defence_power", 0)), "raid": hw.get("raid")},
+        "defence": {"power": round(hw.get("home_defence_power", 0)), "raids_possible": hw.get("raids_possible", True),
+                    "raid": hw.get("raid")},
         "world": {"pace": world.get("pace"), "preset": world.get("preset")},
         "alerts": derived_alerts(fs, fleets) + list(alerts or []),
     }
@@ -1186,7 +1199,8 @@ def cmd_status(name, brief=False):
         lose = round((1 - raid["odds"]["kept"]) * 100) if raid else 0
         print("Stock " + " ".join(f"{k[0]}={st[k]:.0f}/{doc['cap'][k]}" for k in RES) + "  income/s " + "/".join(f"{doc['per_s'][k]:.4g}" for k in RES)
               + (f"  raid forecast {raid['odds']['label'].upper().replace('_', ' ')}"
-                 + (f", losing about {lose}% of what stands there" if lose else ", nothing lost") if raid else ""))
+                 + (f", losing about {lose}% of what stands there" if lose else ", nothing lost")
+                 + ("" if doc["defence"]["raids_possible"] else " IF ONE CAME (none is on the clock)") if raid else ""))
         for n, q in doc["queues"].items():
             print("  " + queue_line(n, q))
         if fs.get("outpost"):
@@ -1252,7 +1266,7 @@ def summarize(fs, doc, odds):
     stand = [f"{d['count']}x {d['kind']}" for d in hw.get("defences") or [] if d["count"]]
     print("Defences: " + (", ".join(stand) or "none") + f"; Solar Satellites: {hw.get('satellites', 0)}")
     if hw.get("raid"):
-        print("  " + forecast_words(hw["raid"], fs["tick"]))
+        print("  " + forecast_words(hw["raid"], fs["tick"], hw.get("raids_possible", True)))
     docked = {s["class"]: s["count"] for s in hw.get("docked_ships") or []}
     print("Docked ships: " + (", ".join(f"{n}x {c}" for c, n in docked.items()) or "none"))
     if fs.get("outpost"):

@@ -823,13 +823,15 @@ fn sample_homeworld() -> HomeworldState {
         satellite_power: 126.6,
         structure_power: 1769.9,
         next_raid_estimate_power: 300.25,
+        raids_possible: true,
         raid: RaidForecast { arrival_tick: Some(4_990), rounds_left: None, power: 1_350.5, ships: raid_ships(), odds: held_odds() },
         catalog: HomeworldCatalog::new(
             &levels,
             &researched,
             &[12, 0, 0, 3, 0, 0, 1, 0],
             &[14, 0, 0, 3, 0, 0, 1, 1],
-            412,
+            6,
+            true,
             &Pace::PERSISTENT,
         ),
     }
@@ -866,6 +868,7 @@ fn idle_homeworld() -> HomeworldState {
         satellite_power: 0.0,
         structure_power: 0.0,
         next_raid_estimate_power: 55.5,
+        raids_possible: false,
         raid: RaidForecast {
             arrival_tick: None,
             rounds_left: None,
@@ -878,7 +881,8 @@ fn idle_homeworld() -> HomeworldState {
             &ResearchLevels::default(),
             &[0; DefenceKind::COUNT],
             &[0; DefenceKind::COUNT],
-            22,
+            0,
+            false,
             &Pace::PERSISTENT,
         ),
     }
@@ -2553,7 +2557,7 @@ fn catalog_levels(files: &mut Files) {
                 research.set(t, level.min(research_max_level(t)));
             }
             let none = [0; DefenceKind::COUNT];
-            let catalog = HomeworldCatalog::new(&buildings, &research, &none, &none, 0, &pace);
+            let catalog = HomeworldCatalog::new(&buildings, &research, &none, &none, 0, true, &pace);
             serde_json::to_string(&catalog).unwrap()
         })
         .collect();

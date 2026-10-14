@@ -148,6 +148,33 @@ fn an_empire_grows_fights_charts_and_survives_a_raid() {
 }
 
 #[test]
+fn a_short_order_without_reserve_is_passed_over_by_one_that_can_be_paid() {
+    let mut e = recruit("Pass");
+    let pid = e.pid;
+    let cost = |e: &Empire, b: BuildingType| {
+        e.state().homeworld.catalog.buildings.iter().find(|o| o.building_type == b).and_then(|o| o.next).expect("upgrade available").cost
+    };
+    let cheap = cost(&e, BuildingType::MetalMine);
+    assert!(cost(&e, BuildingType::DeuteriumSynthesizer).metal > cheap.metal);
+    edit(&mut e.engine, |s| {
+        let player = s.players.get_mut(&pid).unwrap();
+        player.resources = cheap;
+        player.research.computer_technology = iac_shared::constants::BUILD_SLOT_LEVELS[0];
+    });
+    assert_eq!(e.state().homeworld.build_slots, 2);
+    let mark = e.mark();
+    e.order(Command::Build { building_type: BuildingType::DeuteriumSynthesizer, reserve: false }).expect("short head");
+    e.order(Command::Build { building_type: BuildingType::MetalMine, reserve: false }).expect("payable order behind it");
+    let pending = e.state().homeworld.build_pending;
+    assert_eq!(pending.iter().map(|q| q.waiting_on).collect::<Vec<_>>(), [WaitReason::Resources]);
+    e.run_until(200, |e| e.state().homeworld.build_pending.is_empty());
+    let started = e.queue_events(mark);
+    let metal = item_started(&started, "Metal Mine").expect("the payable order started");
+    let deuterium = item_started(&started, "Deut").expect("the short head started once paid");
+    assert!(metal < deuterium, "the payable order started past the short head");
+}
+
+#[test]
 fn a_batch_larger_than_the_store_is_refused_though_refunds_would_pay_for_it() {
     let mut e = Empire::join(world("test"), "Hoard");
     let pid = e.pid;

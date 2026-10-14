@@ -40,6 +40,7 @@ class Inspector extends StatelessWidget {
         const SizedBox(height: 6),
         Text(s.subtitle, style: T.mono(size: 18, color: C.a200, weight: FontWeight.w500)),
         if (s.effects.isNotEmpty) ..._effects(s.effects),
+        if (s.energyAfter case final after?) ..._energyAfter(after),
         if (s.ship case final ship?) ..._shipStats(ship),
         if (s.defence case final defence?) ..._defenceStats(defence),
         if (cost != null) ...[
@@ -126,6 +127,21 @@ class Inspector extends StatelessWidget {
                   TextSpan(text: effectValue(e.kind, next), style: T.mono(size: 11, color: C.a100, weight: FontWeight.w600)),
                 ],
               ]))),
+      ];
+
+  List<Widget> _energyAfter(proto.EnergyAfter after) => [
+        Kv('Energy after',
+            key: const ValueKey('hw-energy-after'),
+            vw: Text.rich(TextSpan(children: [
+              TextSpan(
+                  text: '${(after.fraction * 100).round()}%',
+                  style: T.mono(size: 11, color: after.fraction < 1 ? C.ember : C.text, weight: FontWeight.w600)),
+              TextSpan(
+                  text: '  ${groupDigits(after.made)} MADE / ${groupDigits(after.needed)} NEEDED',
+                  style: T.mono(size: 11, color: C.text3)),
+            ]))),
+        if (after.plantMaxed)
+          Text('SOLAR PLANT AT ITS TOP LEVEL', key: const Key('hw-plant-maxed'), style: T.mono(size: 10.5, color: C.ember)),
       ];
 
   List<Widget> _fight(double hull, double shield, double weapon, double power) => [
