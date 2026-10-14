@@ -1,3 +1,3 @@
 [
-{"canonical":{"end_tick":37,"fleet_id":33,"kind":"SiteExplorationStarted","sector":{"q":34,"r":-35},"tick":59,"tier":36,"type":"event"},"input":{"end_tick":37,"fleet_id":33,"kind":"SiteExplorationStarted","sector":{"q":34,"r":-35},"tick":59,"tier":36,"type":"event"}}
+{"canonical":{"end_tick":53,"fleet_id":49,"kind":"SiteExplorationStarted","sector":{"q":50,"r":-51},"tick":67,"tier":52,"type":"event"},"input":{"end_tick":53,"fleet_id":49,"kind":"SiteExplorationStarted","sector":{"q":50,"r":-51},"tick":67,"tier":52,"type":"event"}}
 ]

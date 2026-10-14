@@ -10,8 +10,9 @@ The world runs at a fixed pace (`./play status` shows it): a one-hour session
 normally runs at x600, where a mine upgrade takes seconds to minutes, a
 competent player builds a first Cruiser after about 54 minutes and the endgame
 is about two and a half hours of play away. Check `./play costs` for real
-times rather than guessing. Play the whole hour: keep queues busy (they hold
-three items, and waiting items cost nothing until they start), keep fleets
+times rather than guessing. Play the whole hour: keep queues busy (`state`
+gives each queue's `slots` running at once and `depth`, the most it holds;
+waiting buildings and research cost nothing until they start), keep fleets
 doing something, spend before a stockpile reaches its cap, and use
 `play wait --until idle` while timers run instead of stopping. Do not end your session
 early. When under 6 minutes remain, write your feedback (see the end).
@@ -28,8 +29,10 @@ run on the same machine: never kill, signal or inspect processes (no `kill`,
 ## Your tool: `play` (run it from your player directory)
 
 ```
-./play state             ONE compact JSON line, instant: stock, caps, income/s, levels, queues (running, waiting, shortfalls),
-                         idle queues, next costs, fleets, score and rank, minutes left, alerts. Read this every loop.
+./play state             ONE compact JSON line, instant: stock, caps, income/s, levels, queues (running, waiting, shortfalls,
+                         and a note when a free slot starts nothing), idle queues, next costs (with what is short), fleets,
+                         score (rank, bonus room, the leader and the gap), minutes left, alerts. Read this every loop.
+                         `--keys stock,queues,score` prints only the top-level keys named.
 ./play status [--brief]  the same for reading: score/rank/time/idle queues/scoring rule first, then queues with their waiting items
 ./play costs [what]      next 3 levels of every upgrade: cost, time, what each unlocks, mine payback (buildings|research|ships|defences)
 ./play score [rows]      the leaderboard (humans and AI agents share one table; built-in bots are listed under it, unranked)
@@ -37,7 +40,8 @@ run on the same machine: never kill, signal or inspect processes (no `kill`,
 ./play sector Q R        one sector in detail (LIVE / STALE marking, threat and odds, ore reserve and refill time)
 ./play preview F [Q R..] fuel, threat and odds for fleet F jumping to adjacent sectors; with no Q R, every exit
 ./play odds F Q R [Q R..] the odds of fleet F in any sectors, near or far, seen or not (the server works them out; see Threat)
-./play do '<json>' ['<json>' ...]  send commands in order (or one JSON array); one result line each; returns at the server's next tick
+./play do '<json>' ['<json>' ...]  send commands in order (or one JSON array); one result line each, the server's answer
+                         to that very order; stops at the first order refused (--keep-going sends the rest anyway)
 ./play events [--mine]   events since you last looked, collapsed (scans become one line, combat rounds one line per fight)
 ./play wait [secs] [--until idle|event|done]  sleep up to 45 s (max 60), return early when something needs you
 ./play rules             this file
@@ -48,18 +52,29 @@ and a mine at this pace finishes in seconds, so do not poll in a loop of single
 commands. The loop that works:
 
 1. `./play state` (instant). Look at `idle` (queues with a free slot and nothing waiting), `queues.*.room`
-   (items you can still add; each queue holds 3) and `next.*.<name>.ok` (unlocked and payable now).
+   (items you can still add; `slots` and `depth` are the live numbers for your Computer Technology),
+   `queues.*.note` (why a free slot starts nothing: a `reserve` holding it, or every waiting order short, with
+   the time to cover the first) and `next.*.<name>.ok` (unlocked and payable now; when it is not, `short` says
+   what is missing by resource and `covered_in_s` how long your income takes to cover it).
 2. Send every order you want in ONE call: `./play do '{"action":"build","building_type":"MetalMine"}'
    '{"action":"research","tech":"EnergyTechnology"}' '{"action":"build_ship","ship_class":"LightFighter","count":1}'`.
    You get one line per command (`ok ... -> started, done in 3s`, `queued [0] waiting for 35 metal`, or `ERR ...`) and
-   a `queues:` line. Orders are spaced about 0.25 s apart by the tool, so a batch stays polite.
+   a `queues:` line. Each line is the server's answer to that order: the tool sends a question behind every order
+   and the server answers in order, so a refusal is never put on the wrong line. The batch stops at the first
+   order refused and lists what it did not send (`NOT SENT ...`), so a `load` refused does not send the `move`
+   after it with an empty hold; `--keep-going` sends every order anyway. An order takes up to a tick (about a
+   second) to be answered, so a batch of five takes a few seconds; `--keep-going` answers them all in one tick.
 3. `./play wait --until idle` returns as soon as a queue frees up or becomes payable (an alert returns it too),
    so a 3-second build does not cost you a 45-second sleep. `wait` never sleeps longer than 60 s, so it will not
    hit your shell's timeout; call it again if nothing happened. `--until event` also returns on completions,
    arrivals and fights; `--until done` returns when all queues and fleets have finished.
 
 Scoring is shown at the top of `status`: unspent stockpile scores nothing, and combat plus exploration together
-add at most 25% of core. `state.score` is refreshed every few seconds.
+add at most 25% of core. `state.score` is refreshed every few seconds. Its `bonus` is the server's figures for you:
+`banked` (combat plus explore earned), `cap` (what they may add now), `room` (cap less banked: points that still
+score, below zero by as many as you are over) and `core_to_count` (the core at which everything banked counts, past
+which another chart or kill scores again). `leader` is first place's name and score and the `gap` to you. The
+`Standing:` line of `status` says both in words.
 
 Moving: `move` targets must be a sector listed in your fleet's `exits` (the
 direction labels E/NE/NW/W/SW/SE are shown). Each jump costs fuel and puts the
@@ -104,7 +119,7 @@ can pick up where you left off if your session is restarted.
 | `cancel_queued` | `queue_type`, `id` | remove the item with that `id` while it still waits. A waiting building or tech paid nothing, so nothing comes back; a waiting batch paid when it was ordered and gets 50% back. A `Queue` event confirms it. Refused, not redirected, when the id is not waiting in the named queue |
 | `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home` (shortest real route home, charted or not), `charted_hops_home` (shortest route over sectors you have entered, null when there is none), `route_unexplored` (the `hops_home` route crosses sectors you have never entered), `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, and the odds `ratio` and `label` (`safe`, `favourable`, `even`, `risky`, `deadly`), all for the fleet you name, not your strongest. `ratio` is not `fleet_power / est_power`: see Threat. For a fleet in a fight the jump is flight and the reply also carries `flight`, the quote of the fleet row's `flight` for this `target`: its `chase` is absent when no group would follow there (home ground, the hub and a sector an outpost stands in are refuges) |
 | `odds` | `fleet_id`, `sectors:[{q,r},...]` (at most 256) | do not move: reply `odds` with `fleet_id` and, for each sector in the order asked, `{sector, threat, ratio, label}`: how that fleet would fare there. Any sector may be named: adjacent or far, the one the fleet is in, seen or never seen |
-| `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit, plus `bots` (same rows, ranked among themselves) when the world has built-in bots |
+| `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit, plus `bots` (same rows, ranked among themselves) when the world has built-in bots, plus `bonus` (`banked`, `cap`, `room`, `core_to_count`: your combat and exploration points against what they may add) |
 | `split` | `fleet_id`, `ships:[{class,count},...]`, `damaged_first` (default false) | detach so many ships of each class named into a new fleet in the same sector; at home this launches docked ships. A ship has no id: a class is named once with a count, the whole ships of the class go first, or the damaged ones from the least hull up with `damaged_first: true`. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet keeps the weapons, shields and armour the old one fights with, and its id arrives in an `Alert` event. Refused with `InvalidTarget` and a sentence naming the class at fault (a count of 0, a class named twice, more than the fleet has, every ship taken: "fleet 2 has 6 Light Fighter, not the 9 the split names"), `FleetLimitReached` at the caps |
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle, at most 5000 ships together); ships, cargo and fuel pool, the other fleet's standing orders end. Where the two were refitted at different levels of Weapons, Shielding or Armour Technology the merged fleet fights at the lower of each until it docks at home, and an `Alert` says so |
 | `exchange` | `fleet_id`, `give`, `want` (`metal`, `crystal`, `deuterium`, lower case), `amount` (optional) | sell `amount` of `give` from the fleet's hold to the hub's exchange and take `want` into the hold; without `amount`, all of `give` aboard. The fleet must stand idle on the hub sector (0,0). The answer is an `Exchanged` event (what was given and received, the fee, the meter before and after; see The hub and its exchange). Refused with nothing changed and a sentence saying why: `NotInSector` away from the hub, `OnCooldown` in transit, `NoResources` for more than the hold carries or none, `CargoFull` when what comes back would not fit, `InvalidCommand` for one resource named twice, an amount that is not positive, or a trade that returns less than one unit |
@@ -117,12 +132,15 @@ can pick up where you left off if your session is restarted.
 | `upgrade_outpost` | none | build the next level of your outpost, paid in full from the outpost's own store at that moment. The answer is an `Alert` (info). Refused with `InsufficientResources` and the exact shortfall when the store does not cover it, `MaxLevelReached` at level 3, `InvalidCommand` with no outpost, while it is building or repairing, or while it is breached. `outpost.upgrade_refusal` in your state is that refusal's sentence beforehand, absent when the order would be accepted |
 | `abandon_outpost` | none | give up your outpost. Its store is left as wreckage in the sector for 180 ticks, its score is gone, nothing is refunded, and you may found another. `InvalidCommand` with no outpost |
 
-Standing orders are a separate message type (not a command):
+Standing orders are a separate message type (not a command), and `./play do` sends them like any order:
 
 ```json
 {"type":"policy_update","fleet_id":2,"preset":"salvage_and_sites",
  "params":{"min_fuel_pct":10,"cargo_return_pct":85,"max_range":4,"engage_ratio_x10":15,"disengage_ratio_x10":9,"fuel_budget_pct":20}}
 ```
+
+`./play do` also takes `{"action":"policy_update",...}` and sends it as the message above. Sent straight to the
+headless client in that form it is refused with a `client_error` that gives the form it takes.
 
 `params` is optional, and so is every field in it: send only what you want to
 change (`"params":{"max_range":2}`) and the rest take their defaults. A fleet
@@ -143,10 +161,19 @@ fly by hand has no `policy` field.
 
 Fuel safety: the autopilot returns home when its fuel falls below the cost of
 the shortest route home (charted or not) plus the `min_fuel_pct` reserve, and it
-refuses any outward jump that would leave less than that. A range limit
-shorter than `max_range` (the tank cannot afford the round trip) is reported
-in the hold reason. Whenever a doctrine stands still it says why in a
-`PolicyAction` event (`action: "hold"`).
+refuses any outward jump that would leave less than that. It sets out only for
+a sector it can fly to and home from on the fuel aboard, its reserve kept,
+counting the jumps over the real lanes, which wind: a sector four hexes away
+may be six jumps. Turning home, it takes the way the fuel it carries flies (a
+lane without a fight first, then one with), and says how many jumps home is,
+by which sector, and the fuel against what it carries; when no way home is
+within its fuel it flies the shortest, as near home as it can get, and says
+so. Whenever a doctrine stands still it says why in a `PolicyAction` event
+(`action: "hold"`), naming the limit that holds it: odds below the engage
+ratio, the fuel there and back, or the range (with the tank named when the
+tank, not `max_range`, sets it). A hold is told once, when it begins, and again
+only when its reason changes; a fleet that went on holding for the same reason
+says nothing more.
 
 Fuel budget: refuelling is paid in deuterium ahead of every queue, so every
 standing order carries a bound on it. The fleet earns an allowance at
@@ -561,6 +588,14 @@ What every doctrine does:
   fight had earned: a group pays its wreckage and its score when it is
   destroyed and not before. `recall` is the other way out: at once, all the
   way home, for twice the fuel and a chance of harm to every ship.
+  *Caught while charging.* The same holds for a fleet that ordered a jump
+  before any fight: if a group attacks it in its sector while its jump
+  charges, it is in the fight as a fleet that is leaving. It is fired on
+  every round until the jump lands and does not fire back, and the jump is
+  not stopped (`stop` calls it off, its fuel forfeit, and the fleet then
+  fights). This is meant: a fleet that has paid for its jump has turned its
+  back. One `Alert` (warning) says so when it happens, with the ticks until
+  the jump lands. The home dock mends what it took when it lands at home.
   *Pursuit.* When the last fleet has left, a group goes after the strongest
   of those that jumped out, if it was beating it (its power at least the
   fleet's) and the fleet is next door: convoys never, patrols one jump,
@@ -612,10 +647,15 @@ What every doctrine does:
   `losses` so far, and in the full state the `last_round`, which a tick
   update carries as its `BattleRound` event instead. Ships that break up
   in a `recall` are a `ShipsLost` event.
-  Victors drop salvage (`FleetDestroyed.salvage`
-  is exactly the pile `collect_salvage` can take; it lasts 180 ticks, its
-  sector view carries `salvage_despawn_tick`, and a `SalvageDespawned` event
-  says when one expires). You only receive combat
+  Victors drop salvage. `FleetDestroyed.salvage` is what that kill added to
+  the sector's pile, and `CombatEnded.salvage` the sum of the fight's kills;
+  wreckage left there from before stacks with it, and then
+  `CombatEnded.salvage_pile` is the whole pile, which is what
+  `collect_salvage` takes and the sector view shows (absent when the fight's
+  wreckage is all there is). The pile lasts 180 ticks from the last kill,
+  its sector view carries `salvage_despawn_tick`, and a `SalvageDespawned`
+  event says when one expires. `play` prints the fight's wreckage and, when
+  it joined a pile, the pile. You only receive combat
   events for fights your fleets or homeworld are in, or that happen in a
   sector where you have a fleet or your homeworld. Each carries `owner`
   (empire name, `null` for NPCs) and `mine`; losing a fleet also raises a
@@ -722,7 +762,11 @@ What every doctrine does:
   is rebuilt), `raiders_kept` the raiders' share, and `label` is `repelled`
   (destroyed every time), `held` (never lost, not always destroyed),
   `at_risk` (lost in some) or `lost`. Build against the label, not against
-  a power figure: nothing compares two powers any more.
+  a power figure: nothing compares two powers any more. `repelled` and
+  `held` say the raid does not breach the dock, not that it costs nothing:
+  what falls before the last raider does is lost, and `kept` below 1 is
+  that cost (0.82 is about a fifth of what stands at home lost). `play`
+  says "REPELLED and you LOSE about 18% of what stands there" for it.
   **The fight.** When the raid arrives it stands at your homeworld and
   fights the next tick: the round of every fight (Combat, above), one a
   tick, the raiders against every ship of yours standing at home, every
@@ -770,10 +814,21 @@ What every doctrine does:
   `satellites_lost` (those that fell, before the rebuild),
   `structures_lost`, `structures_restored` (the defences alone),
   `resources_lost`, `protected_kept`, and for a destroyed raid `salvage_dropped` and
-  `salvage_despawn_tick`. The wreckage is on your own planet, so
+  `salvage_despawn_tick`. `defended: true` with something in `lost` is a
+  raid repelled at a cost. The wreckage is on your own planet, so
   a fleet docked at home scoops it into storage by itself, up to what the
-  stores hold (`SalvageCollected` says what); with no fleet docked, or the
-  stores full, an `Alert` fires once when 60 s are left.
+  stores hold (a `Stockpile` event with `cause: "wreckage"` says what); with
+  no fleet docked, or the stores full, an `Alert` fires once when 60 s are
+  left.
+- **What enters or leaves the stockpile** — besides production and what
+  you pay for orders, repairs and fuel, the stockpile changes only when a
+  hold is emptied into it at the home dock (a fleet docked with cargo, an
+  `unload`, or the cargo of ships a fleet lost there), when `load` fills a
+  hold from it, or when a docked fleet scoops wreckage on the homeworld.
+  Each is a `Stockpile` event: `fleet_id`, `cause` (`unloaded`, `loaded`,
+  `wreckage`) and the `amount`. So what an exchange put in a hold appears
+  in the stockpile when the fleet docks, and `play` prints it as
+  "STOCKPILE: fleet 84 unloaded into the stockpile: 4312/0/0".
 - **The hub and its exchange** — the sector at the centre, 0,0, is a neutral
   post: empty space with no ore, no hostile group and no derelict, and no
   hostile group wanders in. `status` names it on the World line. A fleet

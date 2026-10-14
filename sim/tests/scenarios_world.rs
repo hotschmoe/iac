@@ -16,8 +16,8 @@ use iac_shared::hex::{hex_spiral, Hex};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{
     AlertLevel, BattleOutcome, BattleRoundEvent, BattleSide, ChaseForecast, CombatEndedEvent, Command, ErrorCode,
-    EventKind, Fleeing, HarvestResource, PolicyParams, PolicyPreset, Pursuit, PursuitEvent, PursuitPhase, ThreatBasis,
-    Volley,
+    EventKind, Fleeing, HarvestResource, PolicyParams, PolicyPreset, Pursuit, PursuitEvent, PursuitPhase, StockpileCause,
+    ThreatBasis, Volley,
 };
 use iac_shared::scaling::{self, RatioLabel, ShipyardItem};
 use iac_shared::world::NpcBehaviorType;
@@ -63,6 +63,53 @@ fn an_uncollected_pile_despawns_in_front_of_the_fleet_that_made_it() {
     assert_eq!(gone.len(), 1);
     assert_eq!((gone[0].sector, gone[0].resources), (at, pile));
     assert!(engine.sector_overrides[&at.to_key()].salvage.is_none());
+}
+
+#[test]
+fn every_report_of_a_kills_wreckage_says_the_same_figures_and_names_the_pile_it_joins() {
+    let mut engine = world("persistent");
+    let (pid, fid) = join(&mut engine, "Tally");
+    let at = lone_fighter_sector(&engine, Passive);
+    let kills = |events: &[iac_shared::protocol::GameEvent]| {
+        events.iter().fold(Resources::default(), |sum, e| match &e.kind {
+            EventKind::FleetDestroyed(d) if d.is_npc => sum.add(d.salvage),
+            _ => sum,
+        })
+    };
+    let ended = |events: &[iac_shared::protocol::GameEvent]| {
+        events.iter().find_map(|e| match &e.kind {
+            EventKind::CombatEnded(c) => Some(c.clone()),
+            _ => None,
+        }).expect("the fight ended")
+    };
+
+    let first = fight(&mut engine, pid, fid, at);
+    let alone = ended(&first);
+    assert_eq!((alone.salvage, alone.salvage_pile), (Some(kills(&first)), None), "a kill on clear ground: one figure");
+    let left = kills(&first);
+
+    horde(&mut engine, 7_000_001, at, &[(ShipClass::LightFighter, 1)], 1.0);
+    let outcome = engine.execute(pid, Command::Attack { fleet_id: fid, target_fleet_id: 7_000_001 });
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    let second = run_until(&mut engine, 10, |e| e.active_combats.is_empty());
+    let stacked = ended(&second);
+    let dropped = kills(&second);
+    assert!(dropped.total() > 0.0);
+    assert_eq!(stacked.salvage, Some(dropped), "the fight's wreckage is the sum of its kills, not the pile");
+    assert_eq!(stacked.salvage_pile, Some(left.add(dropped)), "and the pile it joins is named apart");
+    assert_eq!(engine.sector_overrides[&at.to_key()].salvage, stacked.salvage_pile, "which is what lies there");
+
+    let outcome = engine.execute(pid, Command::CollectSalvage { fleet_id: fid });
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    let scooped = run(&mut engine, 2).iter().find_map(|e| match &e.kind {
+        EventKind::SalvageCollected(c) => Some((c.resources, c.remaining.unwrap_or_default())),
+        _ => None,
+    });
+    let (took, rest) = scooped.expect("the fleet scooped");
+    let pile = stacked.salvage_pile.unwrap();
+    for kind in ResourceKind::ALL {
+        assert!((took.get(kind) + rest.get(kind) - pile.get(kind)).abs() < 1e-9, "{kind:?}: {took:?} + {rest:?} against {pile:?}");
+    }
 }
 
 #[test]
@@ -172,7 +219,8 @@ fn a_fleet_docked_at_home_scoops_what_fits_and_the_rest_stays_with_an_alert() {
     assert!(p.resources.metal >= small.metal && p.resources.crystal >= small.crystal, "{:?}", p.resources);
     let home = p.homeworld;
     assert!(engine.sector_overrides[&home.to_key()].salvage.is_none());
-    assert!(events.iter().any(|e| matches!(&e.kind, EventKind::SalvageCollected(c) if c.resources == small && c.remaining.is_none())));
+    assert!(events.iter().any(|e| matches!(&e.kind, EventKind::Stockpile(s) if s.cause == StockpileCause::Wreckage && s.amount == small)));
+    assert!(!events.iter().any(|e| matches!(&e.kind, EventKind::SalvageCollected(_))), "nothing went into a hold");
 
     let cap = scaling::storage_cap(&p.buildings, &engine.pace());
     edit(&mut engine, |s| s.players.get_mut(&pid).unwrap().resources = cap);
@@ -352,8 +400,8 @@ fn a_prospector_with_nothing_left_in_range_holds_and_says_why_without_flooding()
     assert!(actions.iter().all(|(a, _)| a != "move"), "everything in range is charted: nothing to move to");
     let holds: Vec<_> = actions.iter().filter(|(a, _)| a == "hold").collect();
     assert!(!holds.is_empty(), "the hold must be announced");
-    assert!(holds[0].1.contains("within 2 hops of home"), "{}", holds[0].1);
-    assert!(holds.len() <= 4, "the same hold must not flood events: {}", holds.len());
+    assert!(holds[0].1.contains("and the doctrine goes no farther than 2 hops of home"), "{}", holds[0].1);
+    assert_eq!(holds.len(), 1, "the same hold is told once: {holds:?}");
     assert_eq!(engine.fleets[&fid].location, home);
 }
 
@@ -374,15 +422,15 @@ fn a_prospector_goes_back_for_the_chart_a_lost_fleet_never_brought_home() {
 }
 
 #[test]
-fn a_standing_hold_is_reported_once_a_minute_not_every_evaluation() {
+fn a_standing_hold_is_reported_when_it_begins_and_not_while_it_goes_on() {
     let (mut engine, ..) = prospector("Patient", false, 4);
     let holds = |events: Vec<iac_shared::protocol::GameEvent>| {
         policy_actions(&events).into_iter().filter(|(a, _)| a == "hold").collect::<Vec<_>>()
     };
     let first_minute = holds(run(&mut engine, 55));
     assert_eq!(first_minute.len(), 1, "one report, not one per evaluation: {first_minute:?}");
-    let later = holds(run(&mut engine, 125));
-    assert!(later.len() <= 3, "at most one a minute afterwards: {later:?}");
+    let later = holds(run(&mut engine, 300));
+    assert!(later.is_empty(), "nothing more while the reason stays the same: {later:?}");
 }
 
 #[test]
@@ -478,7 +526,10 @@ fn a_mining_fleet_brings_the_ore_in_reach_home_and_then_waits_for_the_seams_to_r
     assert!(moves(&idle).is_empty(), "stripped seams are left to refill: {:?}", moves(&idle));
     assert_eq!(engine.fleets[&fid].location, home);
     assert_eq!(engine.fleets[&fid].cargo.total(), 0.0, "what was mined is in the stockpile");
-    assert!(holds(&idle).iter().any(|why| why.contains("repays the fuel")), "{:?}", holds(&idle));
+    let worked = policy_actions(&events);
+    let told: Vec<&str> = holds(&worked).into_iter().chain(holds(&idle)).collect();
+    assert!(told.last().is_some_and(|why| why.contains("repays the fuel")), "the hold it went on with was told when it began: {told:?}");
+    assert!(holds(&idle).len() <= 1, "and is not told again while it goes on: {:?}", holds(&idle));
     assert!(engine.players[&pid].resources.total() > 0.5 * in_reach);
 }
 
@@ -638,13 +689,13 @@ fn a_mauled_fleet_under_orders_goes_home_to_be_mended_before_it_does_anything_el
 
     let events = run_until(&mut engine, 200, |e| e.fleets[&fid].location == home);
     let acts = policy_actions(&events);
-    assert_eq!(
-        acts[0],
-        (
-            "move".to_string(),
-            "returning to be mended: hull at 81% of full, and a fleet under orders works at 85% or more".to_string(),
-        ),
-        "its first act under orders, and it scans nothing on the way: {acts:?}",
+    assert_eq!(acts[0].0, "move", "its first act under orders: {acts:?}");
+    assert!(
+        acts[0].1.starts_with(&format!(
+            "returning to be mended: hull at 81% of full, and a fleet under orders works at 85% or more; home is 2 jumps away by {}",
+            out[0],
+        )),
+        "and it says why and which way home is: {acts:?}",
     );
     assert!(acts.iter().all(|(action, _)| action == "move"), "{acts:?}");
 

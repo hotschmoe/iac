@@ -1,0 +1,5 @@
+[
+{"canonical":{"amount":{"crystal":85.25,"deuterium":86.25,"metal":84.25},"cause":"unloaded","fleet_id":83,"kind":"Stockpile","player_id":82,"tick":67,"type":"event"},"input":{"amount":{"crystal":85.25,"deuterium":86.25,"metal":84.25},"cause":"unloaded","fleet_id":83,"kind":"Stockpile","player_id":82,"tick":67,"type":"event"}},
+{"canonical":{"amount":{"crystal":85.25,"deuterium":86.25,"metal":84.25},"cause":"loaded","fleet_id":83,"kind":"Stockpile","player_id":82,"tick":67,"type":"event"},"input":{"amount":{"crystal":85.25,"deuterium":86.25,"metal":84.25},"cause":"loaded","fleet_id":83,"kind":"Stockpile","player_id":82,"tick":67,"type":"event"}},
+{"canonical":{"amount":{"crystal":85.25,"deuterium":86.25,"metal":84.25},"cause":"wreckage","fleet_id":83,"kind":"Stockpile","player_id":82,"tick":67,"type":"event"},"input":{"amount":{"crystal":85.25,"deuterium":86.25,"metal":84.25},"cause":"wreckage","fleet_id":83,"kind":"Stockpile","player_id":82,"tick":67,"type":"event"}}
+]

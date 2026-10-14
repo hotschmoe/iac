@@ -10,7 +10,7 @@ use iac_shared::constants::{Resources, ShipClass, RAID_ROUNDS};
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     BatchWait, BattleOutcome, Command, ErrorCode, EventKind, QueueAction, QueueEvent, QueueType, RaidLabel, ServerMessage,
-    WaitReason,
+    StockpileCause, WaitReason,
 };
 use iac_shared::scaling::{self, BuildingType, ResearchType};
 use iac_shared::world::NpcBehaviorType;
@@ -417,7 +417,6 @@ fn hunt_pirates(e: &mut Empire, lair: Hex) {
 }
 
 fn withstand_a_raid(e: &mut Empire) {
-    let home_sector = e.engine.players[&e.pid].homeworld;
     e.order(Command::Build { building_type: BuildingType::Shipyard, reserve: false }).expect("second shipyard level");
     e.run_until(100, |e| e.state().homeworld.build_queue.is_empty() && e.state().homeworld.build_pending.is_empty());
     let mark = e.mark();
@@ -458,7 +457,7 @@ fn withstand_a_raid(e: &mut Empire) {
 
     e.run(2);
     let scooped = e.since(mark, |k| match k {
-        EventKind::SalvageCollected(c) if c.sector == home_sector => Some(c.resources),
+        EventKind::Stockpile(s) if s.cause == StockpileCause::Wreckage => Some(s.amount),
         _ => None,
     });
     assert_eq!(scooped, [pile], "the docked fleet scoops the wreckage into storage");

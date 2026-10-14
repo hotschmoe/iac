@@ -987,6 +987,7 @@ fn event_kind_name(k: &EventKind) -> &'static str {
         EventKind::CombatEnded(_) => "combat_ended",
         EventKind::Pursuit(_) => "pursuit",
         EventKind::SalvageCollected(_) => "salvage_collected",
+        EventKind::Stockpile(_) => "stockpile",
         EventKind::FleetArrived(_) => "fleet_arrived",
         EventKind::BuildingCompleted(_) => "building_completed",
         EventKind::ResearchCompleted(_) => "research_completed",
@@ -1586,6 +1587,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     owners: vec!["Admiral".into()],
                     mine: true,
                     salvage: Some(res(60.0, 15.0, 9.0)),
+                    salvage_pile: Some(res(150.0, 37.5, 22.5)),
                     salvage_despawn_tick: Some(137),
                 }),
             }),
@@ -1701,11 +1703,12 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
             ],
             you: Some(LeaderboardEntry { rank: 14, name: "Newbie".into(), agent: false, score: 3.5, core: 3.5, combat: 0.0, explore: 0.0 }),
             bots: vec![],
+            bonus: Some(BonusRoom { banked: 2.0, cap: 0.875, room: -1.125, core_to_count: 8.0 }),
         }),
     ));
     v.push((
         "no_you".into(),
-        ServerMessage::Leaderboard(LeaderboardReply { tick: 1, entries: vec![], you: None, bots: vec![] }),
+        ServerMessage::Leaderboard(LeaderboardReply { tick: 1, entries: vec![], you: None, bots: vec![], bonus: None }),
     ));
     v.push((
         "with_bots".into(),
@@ -1719,6 +1722,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 LeaderboardEntry { rank: 1, name: "BOT-explorer-2".into(), agent: false, score: 505.0, core: 404.0, combat: 3.5, explore: 310.0 },
                 LeaderboardEntry { rank: 2, name: "BOT-turtle-1".into(), agent: false, score: 96.25, core: 96.25, combat: 0.0, explore: 0.0 },
             ],
+            bonus: Some(BonusRoom { banked: 40.25, cap: 95.0, room: 54.75, core_to_count: 161.0 }),
         }),
     ));
     v.push(("".into(), ServerMessage::ExchangeQuote(ExchangeQuote { terms: sample_terms(), refusal: None })));
@@ -1839,6 +1843,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             owners: vec!["Admiral".into(), "Rival".into()],
             mine: false,
             salvage: None,
+            salvage_pile: None,
             salvage_despawn_tick: None,
         })),
         ("standoff", EventKind::CombatEnded(CombatEndedEvent {
@@ -1851,6 +1856,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             owners: vec!["Admiral".into()],
             mine: true,
             salvage: None,
+            salvage_pile: None,
             salvage_despawn_tick: None,
         })),
         ("fled", EventKind::CombatEnded(CombatEndedEvent {
@@ -1863,6 +1869,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             owners: vec!["Admiral".into()],
             mine: true,
             salvage: None,
+            salvage_pile: None,
             salvage_despawn_tick: None,
         })),
         ("raid_outlasted", EventKind::CombatEnded(CombatEndedEvent {
@@ -1875,6 +1882,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             owners: vec!["Admiral".into()],
             mine: true,
             salvage: None,
+            salvage_pile: None,
             salvage_despawn_tick: None,
         })),
         ("raid", EventKind::BattleRound(raid_round())),
@@ -1915,6 +1923,18 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             sector: h(5, -5),
             resources: res(40.0, 0.0, 0.0),
             remaining: Some(res(20.0, 15.0, 9.0)),
+        })),
+        ("", EventKind::Stockpile(StockpileEvent {
+            player_id: 7,
+            fleet_id: 1,
+            cause: StockpileCause::Unloaded,
+            amount: res(4312.5, 0.0, 120.0),
+        })),
+        ("wreckage", EventKind::Stockpile(StockpileEvent {
+            player_id: 7,
+            fleet_id: 1,
+            cause: StockpileCause::Wreckage,
+            amount: res(8100.0, 2700.0, 0.0),
         })),
         ("", EventKind::SalvageDespawned(SalvageDespawnedEvent {
             sector: h(5, -5),

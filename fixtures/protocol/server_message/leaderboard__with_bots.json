@@ -1,4 +1,10 @@
 {
+  "bonus": {
+    "banked": 40.25,
+    "cap": 95.0,
+    "core_to_count": 161.0,
+    "room": 54.75
+  },
   "bots": [
     {
       "agent": false,

@@ -26,6 +26,10 @@ String amountsOf(proto.Resources r) {
   return amounts.isEmpty ? 'nothing' : amounts;
 }
 
+/// "F84 unloaded into the stockpile: 4,312 Fe, 120 De": a `Stockpile` event
+/// as the log and the alerts print it.
+String stockpileLine(proto.StockpileEvent e) => 'F${e.fleetId} ${e.cause.phrase}: ${amountsOf(e.amount)}';
+
 /// "short by 1,234 Fe, 56 Cr": the parts of [missing] above zero, each
 /// rounded up. Every shortfall the console prints is this phrase; [opening]
 /// starts a caption with it.
@@ -398,6 +402,11 @@ class StateMapper {
       case proto.SalvageCollectedEvent():
         msg = '${_fleet(k.fleetId)} collected salvage ${amountsOf(k.resources)}'
             '${k.remaining == null ? '' : ", ${amountsOf(k.remaining!)} left behind"}';
+      case proto.StockpileEvent():
+        msg = stockpileLine(k);
+        if (k.cause != proto.StockpileCause.loaded) {
+          _pushAlert(Alert(icon: '+', message: msg, detail: '', level: AlertTone.dim));
+        }
       case proto.SalvageDespawnedEvent():
         msg = 'Wreckage in ${k.sector} drifted away (${amountsOf(k.resources)})';
         level = EventLevel.dim;

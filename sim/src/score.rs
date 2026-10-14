@@ -10,7 +10,7 @@
 
 use iac_shared::constants::{Resources, ShipClass};
 use iac_shared::maths;
-use iac_shared::protocol::{LeaderboardEntry, LeaderboardReply};
+use iac_shared::protocol::{BonusRoom, LeaderboardEntry, LeaderboardReply};
 use iac_shared::scaling::{self, DefenceKind};
 
 use crate::engine::{GameEngine, Player};
@@ -245,5 +245,14 @@ pub fn leaderboard(engine: &GameEngine, limit: usize, viewer: u64) -> Leaderboar
     let first = |list: &[(&Player, Score)]| -> Vec<LeaderboardEntry> {
         list.iter().enumerate().take(limit).map(|(i, (p, s))| entry(i, p, s)).collect()
     };
-    LeaderboardReply { tick: engine.current_tick(), entries: first(&ranked), you, bots: first(&bots) }
+    let bonus = list.iter().find(|(p, _)| p.id == viewer).map(|(_, s)| bonus_room(s));
+    LeaderboardReply { tick: engine.current_tick(), entries: first(&ranked), you, bots: first(&bots), bonus }
+}
+
+/// `score`'s combat and exploration points against what the game's rule
+/// lets them add.
+fn bonus_room(score: &Score) -> BonusRoom {
+    let banked = score.combat + score.explore;
+    let cap = EXTRA_CAP * score.core();
+    BonusRoom { banked, cap, room: cap - banked, core_to_count: banked / EXTRA_CAP }
 }
