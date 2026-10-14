@@ -9,6 +9,11 @@ tools/playtest/stop.sh            # add --keep-world to keep the world file (run
 python3 -m unittest discover -s tools/playtest/tests    # tests for the CLI's parsers and formatters
 ```
 
+- `IAC_BOTS` seats the server's built-in bots in the new world beside the players, as `--bot` takes them
+  (`IAC_BOTS=all:all` is every personality at every attention, fifteen bots); the players' own home seats are kept
+  free of them. Unset means no bots.
+- Grok agents run with `rm`, `git`, `kill`, `pkill`, `killall` and `cargo` denied.
+- `IAC_PORT` defaults to 7777; pick another when something else holds it.
 - `IAC_PACE` sets the world pace for the new world (a number or a preset:
   persistent, fortnight, season, sprint, dev, blitz, test). One hour of play
   wants `blitz` (x600: the endgame in about two and a half hours of play, the

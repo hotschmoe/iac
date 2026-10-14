@@ -10,6 +10,9 @@
 #      IAC_PACE (world pace for the new world: a number or a preset such as
 #      blitz, test, season; default persistent). A world keeps its pace.
 #      A one-hour session wants IAC_PACE=blitz.
+#      IAC_BOTS (built-in bots for the new world, as the server's --bot takes
+#      them, e.g. all:all for every style; default none), with the players'
+#      own seats kept free of them.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
@@ -26,8 +29,9 @@ export IAC_RUN="$RUN" IAC_PORT="$PORT"
 web="$REPO/clients/web/build/web"
 [ -f "$web/index.html" ] || echo "no web build at $web (scripts/play.sh builds it); serving WS only" >&2
 pace_args=(); [ -n "$PACE" ] && pace_args=(--pace "$PACE")
+bot_args=(); [ -n "${IAC_BOTS:-}" ] && bot_args=(--bot "$IAC_BOTS" --player-seats "$#")
 nohup "$REPO/target/release/iac-server" --host 0.0.0.0 --port "$PORT" --world "$RUN/world.iac" \
-  ${pace_args[@]+"${pace_args[@]}"} --web-dir "$web" >"$RUN/logs/server.log" 2>&1 &
+  ${pace_args[@]+"${pace_args[@]}"} ${bot_args[@]+"${bot_args[@]}"} --web-dir "$web" >"$RUN/logs/server.log" 2>&1 &
 echo $! >"$RUN/state/server.pid"
 until ss -ltn | grep -q ":$PORT "; do
   kill -0 "$(cat "$RUN/state/server.pid")" 2>/dev/null || { cat "$RUN/logs/server.log" >&2; echo "server did not start" >&2; exit 1; }

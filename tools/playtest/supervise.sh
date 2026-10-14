@@ -75,7 +75,9 @@ run_agent() {
   case "$KIND" in
     grok)
       timeout --signal=TERM --kill-after=30 "$budget" \
-        grok --cwd "$DIR" --always-approve --output-format plain --max-turns 2000 -p "$prompt" \
+        grok --cwd "$DIR" --always-approve --output-format plain --max-turns 2000 \
+          --deny "Bash(rm:*)" --deny "Bash(git:*)" --deny "Bash(kill:*)" --deny "Bash(pkill:*)" \
+          --deny "Bash(killall:*)" --deny "Bash(cargo:*)" -p "$prompt" \
         >>"$DIR/agent.out" 2>>"$DIR/agent.err" 9>&- &
       ;;
     pi)
