@@ -9665,7 +9665,8 @@ Pace 1200, one hour:
   the mixed hybrid (7,261 from 7,973), the explorer hybrid (8,004 from
   8,357), the turtle checking in (7,209 from 7,507). Not traced. The mixed
   hybrid's third seed, before the reactor's guard, ended at 3,903 with its
-  Fusion Reactor starved; the guard is in, and its mean rose from 6,474.
+  Fusion Reactor starved; with the guard its mean was 6,474, and keeping
+  the strike wing off patrols past the cap took it to 7,261.
 
 **Tests** (end to end, `sim/tests/bots.rs`).
 
