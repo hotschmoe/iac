@@ -351,15 +351,6 @@ List<String> volleyFigures(proto.Volley v) => [
       'HULL ${shortCount(v.hullDamage)}',
     ];
 
-/// The same for all a side fired in a round, from the side's own totals.
-List<String> fireFigures(proto.BattleSide side) => [
-      '${shortCount(side.shots)} SHOT${side.shots == 1 ? '' : 'S'}',
-      'POWER ${shortCount(side.power)}',
-      'SHIELDS TOOK ${shortCount(side.absorbed)}',
-      'HULL DAMAGE ${shortCount(side.hullDamage)}',
-      'DESTROYED ${shortCount(side.destroyed)}',
-    ];
-
 /// "W3 S2 A1": the Weapons, Shielding and Armour levels a fleet fights with.
 String refitMark(proto.Refit r) => 'W${r.weapons} S${r.shielding} A${r.armour}';
 

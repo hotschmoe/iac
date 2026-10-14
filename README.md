@@ -379,7 +379,9 @@ line for its end.
 
 The battle view is the fight as a report, and opens over any screen: `I` on
 the windshield, the Battle view button of the panel, the fight's line on a
-phone, and Watch the fight on the Overview's raid card. It has the picture
+phone, and Watch the fight on the Overview's raid card; with no fight on
+show, `I` and the Fights button of the fleet status open it on the newest
+fight held. It has the picture
 of the round and, beside or under it, each side by class with what entered
 the round, what it destroyed and what stands after it, the damaged, those at
 risk and the hull; each side's fire as a sentence of its totals (shots,
@@ -415,7 +417,10 @@ the others: what follows, when it lands and from where, whether it lands
 before the fleet can be gone, and how much further it follows; the scope
 marks the lane it comes down, from the gate inward, with the ticks to its
 landing and `CATCHES` or `TOO LATE`, and when it lands its marks come onto
-the scope from that gate; the fleet's
+the scope from that gate. A gate pressed while the scope is still drawing
+the fleet's arrival is taken at once, which is when a pursued fleet presses
+it; one pressed while a jump is charging is answered with a line and sends
+nothing. The fleet's
 cards on the windshield, the Overview and the map say it too, the Overview
 lists it among its alerts, and the map draws the lane the group is jumping
 down and a ring round the fleet. The log has a line for a pursuit begun,

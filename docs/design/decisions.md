@@ -152,6 +152,18 @@ survives a reload and nothing else.
 - Hostiles are always drawn on the upper half, so a fleet leaving by a
   northern lane draws off toward them. The lanes are where the gates are;
   the two sides are not.
+- *A gate key is never dropped without a word.* The scope draws a fleet's
+  arrival for about half a second after it lands, and a gate pressed in
+  that time did nothing and said nothing; a fleet that lands with a pack
+  on its trail is when the next gate is pressed at once. Now the key is
+  taken: the order is sent at once and the scope starts the new jump from
+  where it is (`WindshieldSim.startWarp`). The dock's tiles act during an
+  arrival too, all but Stop, which has no jump to call off. A gate pressed
+  while a jump ordered here is still charging is answered with a toast
+  (the fleet is charging a jump already, Stop calls it off) and sends
+  nothing. The end-to-end check's waits after a landing were left as they
+  are. Undo: the `waiting` conditions in `jump` and `act` of
+  `windshield_view.dart`.
 
 **The battle view.**
 
@@ -161,7 +173,9 @@ survives a reload and nothing else.
   one press away: `I` on the windshield, the Battle view button of the
   round's panel (on the windshield, the Defence tab and the outpost's
   screen), the fight's line on a phone, and Watch the fight on the
-  Overview's raid card. A setting under `?`, off by default, opens it by
+  Overview's raid card. With no fight on show, `I` and a Fights button in
+  the fleet status open it on the newest fight held. A setting under `?`,
+  off by default, opens it by
   itself on the first round of a fight of the player's. Undo: flip the
   default of `ConsolePrefs.battleView`.
 - *A modal over any screen*, hosted by the shell (`Console.openBattle`),
@@ -186,8 +200,8 @@ survives a reload and nothing else.
 `marksFor`, `WindshieldSim.marksASide`, the `Unit` list, the EACH MARK
 legend), the brackets round each hostile mark and the trails behind the
 fleet's; the round panel's standing table, its three volleys and its Show
-last round (`volleysShown`). Nothing was moved to `.archive/`: no file was
-deleted.
+last round (`volleysShown`, `fireFigures`). Nothing was moved to
+`.archive/`: no file was deleted.
 
 **Phones.**
 
@@ -218,6 +232,17 @@ those fleets and never a ship each. The journal has the browser's figures.
 
 **The scripted world of the widget tests** sends `entered` with every
 round. Nothing else of it changed.
+
+**The end-to-end check** reads the lines beside the scope, opens the
+battle view with `I` during the six's fight where it catches it and from
+the report after it, steps back a round where the fight had two, and
+reads a raid's rounds in the view the Defence tab opens. It measures the
+gaps between the page's frames with the scope at rest and through the
+two's fight, and prints them; it asserts nothing of them. Its flight step
+now flies the two home when it stands down, which it did not, so the run
+that first met that branch failed. Undo: `standDown` in `flight` of
+`tool/solo_e2e.dart`; the check then fails whenever the two win their
+fight before they can leave it, which was one run in nine here.
 
 **Unsure of.**
 

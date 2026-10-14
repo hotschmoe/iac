@@ -1486,21 +1486,26 @@ Future<int?> flight(Browser browser,
   // Two Light Fighters destroy a single ship in the round they attack it,
   // sooner than a fight can be read and left.
   Future<bool> won() async => await browser.tap('$endsAtPrey.slice($ends).some((e) => e.outcome === "hostiles_destroyed")') == true;
-  const unshown = '  the two destroyed the group before they could be ordered out of the fight: no flight is shown in this run, and it is the widget tests\'';
-  if (!joined && await won()) {
-    print(unshown);
+  // With no flight to show the two still go home, where the rest of the
+  // check expects them: the dock refits them there and the six take them
+  // back in.
+  Future<int?> standDown() async {
+    print('  the two destroyed the group before they could be ordered out of the fight: no flight is shown in this run, and it is the widget tests\'');
+    await browser.framesWatched();
+    for (final hop in [door, ...wayHome]) {
+      await jumpTo(browser, wing, hop);
+    }
     return null;
   }
+
+  if (!joined && await won()) return standDown();
   check(joined, 'the two are in a fight at [$prey]');
 
   final fighting = await browser.until('the engine\'s quote for leaving the fight, or the end of the fight', () async {
     final f = await two('before they could leave');
     return f['flight'] != null || await won() ? f : null;
   });
-  if (fighting['flight'] == null) {
-    print(unshown);
-    return null;
-  }
+  if (fighting['flight'] == null) return standDown();
   final quote = fighting['flight'] as Map<String, dynamic>;
   final chase = quote['chase'] as Map<String, dynamic>?;
   check(
@@ -1514,10 +1519,7 @@ Future<int?> flight(Browser browser,
   }
   final offered = await browser.until('the flee control, or the end of the fight',
       () async => (await browser.text()).toLowerCase().contains('leave the fight') ? 'offered' : (await won() ? 'won' : null));
-  if (offered == 'won') {
-    print(unshown);
-    return null;
-  }
+  if (offered == 'won') return standDown();
   final price ='${fuelWords(quote['fuel'] as num)} FUEL, GONE IN ${plural(quote['ticks'], 'TICK').toUpperCase()}, ${plural(quote['rounds'], 'ROUND').toUpperCase()} UNDER FIRE';
   final control = (await browser.text()).toUpperCase();
   check(
