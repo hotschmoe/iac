@@ -149,7 +149,7 @@ class DefenceTab extends StatelessWidget {
           subText: 'x${d.satelliteCount}',
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const WhyText('They stand at the homeworld and join no fleet. They are in every raid\'s fight, and one that falls is not rebuilt. '
+            const WhyText('They stand at the homeworld and join no fleet. They are in every raid\'s fight, and those that fall in it are rebuilt as defences are. '
                 'They are built in the shipyard.'),
             const SizedBox(height: 6),
             ConsoleButton('Open shipyard', key: const ValueKey('defence-open-shipyard'), small: true, onPressed: () => ctrl.selectHomeworldTab(HomeworldTab.shipyard)),

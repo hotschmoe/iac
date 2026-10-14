@@ -14,7 +14,7 @@ use iac_shared::constants::{
 use iac_shared::hex::{hex_ring, Hex};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{BattleOutcome, EventKind, GameEvent, PursuitPhase, QueueType, UnitCount, WaitReason};
-use iac_shared::scaling::{self, BuildingType, ResearchType};
+use iac_shared::scaling::{self, BuildingType, ResearchType, ShipyardItem};
 use serde::Serialize;
 
 use crate::engine::{FleetStatus, GameEngine, Outpost, OutpostJob, OutpostTask, Player, RaidState};
@@ -103,8 +103,9 @@ pub struct FieldTally {
     /// Ships of the player's fleets destroyed in raids, at either dock.
     pub raid_ships_lost: u32,
     /// What raids on the homeworld destroyed of its Solar Satellites and
-    /// its defences, and how many of the defences were rebuilt at once.
+    /// its defences, and how many of each were rebuilt at once.
     pub raid_satellites_lost: u32,
+    pub raid_satellites_rebuilt: u32,
     pub raid_defences_lost: u32,
     pub raid_defences_rebuilt: u32,
     /// What raids on the homeworld cost in ships, satellites and defences
@@ -1055,6 +1056,10 @@ impl Counting<'_> {
                         t.raid_ships_lost += e.ships_lost;
                         if e.outpost.is_none() {
                             t.raid_satellites_lost += e.satellites_lost;
+                            t.raid_satellites_rebuilt += e.rebuilt.iter()
+                                .filter(|u| matches!(u.unit, ShipyardItem::Ship(_)))
+                                .map(|u| u.count)
+                                .sum::<u32>();
                             t.raid_defences_lost += e.structures_lost;
                             t.raid_defences_rebuilt += e.structures_restored;
                             let cost = |units: &[UnitCount]| {

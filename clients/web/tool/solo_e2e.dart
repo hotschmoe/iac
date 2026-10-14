@@ -1534,6 +1534,9 @@ Future<int?> flight(Browser browser,
     final f = await two('as they landed');
     return spot(f['location']) == door && f['state'] != 'Moving' ? f : null;
   });
+  // The windshield takes no gate key while it draws an arrival, as after
+  // any jump (`jumpTo` waits the same).
+  await Future<void>.delayed(const Duration(milliseconds: 1400));
   var rest = wayHome;
   if (landed['pursued_by'] case final Map<String, dynamic> hunter) {
     final next = wayHome.firstOrNull;
@@ -2186,7 +2189,8 @@ Future<void> raid(Browser browser) async {
       (list as List).cast<Map<String, dynamic>>().where((u) => u[key] == name).fold(0, (n, u) => n + (u['count'] as int));
   check(
       (after['raid'] as Map)['rounds_left'] == null &&
-          after['satellites'] == (before['satellites'] as int) - (resolved['satellites_lost'] as int) &&
+          after['satellites'] ==
+              (before['satellites'] as int) - (resolved['satellites_lost'] as int) + counted(resolved['rebuilt'], 'unit', 'SolarSatellite') &&
           (before['defences'] as List).every((d) =>
               counted(after['defences'], 'kind', d['kind'] as String) ==
               (d['count'] as int) - counted(resolved['lost'], 'unit', d['kind'] as String) + counted(resolved['rebuilt'], 'unit', d['kind'] as String)),

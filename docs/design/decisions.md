@@ -3,6 +3,94 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-14 (Solar Satellites that fall in a raid are rebuilt as defences are)
+
+Since slice 4 a raid at the homeworld is a fight in which the Solar
+Satellites stand. A satellite that fell was lost, and a defence that fell was
+rebuilt at once at OGame's rate. In a blitz day of sixteen bots 16,387
+satellites fell and none came back. The owner was asked whether satellites
+should stay out of the fight, be rebuilt as defences are, or go on falling,
+and was given the second as the recommendation. His answer:
+
+> for solar satellites, follow your gut and recommendation
+
+**The decision.** Solar Satellites that fall in a raid at the homeworld are
+rebuilt as defences are: the same rule and the same three constants
+(`DEFENCE_REBUILD_PCT` 70, `DEFENCE_REBUILD_SPREAD` 10,
+`DEFENCE_REBUILD_EACH_BELOW` 10), at once and for nothing, after every raid
+that was fought, lost or not. They still stand in the fight and still soak
+fire, and about three in ten that fall are gone.
+
+**Why.** Classic OGame does not rebuild a satellite; this is a departure from
+it and from section 7.6 of `docs/design/ogame.md`, which says "ships and
+satellites lost are lost" and is left as the study it was. There an attack on
+a planet is rare. Here a raid is a routine of every day, three or four a day
+in a season, and a routine should not be the chore of buying the same
+satellites again. It is one rule for everything at home that is not a ship.
+
+**What undoes it.** The satellites' line in `GameEngine::rebuild_at_home`
+(`sim/src/engine.rs`): the roll after the last defence and the row it adds.
+A rate of their own would be one constant beside the three.
+
+**What the builder decided within it.** None of it was put to the owner.
+Each line ends with what undoes it. `ECONOMY_VERSION` is 13; `SAVE_FORMAT`
+stays 11.
+
+- *The satellites are a kind of their own, rolled for after the last
+  defence.* Fewer than ten fell: each on its own 70 in a hundred; ten or
+  more: a share of 60 to 80 percent, cut off to a whole number. The dice are
+  the ones the defences are rolled with, seeded from the tick and the owner,
+  and the satellites' draws come last, so no defence comes back differently
+  than it did. Undo: the order of the draws in `rebuild_at_home`.
+- *On the wire nothing is added.* `RaidResolved.rebuilt` has a row for the
+  satellites, first, since the rows are in catalogue order as `lost` is.
+  `satellites_lost` is still what fell in the fight, before the rebuild, and
+  `structures_restored` is still the defences alone; how many satellites
+  came back is their row. A reader that summed `rebuilt` and called it
+  defences is now wrong, and the two in this repository that did
+  (`settle_raid` itself and the scripted world of the widget tests) were
+  moved. Undo: a `satellites_restored` beside
+  `structures_restored`, which is a wire change.
+- *`rebuild_defences` is `rebuild_at_home`*, since it rebuilds more than
+  defences and nothing at an outpost.
+- *The forecast's `kept` still counts a fallen satellite as lost*, as it
+  counts a fallen defence: it is the share kept before anything is rebuilt,
+  and every screen and the rules now say "anything" where they said "any
+  defence". So the label of a forecast did not move. Undo: nothing to undo;
+  a forecast net of the rebuild would be a second figure.
+- *The absence report counts the satellites rebuilt* (`Tally` in
+  `solo/src/away.rs`): "destroyed 12 Solar Satellites and 8 defences, and 9
+  of the Solar Satellites and 5 of the defences were rebuilt". The tally is
+  in the `host` part of a stored document's header while an absence is being
+  played. See "unsure of".
+- *The runner's raid table* has the satellites rebuilt beside the satellites
+  fallen (`sim-run`, `raid_satellites_rebuilt` in `--json`), and its `cost`
+  is net of them without a change, since it already priced `rebuilt` by
+  unit.
+- *The bots are not touched.* They order satellites when the mines run short
+  of energy, and now find fewer missing. What that did is in
+  `docs/journal.md`: in a blitz day they bought 5,703 satellites where they
+  had bought 16,306, and what raids cost them fell from 78,431 points to
+  36,806.
+
+**Unsure of.**
+
+- `SAVE_FORMAT`. The header's `host` part gained a field in the single-player
+  host's tally, and the rule is that the format is bumped when the header
+  changes. It was not bumped, as the brief for this work said, and nothing is
+  read wrongly for it: a document of economy version 12 is refused before
+  its header's `host` part is read. A build that kept version 13 and changed
+  the tally again would need the bump.
+- Raids cost a world of bots less than half of what they did at blitz
+  (satellites were four fifths of that cost and are a little over half of
+  it now). Whether that makes raids too cheap is the three constants' to
+  answer, and they move the defences with the satellites; a rate for
+  satellites alone is not built.
+- After a raid that left no defender, about seven satellites in ten stand
+  again with the defences, so the mines of a beaten homeworld keep most of
+  their energy. That is the decision as worded ("lost or not"); it was not
+  weighed on its own.
+
 ## 2026-10-14 (the web client on raids fought as battles: what the agent decided)
 
 Slice 4 of `docs/design/ogame.md`, section 12, stage 2: the hand-written Dart

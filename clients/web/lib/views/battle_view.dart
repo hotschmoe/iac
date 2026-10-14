@@ -261,7 +261,7 @@ class RaidForecastReadout extends StatelessWidget {
       const SizedBox(height: 7),
       RaidShares(odds, tag: tag),
       const SizedBox(height: 5),
-      Text('${raidKept(odds).toUpperCase()}, BEFORE ANY DEFENCE IS REBUILT.', key: Key('$tag-kept'), style: _small.copyWith(color: C.text2)),
+      Text('${raidKept(odds).toUpperCase()}, BEFORE ANYTHING IS REBUILT.', key: Key('$tag-kept'), style: _small.copyWith(color: C.text2)),
       if (rule) const WhyText(raidSharesRule),
     ]);
   }

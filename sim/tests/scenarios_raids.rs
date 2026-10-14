@@ -101,8 +101,9 @@ fn lost_of(told: &Told, item: impl Into<Unit>) -> u32 {
     told.resolved.lost.iter().find(|u| u.unit == wanted).map_or(0, |u| u.count)
 }
 
-fn rebuilt_of(told: &Told, kind: DefenceKind) -> u32 {
-    told.resolved.rebuilt.iter().find(|u| u.unit == ShipyardItem::Defence(kind)).map_or(0, |u| u.count)
+fn rebuilt_of(told: &Told, item: impl Into<Unit>) -> u32 {
+    let wanted = item.into().0;
+    told.resolved.rebuilt.iter().find(|u| u.unit == wanted).map_or(0, |u| u.count)
 }
 
 fn standing(e: &Empire, kind: DefenceKind) -> u32 {
@@ -202,7 +203,13 @@ fn a_raid_destroyed_at_home_is_fought_round_by_round_and_leaves_its_wreckage() {
     let rebuilt = rebuilt_of(&told, LightLaser);
     assert!(rebuilt <= lasers_lost && outcome.structures_lost == lasers_lost && outcome.structures_restored == rebuilt);
     assert_eq!(standing(&e, LightLaser), 40 - lasers_lost + rebuilt, "what fell is gone, what was rebuilt stands at once");
-    assert_eq!(e.state().homeworld.satellites, 6 - outcome.satellites_lost, "a Solar Satellite lost is lost");
+    let satellites_back = rebuilt_of(&told, SolarSatellite);
+    assert!(satellites_back <= outcome.satellites_lost);
+    assert_eq!(
+        e.state().homeworld.satellites,
+        6 - outcome.satellites_lost + satellites_back,
+        "a Solar Satellite that fell is gone unless it was rebuilt, as a defence is",
+    );
     assert_eq!(outcome.satellites_lost, lost_of(&told, SolarSatellite));
     assert_eq!(e.fleet().ship_count, 20 - outcome.ships_lost);
     assert_eq!(outcome.ships_lost, lost_of(&told, Cruiser));
@@ -290,7 +297,7 @@ fn a_round_that_hurts_nobody_ends_a_raid_before_its_six() {
 }
 
 #[test]
-fn a_lost_raid_takes_everything_that_stayed_and_the_defences_come_back_at_ogames_rate() {
+fn a_lost_raid_takes_everything_that_stayed_and_the_defences_and_satellites_come_back_at_ogames_rate() {
     let stage = |tick: u64| {
         let mut e = garrison(&[(LightFighter, 10)], &[(RocketLauncher, 100), (LightLaser, 5)], 20);
         let pid = e.pid;
@@ -335,8 +342,16 @@ fn a_lost_raid_takes_everything_that_stayed_and_the_defences_come_back_at_ogames
     let (least, most) = (100 * (DEFENCE_REBUILD_PCT - DEFENCE_REBUILD_SPREAD) / 100, 100 * (DEFENCE_REBUILD_PCT + DEFENCE_REBUILD_SPREAD) / 100);
     assert!((least..=most).contains(&launchers), "{launchers} of 100 launchers rebuilt");
     assert_eq!((standing(&e, RocketLauncher), standing(&e, LightLaser)), (launchers, rebuilt_of(&told, LightLaser)));
-    assert_eq!(e.state().homeworld.satellites, 0, "no satellite and no ship is rebuilt");
-    assert_eq!(outcome.structures_restored, launchers + rebuilt_of(&told, LightLaser));
+    let satellites = rebuilt_of(&told, SolarSatellite);
+    assert!(
+        (20 * (DEFENCE_REBUILD_PCT - DEFENCE_REBUILD_SPREAD) / 100..=20 * (DEFENCE_REBUILD_PCT + DEFENCE_REBUILD_SPREAD) / 100).contains(&satellites),
+        "{satellites} of 20 satellites rebuilt, by the defences' rule",
+    );
+    assert_eq!(e.state().homeworld.satellites, satellites, "the satellites rebuilt stand at once");
+    assert_eq!(outcome.rebuilt[0], unit(SolarSatellite, satellites), "and are told first, in catalogue order");
+    assert_eq!(outcome.satellites_lost, 20, "what fell in the fight is still what fell");
+    assert_eq!(outcome.structures_restored, launchers + rebuilt_of(&told, LightLaser), "the defences alone");
+    assert!(outcome.rebuilt.iter().all(|u| u.unit != ShipyardItem::Ship(LightFighter)), "no ship is rebuilt");
 
     let made = e.engine.players[&pid].production_per_tick(&pace).scale(f64::from(outcome.rounds));
     let exposed = before.add(made).sub(protected);
@@ -352,16 +367,52 @@ fn a_lost_raid_takes_everything_that_stayed_and_the_defences_come_back_at_ogames
     let tick = e.engine.current_tick();
     assert_eq!(clock.suppress_until, tick + pace.attention_ticks(172_800.0), "and no raid comes for two days of raid clock");
 
-    let (mut launchers, mut lasers) = (0u32, 0u32);
+    let (mut launchers, mut lasers, mut satellites) = (0u32, 0u32, 0u32);
     for tick in 5..17 {
         let mut e = stage(tick);
         let told = sit_out(&mut e);
         assert!(!told.resolved.defended);
+        assert_eq!(told.resolved.satellites_lost, 20);
         launchers += rebuilt_of(&told, RocketLauncher);
         lasers += rebuilt_of(&told, LightLaser);
+        satellites += rebuilt_of(&told, SolarSatellite);
     }
     assert!((64 * 12..=76 * 12).contains(&launchers), "{launchers} of 1200 launchers rebuilt over twelve raids: 70 in a hundred");
     assert!((30..=54).contains(&lasers), "{lasers} of 60 lasers rebuilt, each on its own 70 in a hundred");
+    assert!((150..=180).contains(&satellites), "{satellites} of 240 satellites rebuilt over twelve raids: 70 in a hundred, cut off to a whole number each time");
+}
+
+#[test]
+fn a_few_satellites_that_fall_come_back_each_on_its_own_chance_whether_the_raid_was_lost_or_not() {
+    let stage = |tick: u64| {
+        let mut e = garrison(&[], &[], 6);
+        e.run(tick);
+        send_raid(&mut e.engine, e.pid, &[(Cruiser, 40)], 1.0, 2);
+        e
+    };
+    let (mut fell, mut back) = (0u32, 0u32);
+    for tick in 3..15 {
+        let mut e = stage(tick);
+        let told = sit_out(&mut e);
+        let outcome = &told.resolved;
+        assert!(!outcome.defended && outcome.satellites_lost == 6 && outcome.structures_restored == 0);
+        let rebuilt = rebuilt_of(&told, SolarSatellite);
+        assert_eq!(outcome.rebuilt, if rebuilt > 0 { vec![unit(SolarSatellite, rebuilt)] } else { Vec::new() });
+        assert_eq!(e.state().homeworld.satellites, rebuilt);
+        fell += outcome.satellites_lost;
+        back += rebuilt;
+    }
+    assert!((40..=61).contains(&back), "{back} of {fell} satellites rebuilt over twelve raids, each on its own 70 in a hundred");
+
+    let mut e = garrison(&[(Cruiser, 60)], &[], 6);
+    e.run(3);
+    send_raid(&mut e.engine, e.pid, &[(Cruiser, 30)], 1.0, 2);
+    let told = sit_out(&mut e);
+    let outcome = &told.resolved;
+    let (lost, rebuilt) = (outcome.satellites_lost, rebuilt_of(&told, SolarSatellite));
+    assert!(outcome.defended && lost > 0, "a raid repelled by the fleet still shot satellites down: {lost}");
+    assert!(rebuilt <= lost);
+    assert_eq!(e.state().homeworld.satellites, 6 - lost + rebuilt, "a repelled raid's satellites are rebuilt by the same rule");
 }
 
 #[test]

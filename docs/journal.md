@@ -8928,3 +8928,189 @@ the battery in a round, the rebuild and the outpost's fight are widget tests
 on a scripted world that plays without dice. Whether Solar Satellites should
 fall to every raid and never be rebuilt (16,387 fell in the engine stage's
 blitz day of bots) is a question put to the owner and not answered.
+
+## 2026-10-14: Solar Satellites that fall in a raid are rebuilt as defences are
+
+The question the merge above left open was answered by the owner the same
+day: "for solar satellites, follow your gut and recommendation". The
+recommendation was to rebuild them as defences are, and that is now the
+rule. The decision, why, what undoes it and what was decided within it are
+at the top of `docs/design/decisions.md`. Built on master at `f0d57d2`, on a
+branch of its own, while another agent rebuilt the windshield; nothing under
+`clients/web/lib/scenes/` or `clients/web/lib/views/windshield/` was
+touched. `ECONOMY_VERSION` is 13, `SAVE_FORMAT` stays 11, and nothing is
+migrated.
+
+**What changed.**
+
+- *The engine.* `GameEngine::rebuild_defences` is `rebuild_at_home`. After
+  the last kind of defence it rolls for the satellites that fell, by the
+  rule the defences are rolled by and with the same dice, and puts those
+  that come back on the `Player`. `settle_raid` hands it
+  `satellites_lost`, so it is done after every raid that was fought at a
+  homeworld, repelled or lost, and never at an outpost.
+  `RaidResolved.rebuilt` has the satellites as its first row;
+  `satellites_lost` is what fell; `structures_restored` sums the defences'
+  rows only. No wire type changed: the generated Dart moved in its comments
+  alone.
+- *What reads the event.* The single-player host's absence report counts the
+  satellites rebuilt and says them beside the defences rebuilt. `sim-run`'s
+  raid table has a `rebuilt` column after `sats` as it has one after
+  `defences`, and `--json` has `raid_satellites_rebuilt`; `cost` was net of
+  everything in `rebuilt` already.
+- *The words.* README and `tools/playtest/RULES.md` (the energy paragraph,
+  the forecast's `kept`, "After it", the fields of `RaidResolved`, the
+  Defence tab, the runner's table), the comments of `protocol.rs` and
+  `constants.rs`, and the note that heads section 5.2 of
+  `docs/design/economy/spec.md`. `play.py` words the rebuild from the
+  event's rows and needed nothing. `docs/design/ogame.md` still says
+  satellites lost are lost: it is the study, and the decision is recorded
+  against it.
+- *The web client*, sentences only. The Solar Satellites panel of the
+  Defence tab says those that fall are rebuilt as defences are; the rule
+  under the defences names both and ends "Ships lost are lost"; the
+  shipyard's note on the satellite gives the rate from the generated
+  constant; the forecast's line reads "before anything is rebuilt" at the
+  homeworld and at the outpost; a raid's ending that rebuilt nothing names
+  what fell, satellites, defences or both. The scripted world of the widget
+  tests rebuilds satellites at the engine's rate, cut off, as it does
+  defences. `tool/solo_e2e.dart` expects the satellites standing after a
+  raid to be those before, less the fallen, plus their row of `rebuilt`.
+- *Fixtures.* The two hand-written `RaidResolved` in which satellites fall
+  (`raid_resolved`, `raid_resolved__defended`) have a satellite row in
+  `rebuilt`, so the Dart reads a ship there from a recorded message.
+  `sim/tests/data/chart_golden.txt` and `docs/design/economy/numbers.json`
+  were not stale and did not move.
+
+**Tests.** In `sim/tests/scenarios_raids.rs`: the raid destroyed at home
+expects its six satellites less the fallen plus the rebuilt (it expected "a
+Solar Satellite lost is lost"); the lost raid, renamed for it, expects 12 to
+16 of its 20 satellites back at once, the row first, `satellites_lost` still
+20 and `structures_restored` still the defences, and over twelve raids 150
+to 180 of 240 (it expected none); and one new scenario, six satellites alone
+against forty Cruisers twelve times, each satellite on its own chance, 40 to
+61 of 72 back, then six satellites beside sixty Cruisers in a raid that is
+repelled. In the web client the homeworld tests read the new sentences and
+expect one of the two satellites of a lost raid back and listed first, the
+outpost test reads the forecast's line, and the fixture test reads "Rebuilt
+at once: 1x Solar Satellite, 4x Rocket Launcher". Nothing else was moved:
+no other test in the workspace failed.
+
+**Measured.** `sim-run` (release), sixteen seats, default seed, each world
+played twice (text and `--json`, the same figures), beside the same runs on
+master. The bots were not changed; they buy satellites when the mines are
+short of energy, so the two worlds part at the first raid in which a
+satellite falls and are compared as worlds, not raid for raid.
+
+| | season week, master | season week, with the rule | blitz day, master | blitz day, with the rule |
+|---|---|---|---|---|
+| raids on homeworlds | 414 | 414 | 1,170 | 1,170 |
+| destroyed / outlasted / lost | 412 / 0 / 2 | 411 / 1 / 2 | 1,158 / 8 / 4 | 1,165 / 1 / 4 |
+| unopposed | 0 | 0 | 0 | 0 |
+| rounds fought | 1,066 | 1,081 | 2,541 | 2,579 |
+| ships lost in raids | 360 | 357 | 5,985 | 6,655 |
+| Solar Satellites fallen / rebuilt | 547 / 0 | 650 / 441 | 15,610 / 0 | 16,284 / 11,324 |
+| defences fallen / rebuilt | 523 / 377 | 527 / 375 | 5,724 / 3,934 | 5,716 / 3,900 |
+| cost (what did not come back, cost weight) | 3,280 | 2,004 | 78,431 | 36,806 |
+| taken from stockpiles (points) | 1 | 1 | 101 | 101 |
+| wreckage scooped (points) | 12,943 | 13,322 | 58,426 | 56,983 |
+| satellites the bots bought | 1,317 | 1,006 | 16,306 | 5,703 |
+| totals, lowest to highest | 5,812 to 10,431 | 6,003 to 10,431 | 6,144 to 26,320 | 6,131 to 25,861 |
+| sum of totals | 121,845 | 123,157 | 241,081 | 246,495 |
+| ticks a second | 3,413 | 3,381, 3,324 | 877 | 886, 848 |
+
+68 in a hundred of the fallen satellites came back in the season week and
+70 in the blitz day. Raids end as they did. What they cost fell by two
+fifths in the season and by more than half at blitz, where satellites were
+four fifths of the cost and are now a little over half of it (4,960 that
+did not come back, at 4 points each). The bots bought a quarter fewer
+satellites in the season and a third as many at blitz, and the sum of
+totals rose by 1 and by 2 percent. More satellites fell than on master in
+both worlds, since more stand when the next raid comes, and at blitz more
+ships were lost in raids (6,655 against 5,985); which seats lost them was
+not looked into.
+
+**Run.** `cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast`: 197 passed, 0 failed (196 on master and the new scenario),
+`both_targets` and `hosts_agree` among them; `cargo clippy --workspace
+--all-targets` silent; `tools/check_sim_constants.py` agrees on 4,410
+values; `python3 -m unittest discover -s tools/playtest/tests`: 36 passed;
+`UPDATE_FIXTURES=1 cargo test -p iac-shared` for the two fixtures and the
+generated comments; `flutter analyze` clean; `flutter test` under `timeout
+-k 20 300`, two runs: 515 passed each time.
+
+**Not verified.**
+
+- The single-player bundle was not built and `tool/solo_e2e.dart` was not
+  run: its changed line was analysed and not executed. In its runs so far
+  the raid at home has been one Light Fighter destroyed in a round, so it
+  may never see a satellite fall.
+- No page was looked at: the sentences are read by widget tests, and no
+  picture was taken at 1440 or at 390. The new sentences are longer than
+  the old by a few words each; no test reported an overflow.
+- That no defence's roll moved is by construction (the satellites are drawn
+  after the last kind, from the same generator) and by the old assertions
+  on launchers, lasers and cannons still holding; no world was compared
+  roll for roll, since a world with satellites plays on differently from
+  the first one rebuilt.
+- The absence report's new clause is not read by a test; it was compiled
+  and the single-player tests passed around it.
+- No person or agent played, `tools/playtest` was not run beyond its unit
+  tests, and each world of bots was played at the default seed only.
+
+**Kept out of the tree.** Nothing was moved to `.archive/`. `CLAUDE.md` was
+not edited; three of its sentences are no longer true (the function's name
+in the layout table, "one that falls is not rebuilt" under Energy, and the
+rebuild under Raids), and a corrected copy with its patch was left for the
+merge.
+
+**Unsure of** is in `docs/design/decisions.md` under today's date: the save
+format, whether raids are now too cheap, and satellites coming back after a
+raid that was lost.
+
+## 2026-10-14: Solar Satellites are rebuilt as defences are, merged
+
+Merged into master with `--no-ff` and pushed. `ECONOMY_VERSION` is 13;
+`SAVE_FORMAT` stays 11. Added at the merge: `CLAUDE.md` (the branch's patch,
+applied clean and compared with the copy it left), and a correction to
+`clients/web/tool/solo_e2e.dart` (below).
+
+**Left as it is, and owed.** The single-player host's away `Tally`, which is
+in the `host` part of a stored document's header while a catch-up is under
+way, gained `satellites_rebuilt`, and `SAVE_FORMAT` was not bumped for it. A
+document of economy version 12 is refused before its `host` part is read, so
+nothing can be misread; but the rule in `CLAUDE.md` is that a change to the
+header bumps the format. It is to be bumped with the next change that stores
+anything, slice 5's if it has one, and at slice 5's merge if it has none.
+
+**Run on the merged tree.** `cargo build --workspace --all-targets`; `cargo test
+--workspace --no-fail-fast`: 197 passed, 0 failed; `cargo clippy --workspace
+--all-targets` silent; `tools/check_sim_constants.py` agrees on 4,410 values;
+`flutter analyze` clean; `flutter test` under `timeout -k 20 300`, two runs:
+515 passed each time; `scripts/play.sh --single-player --no-serve`.
+
+`tool/solo_e2e.dart`, five runs. The first failed: "timed out waiting for
+fleet 1133 at [-5,4]". It was the run that at last met the case of the two
+scouts destroying their group in the round before their order to leave was
+taken. They landed, nothing followed, the group had no lasting harm to
+picture, and the check pressed the gate home at once. The windshield takes no
+gate key while it draws an arrival (`jump()` returns when `sim.warp` is set,
+about 0.55 s after a landing, with no toast), so no order was sent and the
+check waited a minute for a jump that was never made. `jumpTo` already waits
+1400 ms after every landing for this; the flight step now waits the same
+after the two land. Four runs after that passed (318 to 361 s); the last of
+them met the same case again (a Patrol destroyed before the order to leave)
+and went through, so the three corrections of the last merges to that step
+have now each been run once.
+
+**A wart this showed, not mended here.** A player who lands with a group on
+their trail and presses the next gate within that half second gets no jump
+and no word. The agent rebuilding the windshield's scene (slice 5) has been
+told to settle it there.
+
+**Not verified.** No person or agent played. The branch's two balance runs
+were read in its report and not run again (cost of raids to the defenders
+3,280 to 2,004 in a season week and 78,431 to 36,806 in a blitz day, one seed
+each). No satellite fell in a browser: the end-to-end world's raid is one
+Light Fighter destroyed in a round, so a rebuilt satellite on a page is the
+widget tests'.

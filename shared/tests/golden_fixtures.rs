@@ -2048,7 +2048,10 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
                 UnitCount { unit: ShipyardItem::Ship(ShipClass::SolarSatellite), count: 2 },
                 UnitCount { unit: ShipyardItem::Defence(DefenceKind::RocketLauncher), count: 6 },
             ],
-            rebuilt: vec![UnitCount { unit: ShipyardItem::Defence(DefenceKind::RocketLauncher), count: 4 }],
+            rebuilt: vec![
+                UnitCount { unit: ShipyardItem::Ship(ShipClass::SolarSatellite), count: 1 },
+                UnitCount { unit: ShipyardItem::Defence(DefenceKind::RocketLauncher), count: 4 },
+            ],
             satellites_lost: 2,
             structures_lost: 6,
             structures_restored: 4,
@@ -2076,6 +2079,7 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
                 UnitCount { unit: ShipyardItem::Defence(DefenceKind::LightLaser), count: 3 },
             ],
             rebuilt: vec![
+                UnitCount { unit: ShipyardItem::Ship(ShipClass::SolarSatellite), count: 3 },
                 UnitCount { unit: ShipyardItem::Defence(DefenceKind::RocketLauncher), count: 12 },
                 UnitCount { unit: ShipyardItem::Defence(DefenceKind::LightLaser), count: 2 },
             ],

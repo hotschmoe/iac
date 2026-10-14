@@ -1154,7 +1154,8 @@ class RaidOdds {
   final double lost;
 
   /// The share of their worth the defenders are expected to keep, before
-  /// any defence is rebuilt, and the share of theirs the raiders keep.
+  /// any defence or Solar Satellite is rebuilt, and the share of theirs
+  /// the raiders keep.
   final double kept;
   final double raidersKept;
 
@@ -3446,7 +3447,9 @@ class HomeworldState {
   final EnergyState energy;
 
   /// Solar Satellites at home. They are built in the shipyard queue as
-  /// the ship class `SolarSatellite` and never join a fleet.
+  /// the ship class `SolarSatellite` and never join a fleet. Those a raid
+  /// destroys are counted out as they fall and the ones rebuilt are back
+  /// the tick the raid ends, as the defences are.
   final int satellites;
   final StorageState storage;
   final List<BuildingState> buildings;
@@ -6072,15 +6075,18 @@ class RaidResolvedEvent extends EventKind {
   final List<ShipCount> raidersLost;
 
   /// Everything the defender lost in the fight, by unit: ships, Solar
-  /// Satellites and defences, the defences before any is rebuilt.
+  /// Satellites and defences, the satellites and the defences before any
+  /// is rebuilt.
   final List<UnitCount> lost;
 
-  /// The defences rebuilt at once and for nothing when the fight ended,
-  /// by kind: about `DEFENCE_REBUILD_PCT` in a hundred of those that fell.
-  /// Ships and Solar Satellites are not rebuilt.
+  /// The Solar Satellites and the defences rebuilt at once and for
+  /// nothing when the fight ended, by unit, the satellites first: about
+  /// `DEFENCE_REBUILD_PCT` in a hundred of those that fell. Ships are not
+  /// rebuilt, and nothing is at an outpost.
   final List<UnitCount> rebuilt;
 
-  /// Solar Satellites destroyed.
+  /// Solar Satellites destroyed in the fight, before any is rebuilt; how
+  /// many came back is their row of `rebuilt`.
   final int satellitesLost;
 
   /// Defences destroyed, and how many of them were rebuilt: the sums of
@@ -6874,7 +6880,9 @@ const raidRounds = 6;
 /// `DEFENCE_REBUILD_EACH_BELOW` of a kind fell each has that chance, and
 /// where more fell a share within `DEFENCE_REBUILD_SPREAD` either side of
 /// it is rolled for the kind. OGame's. It trades what defences cost to hold
-/// against what ships cost.
+/// against what ships cost. The Solar Satellites a raid destroys at a
+/// homeworld are rebuilt by the same rule, as a kind of their own, which
+/// is not OGame's: there a satellite that falls is gone.
 const defenceRebuildPct = 70;
 
 const defenceRebuildSpread = 10;

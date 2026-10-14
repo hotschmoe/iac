@@ -188,7 +188,7 @@ void main() {
         reason: 'the forecast of the raid on its way is the state\'s, with the server\'s label');
     expect(_said(tester, 'outpost-raid-ships'), 'IT FLIES  1X CRUISER   POWER 513');
     expect(textUnder(tester, find.byKey(const Key('outpost-raid-shares'))), 'DESTROYED 0%\nOUTLASTED 63%\nLOST 38%');
-    expect(_said(tester, 'outpost-raid-kept'), 'YOU KEEP 21% OF WHAT STANDS HERE, THE RAIDERS 97% OF THEIRS, BEFORE ANY DEFENCE IS REBUILT.');
+    expect(_said(tester, 'outpost-raid-kept'), 'YOU KEEP 21% OF WHAT STANDS HERE, THE RAIDERS 97% OF THEIRS, BEFORE ANYTHING IS REBUILT.');
     expect(find.byKey(const Key('outpost-cover')), findsNothing);
     expect(find.text('AFTER LEVEL 2: LEVEL 3'), findsOneWidget, reason: 'the level that could be ordered once the one being built is done');
     expect(find.descendant(of: find.byKey(const Key('outpost-next-platform')), matching: find.text('16X ROCKET LAUNCHER, 8X LIGHT LASER, 4X HEAVY LASER')),

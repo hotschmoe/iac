@@ -574,7 +574,8 @@ pub struct RaidOdds {
     /// No defender was left: the raid takes its share of the stockpile.
     pub lost: f32,
     /// The share of their worth the defenders are expected to keep, before
-    /// any defence is rebuilt, and the share of theirs the raiders keep.
+    /// any defence or Solar Satellite is rebuilt, and the share of theirs
+    /// the raiders keep.
     pub kept: f32,
     pub raiders_kept: f32,
 }
@@ -1682,7 +1683,9 @@ pub struct HomeworldState {
     pub production: Resources,
     pub energy: EnergyState,
     /// Solar Satellites at home. They are built in the shipyard queue as
-    /// the ship class `SolarSatellite` and never join a fleet.
+    /// the ship class `SolarSatellite` and never join a fleet. Those a raid
+    /// destroys are counted out as they fall and the ones rebuilt are back
+    /// the tick the raid ends, as the defences are.
     pub satellites: u32,
     pub storage: StorageState,
     pub buildings: Vec<BuildingState>,
@@ -3110,15 +3113,18 @@ pub struct RaidResolvedEvent {
     #[serde(default)]
     pub raiders_lost: Vec<ShipCount>,
     /// Everything the defender lost in the fight, by unit: ships, Solar
-    /// Satellites and defences, the defences before any is rebuilt.
+    /// Satellites and defences, the satellites and the defences before any
+    /// is rebuilt.
     #[serde(default)]
     pub lost: Vec<UnitCount>,
-    /// The defences rebuilt at once and for nothing when the fight ended,
-    /// by kind: about `DEFENCE_REBUILD_PCT` in a hundred of those that fell.
-    /// Ships and Solar Satellites are not rebuilt.
+    /// The Solar Satellites and the defences rebuilt at once and for
+    /// nothing when the fight ended, by unit, the satellites first: about
+    /// `DEFENCE_REBUILD_PCT` in a hundred of those that fell. Ships are not
+    /// rebuilt, and nothing is at an outpost.
     #[serde(default)]
     pub rebuilt: Vec<UnitCount>,
-    /// Solar Satellites destroyed.
+    /// Solar Satellites destroyed in the fight, before any is rebuilt; how
+    /// many came back is their row of `rebuilt`.
     #[serde(default)]
     pub satellites_lost: u32,
     /// Defences destroyed, and how many of them were rebuilt: the sums of
