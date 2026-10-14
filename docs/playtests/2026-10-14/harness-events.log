@@ -1,0 +1,29 @@
+2026-10-14 12:57:49 harness    session start: 60 min, pace blitz, port 7790, players: Grok-1:grok Grok-2:grok Haiku-1:manual Haiku-2:manual
+2026-10-14 12:57:49 harness    server pid 4101491
+2026-10-14 12:57:49 harness    launched client daemon slot 0 (Grok-1) pid 4101520
+2026-10-14 12:57:49 harness    launched client daemon slot 1 (Grok-2) pid 4101527
+2026-10-14 12:57:49 harness    launched client daemon slot 2 (Haiku-1) pid 4101534
+2026-10-14 12:57:49 harness    launched client daemon slot 3 (Haiku-2) pid 4101541
+2026-10-14 12:57:49 harness    launched supervisor slot 0 (Grok-1, grok) pid 4101546
+2026-10-14 12:57:49 harness    launched supervisor slot 1 (Grok-2, grok) pid 4101566
+2026-10-14 12:57:49 harness    launched watchdog pid 4101575
+2026-10-14 12:57:49 sv1        supervisor up for Grok-2 (grok) pid 4101566 parent 4101475
+2026-10-14 12:57:49 sv0        supervisor up for Grok-1 (grok) pid 4101546 parent 4101475
+2026-10-14 12:57:49 sv1        Grok-2 launch 1 (grok) budget=3840s
+2026-10-14 12:57:49 watchdog   watching, session ends 13:57:49
+2026-10-14 12:57:49 sv0        Grok-1 launch 1 (grok) budget=3840s
+2026-10-14 13:51:50 sv0        Grok-1 agent exit 0 after 3241s
+2026-10-14 13:51:55 sv0        Grok-1 launch 2 (grok) budget=594s
+2026-10-14 13:55:18 sv1        Grok-2 agent exit 0 after 3449s
+2026-10-14 13:55:23 sv1        Grok-2 launch 2 (grok) budget=386s
+2026-10-14 13:55:49 sv0        Grok-1 agent exit 0 after 234s
+2026-10-14 13:55:54 sv0        supervisor done for Grok-1 launches=2 feedback=yes
+2026-10-14 13:56:48 sv1        Grok-2 agent exit 0 after 85s
+2026-10-14 13:56:53 sv1        supervisor done for Grok-2 launches=2 feedback=yes
+2026-10-14 13:56:55 harness    stop requested
+2026-10-14 13:56:55 watchdog   received SIGTERM, exiting
+2026-10-14 13:56:55 daemon client Grok-1 exited code -15; restarting
+2026-10-14 13:56:55 daemon client Grok-2 exited code -15; restarting
+2026-10-14 13:56:55 daemon client Haiku-1 exited code -15; restarting
+2026-10-14 13:56:55 daemon client Haiku-2 exited code -15; restarting
+2026-10-14 13:56:57 harness    stopped

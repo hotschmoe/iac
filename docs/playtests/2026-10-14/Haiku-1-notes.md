@@ -1,0 +1,16 @@
+# Haiku-1 notes
+- t30: start 2 LightFighters at home (-1,-4). Ore nearby thin: crystal at -1,-5 harvested, depleted in ~2 min. Deuterium absent near home; deut is the bottleneck (Robotics, Lab, Energy all need it).
+- Queue of 1 build slot: a waiting item (ResearchLab needing deut) blocks the slot, so other builds sit idle behind it.
+- Energy: mines ran at 40-64% until Solar Plant was raised; check energy early.
+- Stock metal/crystal piled up to ~4000 unspent (scores 0) while deut was 0. Raid forecast LOST all game (no defence, no shipyard early).
+- Hub exchange: 1000 crystal -> 525 deut at 30% fee. Good route but fleet must walk 5 hexes each way.
+- Mistake: walked fleet 84 back from hub via 4 hops with 210 fuel and ended stranded at 20 fuel. refine (deut in hold) rescued it instantly: 35 deut -> 378 fuel. Hold had 755 deut from the exchange (exchange output stays in hold!).
+- Refine is powerful: exchanged crystal in hold -> deut -> fuel.
+- Lots of time spent waiting; ships locked behind Shipyard 2-5 and Combustion Drive/Impulse etc.
+- t300-1000: deut via hub exchange (crystal->deut, 30% fee). Then deut piled up (3500) and metal ran out; flipped to metal->crystal (3000 metal -> ~1900 crystal). Hub trips cost ~90 s of ticks each and several orders.
+- Wasted two hub trips by not reading stock first (load refused, NoResources). Check `state` stock before loading.
+- Research/building queue of one slot: a waiting item at the head (ResearchLab needing 2000 deut) blocks everything behind it. Plan the head.
+- Research Armour 2 cost 4000 metal in one go (surprise, paid immediately).
+- Raid forecast flips LOST/AT RISK/REPELLED with fleet size; the home has only one Rocket Launcher late.
+- build_defence batch is 2000 metal per Rocket Launcher; Light Laser needs Laser Tech 3.
+- Score ~177 at t1500 vs leader Haiku-2 265; bots ~400.
