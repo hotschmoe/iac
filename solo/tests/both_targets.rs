@@ -19,6 +19,8 @@ use std::sync::OnceLock;
 
 use iac_shared::constants::{Density, TerrainType};
 use iac_shared::hex::Hex;
+use iac_shared::pace::Pace;
+use iac_shared::scaling;
 use iac_shared::world::{NpcBehaviorType, SectorTemplate, WorldGen};
 use iac_solo::Machine;
 use serde_json::{json, Value};
@@ -406,15 +408,16 @@ fn a_commanders_jump_out_of_a_fight_and_the_group_it_left_are_the_same_on_both_t
         groups[0],
     );
 
+    let mends = 10 * scaling::npc_heal_step_ticks(lair.dist_from_origin(), &Pace::parse("test").unwrap()) + 2;
     let mut after = Vec::new();
-    for _ in 0..12 {
+    for _ in 0..mends {
         after.extend(twin.tick());
     }
     assert!(events(&after, "BattleRound").is_empty(), "nothing fires on a fleet that got away: {after:?}");
     let snapshot = twin.checkpoint();
     assert!(
         rows(&snapshot["npc_fleets"]).is_empty(),
-        "at this pace a group mends in ten ticks, and whole again it is its lair's template: {}",
+        "at this pace a group mends in {mends} ticks, and whole again it is its lair's template: {}",
         snapshot["npc_fleets"],
     );
 }
