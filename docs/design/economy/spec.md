@@ -304,7 +304,7 @@ Today a raid is sized from the player's own defence, so it can never be an actua
 
 ### 5.3 PvP hooks
 
-The same defence stack is what a player attack would face. Needed later: attack costs the attacker fuel and exposes his fleet; protected storage and structure restoration (70 percent) cap what one attack can take; points for defence count 50 percent in the score (section 9) so farming defensive players is not profitable. Newbie protection and opt-in rules are open question 7.
+The same defence stack is what a player attack would face. Needed later: attack costs the attacker fuel and exposes his fleet; protected storage and structure restoration (70 percent) cap what one attack can take; defences score nothing (section 9), so a wall of them is not a score to farm. Newbie protection and opt-in rules are open question 7.
 
 ---
 
@@ -411,7 +411,7 @@ Tier follows threat: tier 1 for T1 to T3, tier 2 for T4 to T6, tier 3 for T7 to 
 |---|---|---|
 | Recoverable ship | `clamp(0.05 (T - 2), 0, 0.30)` | tier 1 pool Scout/Corvette, tier 2 plus Hauler/Frigate, tier 3 Corvette/Hauler/Frigate/Cruiser |
 | Data core (free research level) | `clamp(0.03 (T - 5), 0, 0.15)` | existing `grant_tech_level` |
-| Ancient relic (T7 and up, 2 percent per threat point above 6) | up to 6 percent | a unique item worth 25 score points, reserved for the item system (hook, no gameplay yet) |
+| Ancient relic (T6 and up, 2 percent per threat point above 5) | up to 8 percent | the site pays six times its loot (`RELIC_LOOT_MULT`); the count is kept for an item system |
 
 Old recovery odds were 0/15/25 percent and cache odds 0/0/10 percent by tier; the new curve reaches 25 percent recovery at T7 and 30 percent at T8 and above, and a 12 percent data core chance at T9.
 
@@ -424,21 +424,19 @@ Old recovery odds were 0/15/25 percent and cache odds 0/0/10 percent by tier; th
 
 ## 9. Score
 
-One ranking for humans and agents (decision 5). Points are decimal values shown to one decimal, recomputed when something completes, and recorded hourly for the season history.
+One ranking for humans and agents (decision 5). Points are decimal values shown to one decimal, recomputed from state whenever they are asked for. Since 2026-10-14 a score is what an empire has built and keeps, the owner's model (`docs/design/decisions.md`, that date): kills, charts and derelicts score nothing themselves and pay in resources, which score once they are built into something.
 
 ```
 weight(m, c, d)  = (1.0 m + 1.5 c + 2.0 d) / 1000          # production ratio 10 : 7 : 5 -> crystal and deuterium are scarcer
-econ     = sum over completed building levels and research levels of weight(cost paid)
-fleet    = sum over living ships of weight(build cost)
-defence  = 0.5 * sum over living structures of weight(build cost)
-combat   = sum over kills of weight(pile left) * pay(ratio)          # pile includes the finds factor and the sector's heat
-pay(r)   = clamp(4 / r, 0.05, 1)                                       # r = engaged power / NPC group power
-explore  = sum over first-time derelict boardings of 0.5 * weight(rolled loot) + 1.5 * T^1.5
-         + 30 per relic
-         + (0.15 + 0.10 * T^1.5) per newly charted sector delivered to a dock
-core     = econ + fleet + defence
-score    = core + min(combat + explore, 0.25 * core)
+buildings = sum over completed building levels of weight(cost paid)
+research  = sum over completed research levels of weight(cost paid)
+fleet     = sum over the ships the empire has now, Solar Satellites included, of weight(build cost)
+outpost   = sum over the finished levels of the outpost, while it stands, of weight(cost paid)
+defence   = DEFENCE_SHARE * sum over standing structures of weight(build cost)    # DEFENCE_SHARE = 0
+score     = buildings + research + fleet + outpost + defence
 ```
+
+What the field pays instead of points: a kill's wreckage (`1.71 x power^0.8` units times P^0.5, three times what it was when a kill also scored, less the sector's heat), a repelled raid's wreckage at home (`RAID_DEFENSE_SALVAGE_FRACTION` of what the raiders cost), a delivered chart (`50 + 50 x T^1.5` units for each sector new to the empire, at any pace), a derelict's loot (six times it with a relic aboard).
 
 What makes it hard to game:
 
@@ -446,15 +444,15 @@ What makes it hard to game:
 |---|---|
 | Build and cancel to farm points | only completed levels count; cancelling an active item returns 50 percent resources and 0 points |
 | Spend on ships and scuttle them | fleet points count living ships, so losses subtract |
-| Cheap defence spam | defences count 50 percent |
-| Farming trivial NPCs | pay falls as 4/ratio beyond 4x the NPC power (5% floor), pays once per respawn, and every recent kill in a sector multiplies the next kill's loot and score by 0.75 (heat halves every 4 respawn delays) |
-| Suicide scouts to chart space | charting points are credited only when the chart is delivered to a dock |
-| Exploring instead of building | the combat plus exploration share is capped at 25 percent of core points. In the simulation the cap binds from the middle of the arc, so exploration is a tie-breaker and a differentiator, not the ladder |
+| Cheap defence spam | defences score nothing; they pay in the wreckage of the raids they beat |
+| Farming trivial NPCs | a kill scores nothing; its wreckage falls by 0.75 for every recent kill in the sector (heat halves every 4 respawn delays), and the group returns on a finds clock |
+| Suicide scouts to chart space | a chart pays only when it is delivered to a dock, once per empire and sector, and at no more than its fixed value whatever the pace |
+| Exploring instead of building | exploring pays resources, which score only once they are built; a fleet's ships score while it lives |
 | Alt feeding (later, with trade) | transfers move resources but points are computed from what was *built*; resources received from another player never count |
 | PvP farming (later) | a kill pays `0.25 * weight(victim ship cost)` only if the victim's score is at least half the attacker's, and the same victim pays 1.0, 0.5, 0.25, 0 on successive kills in 24 hours |
 | Agent versus human | agents and humans are one population: same formula, same board; the leaderboard may carry an `agent` flag for filtering, never for scoring |
 
-End-of-run scores in the simulation (competent): persistent about 3,000 at day 74, season about 2,300 at day 7.2, blitz about 2,900 at 3.1 h. Season boards reset with the world; the persistent board is rolling.
+Season boards reset with the world; the persistent board is rolling. What the styles score under this rule, measured on bot worlds and in the planning simulation, is in `docs/journal.md` (2026-10-14).
 
 ---
 
@@ -538,7 +536,7 @@ All additions are optional fields or appended variants, so existing agents keep 
 {"cmd":"preview_move","fleet_id":7,"target":{"q":9,"r":-8}}   // -> PreviewMove{threat, ratio, label, fuel_cost, fuel_after, hops_home}
 {"cmd":"build_defence","kind":"lancer","count":4}
 {"cmd":"cancel_queued","queue":"building","index":1}
-{"cmd":"leaderboard","limit":20}                                // -> Leaderboard{ entries:[{rank,name,agent,score,core,combat,explore}] }
+{"cmd":"leaderboard","limit":20}                                // -> Leaderboard{ entries:[{rank,name,agent,score,buildings,research,fleet,outpost,defence}] }
 
 // events (new/extended)
 StorageNearCap{resource, ratio, full_in_s}; StorageFull{resource};

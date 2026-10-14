@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 14;
+pub const ECONOMY_VERSION: u32 = 17;
 /// Bumped when sector generation changes.
-pub const WORLDGEN_VERSION: u32 = 4;
+pub const WORLDGEN_VERSION: u32 = 5;
 
 /// Server tick rate.
 pub const TICK_RATE_HZ: u64 = 1;
@@ -489,11 +489,13 @@ impl Resources {
     }
 }
 
-/// Starting resources for new players.
+/// Starting resources for new players. The deuterium pays what Robotics
+/// Factory 2 and the Research Lab ask of it (800), so the opening is not
+/// held for the first Deuterium Synthesizer levels. Provisional.
 pub const STARTING_RESOURCES: Resources = Resources {
     metal: 500.0,
     crystal: 300.0,
-    deuterium: 100.0,
+    deuterium: 800.0,
 };
 
 /// What a new empire flies. OGame starts with no ships; this is this game's
@@ -513,11 +515,12 @@ pub const MAP_PAYS: f64 = 3.0;
 /// Provisional.
 pub const HOME_TEMPERATURE_MAX: i32 = 40;
 
-/// A jump takes `max(1, ceil(sqrt(JUMP_SPEED_REF / speed)))` ticks, at the
-/// speed of the fleet's slowest ship: OGame's law of flight time, for one
-/// hop. Provisional: it trades how much speed matters against how long
-/// every trip takes.
-pub const JUMP_SPEED_REF: f64 = 50_000.0;
+/// A jump takes `max(1, ceil(JUMP_SPEED_REF / speed))` ticks, at the speed
+/// of the fleet's slowest ship: twice a Light Fighter's, so the first
+/// fleets fly as they always did, and a fast fleet is something a player
+/// builds (a Cruiser on Impulse Drive 4 jumps in one tick). Provisional: it
+/// trades how much speed matters against how long every trip takes.
+pub const JUMP_SPEED_REF: f64 = 25_000.0;
 
 /// Each level of the Deuterium Tank adds this share to every fleet's tank.
 /// Provisional.
@@ -602,7 +605,7 @@ pub const NPC_DRIVE_RINGS_PER_LEVEL: u16 = 4;
 /// Pirates heal (section 7.5). A group that has fought keeps its losses and
 /// its damage; at rest in its own sector it is whole again after this share
 /// of the time a destroyed group takes to return
-/// (`scaling::npc_respawn_hours`, an economy timer), in `NPC_HEAL_STEPS`
+/// (`scaling::npc_respawn_ticks`, a finds timer), in `NPC_HEAL_STEPS`
 /// steps: at each, that part of the ships it was generated with return, as
 /// far as it is short, and every damaged ship regains that part of its full
 /// hull. Provisional, and the owner's range: "an hour" to "a few hours" at

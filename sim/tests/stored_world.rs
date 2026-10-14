@@ -408,15 +408,15 @@ fn a_fight_of_large_fleets_stopped_between_every_two_rounds_is_fought_as_if_it_h
 /// leash and the mending are the group's, so the document holds them all.
 #[test]
 fn a_flight_and_a_pursuit_stopped_after_every_tick_are_flown_as_if_the_host_had_never_stopped() {
-    use ShipClass::{LightFighter, SmallCargo};
+    use ShipClass::{LargeCargo, LightFighter};
     const PACK: u64 = 900_002;
     let stage = || {
-        let mut engine = GameEngine::new(DEFAULT_WORLD_SEED, Pace::parse("season").unwrap());
+        let mut engine = GameEngine::new(DEFAULT_WORLD_SEED, Pace::parse("blitz").unwrap());
         let (pid, fid) = common::join(&mut engine, "Convoy");
         let home = engine.players[&pid].homeworld;
         let lane = common::open_lane(&engine, home, 5);
-        common::muster(&mut engine, fid, &[(SmallCargo, 300)], lane[0]);
-        common::horde(&mut engine, PACK, lane[0], &[(LightFighter, 160)], 1.0);
+        common::muster(&mut engine, fid, &[(LargeCargo, 100)], lane[0]);
+        common::horde(&mut engine, PACK, lane[0], &[(LightFighter, 150)], 1.0);
         common::edit(&mut engine, |s| s.npc_fleets.get_mut(&PACK).unwrap().behavior = NpcBehaviorType::Aggressive);
         let attack = engine.execute(pid, Command::Attack { fleet_id: fid, target_fleet_id: PACK });
         assert!(attack.error.is_none(), "{:?}", attack.error);
@@ -476,7 +476,7 @@ fn a_flight_and_a_pursuit_stopped_after_every_tick_are_flown_as_if_the_host_had_
          charging fleet ({caught}), on its way back ({returning}) and while it mended ({mending})",
     );
     let whole_at = whole_at.expect("the pack came back wounded");
-    assert!(whole_at <= 400, "in a season a pack a convoy scratched is whole within the run: tick {whole_at}");
+    assert!(whole_at <= 400, "at blitz a pack a convoy scratched is whole within the run: tick {whole_at}");
     assert!(!stopped.npc_fleets.contains_key(&PACK), "and whole again it has stood down");
 }
 

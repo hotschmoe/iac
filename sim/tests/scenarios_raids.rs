@@ -15,7 +15,7 @@ use iac_shared::constants::{
 };
 use iac_shared::protocol::{
     BattleOutcome, BattleRoundEvent, Command, CombatEndedEvent, ErrorCode, EventKind, PolicyPreset, RaidLabel,
-    RaidResolvedEvent, UnitCount,
+    RaidResolvedEvent, StockpileCause, UnitCount,
 };
 use iac_shared::scaling::{self, DefenceKind, ShipyardItem};
 use iac_sim::GameEngine;
@@ -197,7 +197,7 @@ fn a_raid_destroyed_at_home_is_fought_round_by_round_and_leaves_its_wreckage() {
     assert_eq!((outcome.raid_power, outcome.resources_lost), (forecast.power, Resources::default()));
     let pile = LightFighter.build_cost().scale(30.0 * RAID_DEFENSE_SALVAGE_FRACTION);
     assert_eq!(outcome.salvage_dropped, Some(pile), "three tenths of what thirty Light Fighters cost");
-    assert_eq!(ended.salvage, Some(pile));
+    assert_eq!((ended.salvage, ended.salvage_pile), (Some(pile), None), "the fight's wreckage is all that lies there");
 
     let lasers_lost = lost_of(&told, LightLaser);
     let rebuilt = rebuilt_of(&told, LightLaser);
@@ -220,10 +220,15 @@ fn a_raid_destroyed_at_home_is_fought_round_by_round_and_leaves_its_wreckage() {
     e.run(2);
     assert!(e.fleet().repair.is_none(), "the home dock mends what the fight left of the fleet");
     let scooped = e.since(mark, |k| match k {
-        EventKind::SalvageCollected(c) if c.sector == home => Some(c.resources),
+        EventKind::Stockpile(s) => Some((s.player_id, s.fleet_id, s.cause, s.amount)),
         _ => None,
     });
-    assert_eq!(scooped, [pile], "the docked fleet scoops the wreckage into storage");
+    assert_eq!(scooped, [(pid, fid, StockpileCause::Wreckage, pile)], "the docked fleet scoops the wreckage into storage, and says so");
+    assert!(e.engine.sector_overrides.get(&home.to_key()).is_none_or(|o| o.salvage.is_none()), "all of it");
+    assert!(!e.log[mark..].iter().any(|ev| matches!(ev.kind, EventKind::SalvageCollected(_))), "no hold took it");
+    let owner = e.engine.players[&pid].clone();
+    let told = e.log[mark..].iter().filter_map(|ev| iac_sim::views::event_for(ev, &owner, &e.engine));
+    assert_eq!(told.filter(|ev| matches!(ev.kind, EventKind::Stockpile(_))).count(), 1, "the event reaches its owner");
 }
 
 fn told_rounds(e: &Empire, mark: usize) -> Vec<BattleRoundEvent> {
@@ -274,6 +279,33 @@ fn a_defence_that_could_never_beat_the_raid_outlasts_it_for_six_rounds() {
     let made = e.engine.players[&pid].production_per_tick(&e.engine.pace()).scale(f64::from(RAID_ROUNDS + 2));
     assert!((e.stockpile().metal - stock.metal - made.metal).abs() < 1e-6, "the stockpile only grew");
     assert_eq!(e.engine.snapshot().raid_states[&pid].suppress_until, 0, "a raid repelled buys no quiet");
+}
+
+#[test]
+fn defences_score_nothing_and_pay_in_the_wreckage_of_the_raids_they_beat() {
+    let mut e = garrison(&[(SmallCargo, 2)], &[], 0);
+    let pid = e.pid;
+    let bare = e.score_row();
+    fortify(&mut e.engine, pid, &[(LightLaser, 60)], 0);
+    let walled = e.score_row();
+    assert_eq!((walled.defence, walled.score), (0.0, bare.score), "sixty Light Lasers add nothing to the score");
+    let worth = iac_sim::score::score_of(&e.engine, &e.engine.players[&pid]).defences;
+    assert!((worth - 60.0 * scaling::resource_weight(&LightLaser.build_cost())).abs() < 1e-3, "what they cost: {worth}");
+
+    e.run(5);
+    let (mark, stock) = (e.mark(), e.engine.players[&pid].resources);
+    send_raid(&mut e.engine, pid, &[(LightFighter, 20)], 1.0, 3);
+    let told = sit_out(&mut e);
+    assert_eq!(told.resolved.outcome, Some(BattleOutcome::HostilesDestroyed), "the lasers destroy the raid");
+    let pile = LightFighter.build_cost().scale(20.0 * RAID_DEFENSE_SALVAGE_FRACTION);
+    assert_eq!(told.resolved.salvage_dropped, Some(pile), "which leaves its wreckage at home");
+    e.run(2);
+    let scooped = e.since(mark, |k| match k {
+        EventKind::Stockpile(s) if s.cause == StockpileCause::Wreckage => Some(s.amount),
+        _ => None,
+    });
+    assert_eq!(scooped, [pile], "the docked fleet scoops it");
+    assert!(e.engine.players[&pid].resources.metal >= stock.metal + pile.metal, "into the stockpile, to be built with");
 }
 
 #[test]

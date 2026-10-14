@@ -596,7 +596,7 @@ void main() {
     expect(log().take(6), [
       'Site [10,0], ring 10: grade 1.5, level 1 makes 117 Cr, 58.5 De an hour, 8 hops from home',
       'Level 1 stands with a platform of 4x Rocket Launcher; raids of this ring are of power 383 to 551',
-      'Against that platform alone a raid of 1x Cruiser (power 467) is LOST: ${proto.RaidLabel.lost.outcome} (destroyed 0%, outlasted 0%, lost 100%)',
+      'Against that platform alone a raid of 5x Light Fighter (power 467) is LOST: ${proto.RaidLabel.lost.outcome} (destroyed 0%, outlasted 0%, lost 100%)',
       'Level 1 costs 3,000 Fe, 1,500 Cr, 600 De from the founding hold and takes 0:20',
       'F101 can found it now',
       '> survey',

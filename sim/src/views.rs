@@ -438,6 +438,7 @@ pub fn event_for(event: &GameEvent, player: &Player, engine: &GameEngine) -> Opt
         K::FleetArrived(e) => own_fleet(e.fleet_id),
         K::ResourceHarvested(e) => own_fleet(e.fleet_id),
         K::SalvageCollected(e) => own_fleet(e.fleet_id),
+        K::Stockpile(e) => e.player_id == player.id,
         K::BuildingCompleted(e) => e.player_id.is_none_or(|p| p == player.id),
         K::ResearchCompleted(e) => e.player_id.is_none_or(|p| p == player.id),
         K::ShipBuilt(e) => e.player_id.is_none_or(|p| p == player.id),

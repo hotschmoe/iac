@@ -26,6 +26,10 @@ String amountsOf(proto.Resources r) {
   return amounts.isEmpty ? 'nothing' : amounts;
 }
 
+/// "F84 unloaded into the stockpile: 4,312 Fe, 120 De": a `Stockpile` event
+/// as the log and the alerts print it.
+String stockpileLine(proto.StockpileEvent e) => 'F${e.fleetId} ${e.cause.phrase}: ${amountsOf(e.amount)}';
+
 /// "short by 1,234 Fe, 56 Cr": the parts of [missing] above zero, each
 /// rounded up. Every shortfall the console prints is this phrase; [opening]
 /// starts a caption with it.
@@ -87,7 +91,9 @@ List<String> quoteLines(proto.ExchangeQuote q) {
 List<String> boardLines(proto.LeaderboardReply b) => [
       for (final e in [...b.entries.take(5), if (b.you != null) b.you!])
         '#${e.rank} ${e.name}${e.agent ? ' [AI]' : ''}  ${e.score.toStringAsFixed(1)} '
-            '(core ${e.core.toStringAsFixed(1)}, combat ${e.combat.toStringAsFixed(1)}, explore ${e.explore.toStringAsFixed(1)})',
+            '(buildings ${e.buildings.toStringAsFixed(1)}, research ${e.research.toStringAsFixed(1)}, '
+            'fleet ${e.fleet.toStringAsFixed(1)}${e.outpost > 0 ? ', outpost ${e.outpost.toStringAsFixed(1)}' : ''}'
+            '${e.defence > 0 ? ', defence ${e.defence.toStringAsFixed(1)}' : ''})',
       if (b.bots.isNotEmpty) '${b.bots.length} built-in bots, unranked; best ${b.bots.first.name} ${b.bots.first.score.toStringAsFixed(1)}',
     ];
 
@@ -398,6 +404,11 @@ class StateMapper {
       case proto.SalvageCollectedEvent():
         msg = '${_fleet(k.fleetId)} collected salvage ${amountsOf(k.resources)}'
             '${k.remaining == null ? '' : ", ${amountsOf(k.remaining!)} left behind"}';
+      case proto.StockpileEvent():
+        msg = stockpileLine(k);
+        if (k.cause != proto.StockpileCause.loaded) {
+          _pushAlert(Alert(icon: '+', message: msg, detail: '', level: AlertTone.dim));
+        }
       case proto.SalvageDespawnedEvent():
         msg = 'Wreckage in ${k.sector} drifted away (${amountsOf(k.resources)})';
         level = EventLevel.dim;
@@ -483,11 +494,10 @@ class StateMapper {
         msg = '${_fleet(k.fleetId)} derelict yielded ${amountsOf(k.resources)}'
             '${k.recoveredShip != null ? ', recovered ${k.recoveredShip!.label}' : ''}'
             '${k.techCache != null ? ', data core: ${k.techCache!.label}' : ''}'
-            '${k.relic ? ', ANCIENT RELIC' : ''}${k.points > 0 ? ' (+${k.points.toStringAsFixed(2)} explore)' : ''}';
+            '${k.relic ? ', an ancient relic among it' : ''}';
         level = EventLevel.bright;
       case proto.ChartDeliveredEvent():
-        msg = '${_fleet(k.fleetId)} delivered the chart of ${k.sectors} sectors '
-            '(+${k.points.toStringAsFixed(2)} explore)';
+        msg = '${_fleet(k.fleetId)} delivered the chart of ${k.sectors} sectors';
         level = EventLevel.bright;
       case proto.ExchangedEvent():
         final t = k.terms;

@@ -109,7 +109,7 @@ fn a_check_in_builder_orders_only_the_ships_and_turrets_its_stockpile_covers() {
     let light_fighter = iac_shared::constants::ShipClass::LightFighter.build_cost();
     let started_with = iac_shared::scaling::resource_weight(&light_fighter) * 2.0 / 1000.0;
     assert!(
-        turtle.score.defence > 0.0 && turtle.score.fleet > started_with,
+        turtle.score.defences > 0.0 && turtle.score.fleet > started_with,
         "it did order turrets, and ships or Solar Satellites, which the yard builds as ships: {:?}",
         turtle.score
     );
@@ -147,7 +147,8 @@ fn bots_build_fly_and_delegate_with_orders_the_engine_accepts() {
     assert_eq!((idle.turns, idle.orders_accepted), (0, 0));
 
     for p in players.iter().filter(|p| p.style != "idle") {
-        assert!(p.score.econ > 20.0 * idle.score.econ, "{} built nothing: econ {}", p.name, p.score.econ);
+        let built = |s: &iac_sim::headless::ScoreBreakdown| s.buildings + s.research;
+        assert!(built(&p.score) > 20.0 * built(&idle.score), "{} built nothing: {}", p.name, built(&p.score));
         assert!(
             p.orders_refused * 50 <= p.orders_accepted,
             "{} sends orders the engine refuses: {} of {}",
@@ -160,11 +161,11 @@ fn bots_build_fly_and_delegate_with_orders_the_engine_accepts() {
 
     let pilot = player(&players, "explorer/hands-on");
     assert!(pilot.field.sectors_charted > 20, "the pilot delivered {} charts", pilot.field.sectors_charted);
-    assert!(pilot.score.explore > 0.0 && pilot.score.extra > 0.0);
+    assert!(pilot.field.chart_pay > 0.0, "and was paid for them");
 
     let turtle = player(&players, "turtle/hands-on");
     assert_eq!((turtle.field.sectors_charted, turtle.field.kills), (0, 0), "a turtle stays home");
-    assert!(turtle.score.defence > 0.0, "a turtle builds defences");
+    assert!(turtle.score.defences > 0.0, "a turtle builds defences");
 
     let absentee = player(&players, "explorer/check-in");
     assert!(
@@ -299,7 +300,7 @@ fn the_view_a_bot_folds_from_tick_updates_is_the_full_state() {
             marked = marked.max(view.known_sectors.iter().filter(|s| s.chart.is_some()).count());
         }
     }
-    assert!(compared > 2_500, "bots acting tick after tick were followed: {compared} views compared");
+    assert!(compared > 2_000, "bots acting tick after tick were followed: {compared} views compared");
     assert!(marked > 50, "charts were made and marked: {marked} in the fullest view compared");
 }
 
@@ -336,7 +337,7 @@ fn a_world_of_bots_restarted_through_its_document_plays_on_as_if_never_stopped()
         engine.bots().keys().map(|id| iac_sim::score::score_of(engine, &engine.players[id]).total()).sum()
     };
     assert!(score(&stopped) > 50.0 * styles().len() as f32, "the bots played: {} points between them", score(&stopped));
-    assert!(stopped.players.values().any(|p| p.explore_points > 0.0), "a bot's fleet flew out and came home");
+    assert!(!stopped.snapshot().charted.is_empty(), "a bot's fleet flew out and came home with a chart");
 }
 
 #[test]

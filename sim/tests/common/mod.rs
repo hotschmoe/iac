@@ -326,6 +326,12 @@ pub fn pile_of(events: &[GameEvent]) -> (iac_shared::constants::Resources, u64) 
 }
 
 pub fn lane_path(engine: &GameEngine, from: Hex, to: Hex, max_hops: usize) -> Option<Vec<Hex>> {
+    lane_path_through(engine, from, to, max_hops, &|_| true)
+}
+
+/// `lane_path` stepping only through sectors `passable` accepts; `to`
+/// itself need not pass.
+pub fn lane_path_through(engine: &GameEngine, from: Hex, to: Hex, max_hops: usize, passable: &dyn Fn(Hex) -> bool) -> Option<Vec<Hex>> {
     let mut came_from = HashMap::from([(from.to_key(), from)]);
     let mut frontier = std::collections::VecDeque::from([(from, 0usize)]);
     while let Some((at, hops)) = frontier.pop_front() {
@@ -342,6 +348,9 @@ pub fn lane_path(engine: &GameEngine, from: Hex, to: Hex, max_hops: usize) -> Op
             continue;
         }
         for &next in engine.world_gen.connected_neighbors(at).slice() {
+            if next != to && !passable(next) {
+                continue;
+            }
             if let std::collections::hash_map::Entry::Vacant(slot) = came_from.entry(next.to_key()) {
                 slot.insert(at);
                 frontier.push_back((next, hops + 1));

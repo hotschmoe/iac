@@ -7,6 +7,7 @@
 //
 // The report goes to stdout; timing goes to stderr.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::Instant;
 
@@ -15,15 +16,15 @@ use iac_shared::pace::Pace;
 use iac_shared::world::home_seats;
 use iac_sim::bot::{Attention, Bot, Personality, Style, DAY, DEFAULT_SESSIONS_PER_DAY, MAX_SESSIONS_PER_DAY};
 use iac_sim::headless::{
-    FieldTally, Headless, IdleWhy, OutpostOrder, PlayerSummary, ScoreBreakdown, SlotIdle, Why, WHY_LABELS,
+    FieldTally, Flight, Headless, IdleWhy, OutpostOrder, PlayerSummary, ScoreBreakdown, SlotIdle, Why, WHY_LABELS,
 };
-use iac_sim::score::ExtraRule;
+use iac_sim::score::DEFENCE_SHARE;
 use iac_sim::script::IdlePlayer;
 use serde_json::json;
 
 const USAGE: &str = "usage: sim-run [--pace <preset|number>] [--seed <n>] [--seat <spec>]... [--sessions <n>]
-               [--ticks <n> | --hours <n> | --days <n>] [--every <ticks>] [--ignore-cap] [--cap <rule>]
-               [--meter <share>]... [--outpost <ring>:<grade>:<level>[:<repairs>]] [--json]
+               [--ticks <n> | --hours <n> | --days <n>] [--every <ticks>] [--defence-share <share>]
+               [--outpost <ring>:<grade>:<level>[:<repairs>]] [--json]
   --pace      world pace (default season)
   --seed      world seed (default: the server's default)
   --seat      who plays; repeatable. <personality>:<attention>[:<count>] or idle[:<count>]
@@ -35,18 +36,8 @@ const USAGE: &str = "usage: sim-run [--pace <preset|number>] [--seed <n>] [--sea
               season's pace their day is shorter than a day of the clock (at blitz about 67 minutes)
   --ticks/--hours/--days  simulated duration; a tick is one second (default --days 1)
   --every     ticks between score samples (default: a day; a tenth of a run under two days)
-  --ignore-cap  bots keep flying for combat and exploration points past the score cap
-                (measures what the map offers; by default they stop once the cap is banked)
-  --cap       score the run, and have the bots play, under another rule for combat and
-              exploration points than the game's (which is 0.25); the world itself is untouched
-                <share>       counted up to that share of core, not beyond: 0.5
-                soft:<share>  counted in full up to that share of core, beyond it by the
-                              square root (four times the points count double)
-                none          counted in full
-  --meter     also report what a daily allowance of <share> of core would have counted;
-              repeatable. A meter fills with the points earned and drains by one allowance
-              a day; a point counts in full while it stands under one allowance, by the
-              square root beyond. The bots do not play to it: pair it with --cap none
+  --defence-share  score the run with defences at <share> of their cost (0 to 1) instead of
+              the game's share; nothing in the world reads the score, so only the report moves
   --outpost   stand an outpost of <level> (1 to 3) for every bot at the start of day 3, on the
               sector of <ring> (9 to 20) whose ore is nearest <grade> (0 to 12) among those free,
               three hexes from the next. Nothing is founded or paid, and no bot supplies it,
@@ -78,9 +69,7 @@ struct Args {
     ticks: u64,
     every: Option<u64>,
     json: bool,
-    ignore_cap: bool,
-    rule: ExtraRule,
-    meters: Vec<f32>,
+    defence_share: f32,
     outpost: Option<OutpostOrder>,
 }
 
@@ -112,31 +101,18 @@ fn parse_outpost(text: &str) -> Result<OutpostOrder, String> {
     })
 }
 
-fn parse_share(flag: &str, text: &str) -> Result<f32, String> {
+fn parse_share(text: &str) -> Result<f32, String> {
     match text.parse::<f32>() {
-        Ok(share) if share > 0.0 && share.is_finite() => Ok(share),
-        _ => Err(format!("{flag}: '{text}' is not a share of core above zero")),
+        Ok(share) if (0.0..=1.0).contains(&share) => Ok(share),
+        _ => Err(format!("--defence-share: '{text}' is not a share from 0 to 1")),
     }
 }
 
-fn parse_rule(text: &str) -> Result<ExtraRule, String> {
-    match text.split_once(':') {
-        None if text == "none" => Ok(ExtraRule::Uncapped),
-        None => parse_share("--cap", text).map(ExtraRule::Cap),
-        Some(("soft", knee)) => parse_share("--cap", knee).map(ExtraRule::Soft),
-        Some(_) => Err(format!("--cap: '{text}' is not <share>, soft:<share> or none")),
-    }
-}
-
-fn rule_text(rule: ExtraRule) -> String {
-    match rule {
-        ExtraRule::Cap(share) => format!("extra = min(combat + explore, {:.0}% of core)", 100.0 * share),
-        ExtraRule::Soft(knee) => format!(
-            "extra = combat + explore up to k = {:.0}% of core, beyond it sqrt(k * (combat + explore))",
-            100.0 * knee
-        ),
-        ExtraRule::Uncapped => "extra = combat + explore".to_string(),
-    }
+fn rule_text(defence_share: f32) -> String {
+    format!(
+        "score = buildings + research + fleet + outpost + {:.0}% of what the defences cost",
+        100.0 * defence_share
+    )
 }
 
 fn parse_seat(spec: &str) -> Result<Vec<Kind>, String> {
@@ -158,9 +134,7 @@ fn parse_args() -> Result<Args, String> {
         ticks: DAY,
         every: None,
         json: false,
-        ignore_cap: false,
-        rule: ExtraRule::GAME,
-        meters: Vec::new(),
+        defence_share: DEFENCE_SHARE,
         outpost: None,
     };
     let mut it = std::env::args().skip(1);
@@ -169,10 +143,6 @@ fn parse_args() -> Result<Args, String> {
             "--help" | "-h" => return Err(String::new()),
             "--json" => {
                 args.json = true;
-                continue;
-            }
-            "--ignore-cap" => {
-                args.ignore_cap = true;
                 continue;
             }
             _ => {}
@@ -184,8 +154,7 @@ fn parse_args() -> Result<Args, String> {
             "--seed" => args.seed = number("--seed")?,
             "--seat" => args.seats.extend(parse_seat(&value)?),
             "--sessions" => args.sessions = number("--sessions")?,
-            "--cap" => args.rule = parse_rule(&value)?,
-            "--meter" => args.meters.push(parse_share("--meter", &value)?),
+            "--defence-share" => args.defence_share = parse_share(&value)?,
             "--outpost" => args.outpost = Some(parse_outpost(&value)?),
             "--ticks" => args.ticks = number("--ticks")?,
             "--hours" => args.ticks = number("--hours")? * 3600,
@@ -233,8 +202,8 @@ fn seat_all(world: &mut Headless, args: &Args) -> Result<Vec<u64>, String> {
                 world.add_player(Box::new(IdlePlayer { label: name }), style)?;
             }
             Kind::Bot(bot_style) => {
-                let bot_style = Style { sessions_per_day: args.sessions, ignore_cap: args.ignore_cap, ..bot_style };
-                bots.push(world.add_player(Box::new(Bot::new(name, bot_style).under(args.rule)), style)?);
+                let bot_style = Style { sessions_per_day: args.sessions, ..bot_style };
+                bots.push(world.add_player(Box::new(Bot::new(name, bot_style)), style)?);
             }
         }
     }
@@ -253,12 +222,12 @@ fn when(tick: u64) -> String {
 
 fn score_columns(s: &ScoreBreakdown) -> String {
     format!(
-        "{:>8.1} {:>7.1} {:>7.1} {:>7.1} {:>8.1} {:>8.1} {:>8.1} {:>8.1}",
-        s.econ, s.fleet, s.defence, s.core, s.combat, s.explore, s.extra, s.total
+        "{:>9.1} {:>8.1} {:>7.1} {:>7.1} {:>8.1} {:>8.1}",
+        s.buildings, s.research, s.fleet, s.outpost, s.defences, s.total
     )
 }
 
-const SCORE_HEADER: &str = "    econ   fleet defence    core   combat  explore    extra    total";
+const SCORE_HEADER: &str = "buildings research   fleet outpost defences    total";
 
 struct StyleRow {
     style: String,
@@ -266,6 +235,7 @@ struct StyleRow {
     score: ScoreBreakdown,
     haul: f32,
     raid_salvage: f32,
+    chart_pay: f32,
     ships_lost: f32,
     /// Fights left by a jump under fire.
     fled: f32,
@@ -275,7 +245,8 @@ struct StyleRow {
     /// Share of what the mines made that a full store turned away.
     spilled: f32,
     fleet_hours: f32,
-    unpaid_hours: f32,
+    fights_begun: f32,
+    fights_on_hurt: f32,
 }
 
 fn whys(why: &mut IdleWhy<f32>) -> impl Iterator<Item = &mut f32> {
@@ -292,6 +263,7 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
                 score: ScoreBreakdown::default(),
                 haul: 0.0,
                 raid_salvage: 0.0,
+                chart_pay: 0.0,
                 ships_lost: 0.0,
                 fled: 0.0,
                 refuel_deuterium: 0.0,
@@ -299,24 +271,24 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
                 why: IdleWhy::default(),
                 spilled: 0.0,
                 fleet_hours: 0.0,
-                unpaid_hours: 0.0,
+                fights_begun: 0.0,
+                fights_on_hurt: 0.0,
             });
             rows.len() - 1
         });
         let row = &mut rows[at];
         row.players += 1;
         let (sum, s) = (&mut row.score, &p.score);
-        sum.econ += s.econ;
+        sum.buildings += s.buildings;
+        sum.research += s.research;
         sum.fleet += s.fleet;
-        sum.defence += s.defence;
         sum.outpost += s.outpost;
-        sum.core += s.core;
-        sum.combat += s.combat;
-        sum.explore += s.explore;
-        sum.extra += s.extra;
+        sum.defences += s.defences;
+        sum.defence += s.defence;
         sum.total += s.total;
         row.haul += p.field.haul();
         row.raid_salvage += p.field.raid_salvage;
+        row.chart_pay += p.field.chart_pay;
         row.ships_lost += p.field.ships_lost as f32;
         row.fled += p.field.fights_fled as f32;
         row.refuel_deuterium += p.field.refuel_deuterium;
@@ -331,16 +303,17 @@ fn styles(players: &[PlayerSummary]) -> Vec<StyleRow> {
             row.spilled += p.spilled / p.mined;
         }
         row.fleet_hours += p.field.fleet_hours;
-        row.unpaid_hours += p.field.unpaid_hours;
+        row.fights_begun += p.field.fights_begun as f32;
+        row.fights_on_hurt += p.field.fights_on_hurt as f32;
     }
     for row in &mut rows {
         let n = row.players as f32;
         let s = &mut row.score;
         for value in [
-            &mut s.econ, &mut s.fleet, &mut s.defence, &mut s.outpost, &mut s.core, &mut s.combat, &mut s.explore,
-            &mut s.extra, &mut s.total, &mut row.haul, &mut row.raid_salvage, &mut row.ships_lost, &mut row.fled,
+            &mut s.buildings, &mut s.research, &mut s.fleet, &mut s.outpost, &mut s.defences, &mut s.defence,
+            &mut s.total, &mut row.haul, &mut row.raid_salvage, &mut row.chart_pay, &mut row.ships_lost, &mut row.fled,
             &mut row.idle.building, &mut row.idle.research, &mut row.idle.shipyard, &mut row.spilled,
-            &mut row.fleet_hours, &mut row.unpaid_hours,
+            &mut row.fleet_hours, &mut row.fights_begun, &mut row.fights_on_hurt,
         ] {
             *value /= n;
         }
@@ -532,8 +505,8 @@ fn style_table(players: &[PlayerSummary]) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{:<20} {:>2} {SCORE_HEADER} {:>7} {:>7} {:>6} {:>6} {:>8} {:>7} {:>7} {:>6} {:>9} {:>11}",
-        "style", "n", "haul", "raidsal", "lost", "fled", "refuel", "spilled", "field h", "unpaid", "vs turtle",
+        "{:<20} {:>2} {SCORE_HEADER} {:>7} {:>7} {:>6} {:>6} {:>6} {:>8} {:>7} {:>7} {:>6} {:>9} {:>11}",
+        "style", "n", "haul", "raidsal", "charts", "lost", "fled", "refuel", "spilled", "field h", "hurt", "vs turtle",
         "vs hands-on"
     );
     for row in &rows {
@@ -542,18 +515,19 @@ fn style_table(players: &[PlayerSummary]) -> String {
         let hands_on = total_of(format!("{personality}/{}", Attention::HandsOn.label()));
         let _ = writeln!(
             out,
-            "{:<20} {:>2} {} {:>7.1} {:>7.1} {:>6.1} {:>6.1} {:>8.0} {:>6.1}% {:>7.0} {:>6} {:>9} {:>11}",
+            "{:<20} {:>2} {} {:>7.1} {:>7.1} {:>6.1} {:>6.1} {:>6.1} {:>8.0} {:>6.1}% {:>7.0} {:>6} {:>9} {:>11}",
             row.style,
             row.players,
             score_columns(&row.score),
             row.haul,
             row.raid_salvage,
+            row.chart_pay,
             row.ships_lost,
             row.fled,
             row.refuel_deuterium,
             100.0 * row.spilled,
             row.fleet_hours,
-            percent(row.unpaid_hours, Some(row.fleet_hours)),
+            percent(row.fights_on_hurt, Some(row.fights_begun)),
             percent(row.score.total, turtle),
             percent(row.score.total, hands_on),
         );
@@ -582,52 +556,25 @@ fn why_table(players: &[PlayerSummary]) -> String {
     out
 }
 
-/// The run by style as meter `at` would have scored it.
-fn meter_table(players: &[PlayerSummary], at: usize) -> String {
-    struct Row {
-        style: String,
-        players: f32,
-        core: f32,
-        bonus: f32,
-        fleet_hours: f32,
-        unpaid_hours: f32,
-    }
-    let mut rows: Vec<Row> = Vec::new();
+/// Flight and pursuit over every player, by the kind of fleet.
+fn flight_table(players: &[PlayerSummary]) -> String {
+    let mut kinds: BTreeMap<&str, Flight> = BTreeMap::new();
     for p in players {
-        let Some(meter) = p.meters.get(at) else { continue };
-        let row = match rows.iter_mut().find(|r| r.style == p.style) {
-            Some(row) => row,
-            None => {
-                rows.push(Row { style: p.style.clone(), players: 0.0, core: 0.0, bonus: 0.0, fleet_hours: 0.0, unpaid_hours: 0.0 });
-                rows.last_mut().expect("a row was pushed")
-            }
-        };
-        row.players += 1.0;
-        row.core += p.score.core;
-        row.bonus += meter.bonus;
-        row.fleet_hours += p.field.fleet_hours;
-        row.unpaid_hours += meter.unpaid_hours;
+        for (kind, f) in &p.flights {
+            let sum = kinds.entry(kind.as_str()).or_default();
+            sum.rounds_fleeing += f.rounds_fleeing;
+            sum.pursued += f.pursued;
+            sum.pursuit_hops += f.pursuit_hops;
+            sum.pursuits_abandoned += f.pursuits_abandoned;
+        }
     }
-    let total_of = |style: String| rows.iter().find(|r| r.style == style).map(|r| (r.core + r.bonus) / r.players);
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "{:<20} {:>8} {:>8} {:>8} {:>6} {:>9} {:>11}",
-        "style", "core", "bonus", "total", "unpaid", "vs turtle", "vs hands-on"
-    );
-    for row in &rows {
-        let (personality, attention) = row.style.split_once('/').unwrap_or((row.style.as_str(), ""));
-        let total = (row.core + row.bonus) / row.players;
+    let _ = writeln!(out, "{:<28} {:>8} {:>8} {:>8} {:>9}", "fleet", "fleeing", "pursued", "hops", "abandoned");
+    for (kind, f) in kinds {
         let _ = writeln!(
             out,
-            "{:<20} {:>8.1} {:>8.1} {:>8.1} {:>6} {:>9} {:>11}",
-            row.style,
-            row.core / row.players,
-            row.bonus / row.players,
-            total,
-            percent(row.unpaid_hours, Some(row.fleet_hours)),
-            percent(total, total_of(format!("{}/{attention}", Personality::Turtle.label()))),
-            percent(total, total_of(format!("{personality}/{}", Attention::HandsOn.label()))),
+            "{kind:<28} {:>8} {:>8} {:>8} {:>9}",
+            f.rounds_fleeing, f.pursued, f.pursuit_hops, f.pursuits_abandoned
         );
     }
     out
@@ -667,10 +614,7 @@ fn main() {
     };
 
     let mut world = Headless::new(args.seed, args.pace);
-    world.score_under(args.rule);
-    for &share in &args.meters {
-        world.meter(share);
-    }
+    world.score_defences_at(args.defence_share);
     let bots = seat_all(&mut world, &args).unwrap_or_else(|msg| {
         eprintln!("sim-run: {msg}");
         std::process::exit(2);
@@ -701,7 +645,7 @@ fn main() {
             "ticks": args.ticks,
             "sample_every": every,
             "sessions_per_day": args.sessions,
-            "score_rule": rule_text(args.rule),
+            "score_rule": rule_text(args.defence_share),
             "snapshot_hash": hash,
             "outposts_stood": stood,
             "players": players,
@@ -716,12 +660,13 @@ fn main() {
             args.ticks as f64 / DAY as f64,
             args.sessions,
         );
-        println!("score = core + extra; core = econ + fleet + defence; {}", rule_text(args.rule));
-        println!("haul and raidsal: resources from the field and from repelled raids, in the points they buy");
-        println!("refuel: deuterium paid to fill fleet tanks again after their trips");
+        println!("{}; defences: what they cost", rule_text(args.defence_share));
+        println!("haul, raidsal, charts: resources from the field, from repelled raids and from delivered charts,");
+        println!("  in the points they buy");
+        println!("refuel: deuterium paid to fill fleet tanks");
         println!("spilled: share of what the mines made that a full store turned away");
-        println!("field h: hours away from home, summed over fleets; unpaid: the part of them flown while");
-        println!("  one more combat or exploration point would not have counted\n");
+        println!("field h: hours away from home, summed over fleets");
+        println!("hurt: share of the fights begun against a pirate group that had fought before and not mended\n");
         println!("{}", sample_table(&players));
         println!("{}", style_table(&players));
         println!("raids on the homeworld, each fought as a battle of at most {RAID_ROUNDS} rounds:");
@@ -777,13 +722,9 @@ fn main() {
         println!("  not yet   nothing ordered: the planner's rule says not yet, and the stockpile covers no level");
         println!("  done      nothing left to order\n");
         println!("{}", why_table(&players));
-        for (at, share) in args.meters.iter().enumerate() {
-            println!(
-                "a daily allowance of {:.0}% of core: bonus is what the points counted, total is core + bonus\n",
-                100.0 * share
-            );
-            println!("{}", meter_table(&players, at));
-        }
+        println!("flight, by the fleet's most numerous class and the ticks one jump takes it: rounds charging a jump");
+        println!("  out of a fight, pursuits begun after it, the jumps a pursuer made after it, and pursuits given up\n");
+        println!("{}", flight_table(&players));
     }
     let turns: u64 = players.iter().map(|p| p.turns).sum();
     eprintln!(

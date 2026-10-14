@@ -532,7 +532,7 @@ class _RankPanel extends StatelessWidget {
     return OvPanel(
       key: const Key('rank-panel'),
       title: 'Ranking',
-      subText: 'bots are not ranked',
+      subText: 'what each has built and keeps; bots are not ranked',
       padding: const EdgeInsets.only(bottom: 6),
       child: Column(children: [
         for (final r in rank.board)

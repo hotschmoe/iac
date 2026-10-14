@@ -2,7 +2,7 @@
 // Ported from Zig engine.zig.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ use iac_shared::scaling::{
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, ChartMark, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
     MovePreview, OreReserve, Refining, ResourceEta, SectorOdds, SectorState, ThreatBasis, ThreatInfo, TileReserve,
-    StorageFullEvent, StorageNearCapEvent, StorageState,
+    StockpileCause, StockpileEvent, StorageFullEvent, StorageNearCapEvent, StorageState,
     ExchangeMeter, ExchangeTerms, ExchangedEvent,
     OutpostCompletedEvent, OutpostSurvey, PowerRange, SectorResources, SurveySite,
     BattleGroup, BattleLosses, BattleOutcome, BattleRoundEvent, BattleSide, BattleState, BattleUnits,
@@ -58,10 +58,9 @@ use iac_shared::protocol::{
 use crate::auth::{self, TokenHash};
 use crate::bot::BotRecord;
 use crate::combat::{self, Squad, Troop};
-use crate::score;
 use crate::intel::KnownSectors;
 use crate::odds::{self, Force};
-use crate::snapshot::{ExploreCredit, Snapshot, WorldMeta};
+use crate::snapshot::{Snapshot, WorldMeta};
 
 // ── Core Data Types ───────────────────────────────────────────────
 
@@ -458,9 +457,6 @@ pub struct Player {
     /// Self-declared when the account was created; labels the leaderboard
     /// and nothing else.
     pub agent: bool,
-    /// Score from kills and from exploration, before the 25 percent cap.
-    pub combat_points: f32,
-    pub explore_points: f32,
     /// Ancient relics found; reserved for the item system.
     pub relics: u32,
     /// The exchange meter as it read at `exchange_tick`, in weight units. It
@@ -610,8 +606,6 @@ pub struct Combat {
     pub npc_fleet_ids: Vec<u64>,
     /// Rounds fought.
     pub round: u32,
-    /// The most power the players' side has brought to bear, for scoring.
-    pub peak_power: f32,
     /// Rounds in a row that took no hull from either side.
     pub quiet_rounds: u16,
     /// Fleets that jumped out of the fight, in the order they left: whom a
@@ -892,14 +886,15 @@ enum Homeward {
 pub struct FleetPolicy {
     pub preset: PolicyPreset,
     pub params: PolicyParams,
-    /// The sector this doctrine works (set when assigned; MineAndReturn
-    /// shuttles between here and home).
+    /// The sector this doctrine works: MineAndReturn's claim, staked where
+    /// the orders are given and shuttled between it and home; the sector of
+    /// PatrolHome's last fight, whose wreckage is its own kill's.
     pub work_sector: Option<Hex>,
     /// Next tick the autopilot will reconsider this fleet.
     pub next_eval_tick: u64,
-    /// The last hold reason announced and when, so a fleet that keeps
-    /// holding for the same reason does not flood the event stream.
-    pub last_hold: Option<(String, u64)>,
+    /// The hold the fleet is in, by its reason without the figures, so a
+    /// fleet that keeps holding for the same reason is not announced again.
+    pub last_hold: Option<String>,
     /// Fuel budget: deuterium the fleet could still put into its tank as of
     /// `fuel_since`, the tick of its last budgeted fill (or of its orders).
     pub fuel_credit: f64,
@@ -986,8 +981,14 @@ struct Reach<'a> {
     need: f32,
     /// Hexes from home the doctrine and the tank allow.
     range: u8,
+    /// Fuel one jump burns, and the doctrine's reserve kept on top of the
+    /// way home.
+    hop: f64,
+    reserve: f64,
     /// Score weight of the deuterium one jump burns.
     jump_weight: f32,
+    /// Cargo units the hold takes when empty.
+    hold: f64,
     /// Cargo units the hold can still take.
     room: f64,
     /// Sectors where a hostile group stands, and whether one of them
@@ -1001,6 +1002,20 @@ struct Reach<'a> {
     fights: SectorMemo<bool>,
     seams: SectorMemo<Option<f32>>,
     boardable: SectorMemo<bool>,
+}
+
+/// The way home `Reach::way_home` found: its first jump, its length and,
+/// when no lane meets the engage ratio, the band of the mildest.
+struct WayHome {
+    step: Hex,
+    hops: u32,
+    worst: Option<RatioLabel>,
+}
+
+impl WayHome {
+    fn along(path: &[Hex], worst: Option<RatioLabel>) -> WayHome {
+        WayHome { step: path[0], hops: path.len() as u32, worst }
+    }
 }
 
 /// One answer per sector for the length of an evaluation: a table over a
@@ -1071,20 +1086,40 @@ impl Reach<'_> {
         let (threat, ratio) = self.rating(coord);
         let what = if self.engine.sector_has_hostiles(coord) { "holds hostiles" } else { "is unscouted or unsafe" };
         Some(format!(
-            "{coord} {what} (T{} power {:.0}: your fleet rates {ratio:.2}x {} against it, the doctrine needs {:.1}x)",
+            "{coord} {what} that the fleet rates below the doctrine's engage ratio \
+             (T{} power {:.0}: your fleet rates {ratio:.2}x {} against it, the doctrine needs {:.1}x)",
             threat.rating, threat.est_power, scaling::ratio_label(ratio).label(), self.need,
         ))
     }
 
-    /// The lanes from `from` to the nearest sector `goal` accepts, through
-    /// sectors the doctrine may enter inside its range.
-    fn path_to(&self, from: Hex, goal: &dyn Fn(Hex) -> bool) -> Option<Vec<Hex>> {
-        self.path_worth(from, &|n, _| goal(n))
+    /// The fuel a trip of `hops` jumps to `coord` and the fewest jumps home
+    /// from it burn, with the doctrine's reserve on top.
+    fn round_trip(&self, coord: Hex, hops: u32) -> f64 {
+        f64::from(hops + self.engine.direct_hops_home(self.owner, coord)) * self.hop + self.reserve
     }
 
-    /// `path_to` with a goal that is told how many jumps out the sector
-    /// lies. A lane that meets no fight is taken before a shorter one that
-    /// does: hull is not repaired, so a fight the fleet would win still costs.
+    /// The fleet can fly to `coord`, `hops` jumps from where it stands, and
+    /// home from there on the fuel it carries, its reserve kept.
+    fn affords(&self, coord: Hex, hops: u32) -> bool {
+        self.fleet.fuel >= self.round_trip(coord, hops)
+    }
+
+    /// Why the fleet will not set out for `coord`, `hops` jumps away: the
+    /// fuel there and back.
+    fn beyond_the_tank(&self, coord: Hex, hops: u32) -> String {
+        let back = self.engine.direct_hops_home(self.owner, coord);
+        format!(
+            "{coord} is farther than the fuel the fleet carries takes it there and home ({hops} jump{} away and {back} back: \
+             {:.0} fuel with the doctrine's reserve of {:.0}, and the fleet carries {:.0} of a {:.0} tank)",
+            if hops == 1 { "" } else { "s" }, self.round_trip(coord, hops), self.reserve, self.fleet.fuel, self.fleet.fuel_max,
+        )
+    }
+
+    /// The lanes from `from` to the nearest sector `goal` accepts, through
+    /// sectors the doctrine may enter inside its range; the goal is told how
+    /// many jumps out the sector lies. A lane that meets no fight is taken
+    /// before a shorter one that does: hull is not repaired, so a fight the
+    /// fleet would win still costs.
     fn path_worth(&self, from: Hex, goal: &dyn Fn(Hex, u32) -> bool) -> Option<Vec<Hex>> {
         let calm = |n: Hex| self.open(n) && self.in_range(n) && !self.starts_fight(n);
         self.engine.bfs_path_by_hops(from, POLICY_SEARCH_HOPS, &calm, goal).or_else(|| self.path_through(from, goal))
@@ -1129,24 +1164,48 @@ impl Reach<'_> {
         weight >= POLICY_FUEL_PAYBACK * self.jump_weight * 2.0 * hops as f32
     }
 
-    /// The first jump of the way home and, when no lane meets the engage
-    /// ratio, the band of the mildest lane there is. Err names what blocks
-    /// every lane at RISKY odds or better.
-    fn way_home(&self, from: Hex) -> Result<(Hex, Option<RatioLabel>), String> {
+    /// Whether the wreckage in `coord`, as much of it as `room` units of
+    /// hold take, repays the fuel of fetching it from `hops` jumps out.
+    fn wreck_repays(&self, coord: Hex, room: f64, hops: u32) -> bool {
+        self.repays(self.engine.wreck_worth(coord, room), hops)
+    }
+
+    /// The way home, at the engage ratio if a lane meets it, otherwise at
+    /// the mildest band a lane does, down to RISKY. At each band a lane
+    /// without a fight goes before one with, and either only if the fuel
+    /// aboard flies it: when none of them does, the shortest of them is
+    /// taken, so the fleet strands as near home as it can. Err names what
+    /// blocks every lane at RISKY odds or better.
+    fn way_home(&self, from: Hex) -> Result<WayHome, String> {
         let (engine, home) = (self.engine, self.home);
         let is_home = |n: Hex| n == home;
         let mut bars = vec![self.need];
         bars.extend(
             [scaling::RATIO_FAVOURABLE, scaling::RATIO_EVEN, scaling::RATIO_RISKY].into_iter().filter(|bar| *bar < self.need),
         );
+        let flies = |path: &[Hex]| path.len() as f64 * self.hop <= self.fleet.fuel;
+        let mut shortest: Option<WayHome> = None;
         for (i, &bar) in bars.iter().enumerate() {
+            let worst = (i > 0).then(|| scaling::ratio_label(bar));
             let passable = |n: Hex| n == home || self.ratio(n) >= bar;
             let calm = |n: Hex| passable(n) && !self.starts_fight(n);
-            let lane = engine.bfs_path(from, POLICY_SEARCH_HOPS, &calm, &is_home)
-                .or_else(|| engine.bfs_path(from, POLICY_SEARCH_HOPS, &passable, &is_home));
-            if let Some(path) = lane {
-                return Ok((path[0], (i > 0).then(|| scaling::ratio_label(bar))));
+            let calm_lane = engine.bfs_path(from, POLICY_SEARCH_HOPS, &calm, &is_home);
+            let lanes = match calm_lane {
+                Some(path) if flies(&path) => return Ok(WayHome::along(&path, worst)),
+                Some(path) => [Some(path), engine.bfs_path(from, POLICY_SEARCH_HOPS, &passable, &is_home)],
+                None => [None, engine.bfs_path(from, POLICY_SEARCH_HOPS, &passable, &is_home)],
+            };
+            for path in lanes.into_iter().flatten() {
+                if flies(&path) {
+                    return Ok(WayHome::along(&path, worst));
+                }
+                if shortest.as_ref().is_none_or(|way| path.len() < way.hops as usize) {
+                    shortest = Some(WayHome::along(&path, worst));
+                }
             }
+        }
+        if let Some(way) = shortest {
+            return Ok(way);
         }
         let floor = bars[bars.len() - 1];
         match engine.bfs_path(from, POLICY_SEARCH_HOPS, &|_| true, &is_home) {
@@ -1158,7 +1217,7 @@ impl Reach<'_> {
             None => engine.world_gen.connected_neighbors(from).slice().iter().copied()
                 .filter(|&n| n == home || self.ratio(n) >= floor)
                 .min_by_key(|n| Hex::distance(n, &home))
-                .map(|step| (step, None))
+                .map(|step| WayHome { step, hops: engine.direct_hops_home(self.owner, from), worst: None })
                 .ok_or_else(|| format!("no lane toward {home} at {floor:.1}x or better")),
         }
     }
@@ -1167,8 +1226,8 @@ impl Reach<'_> {
     /// way home if there is one, otherwise the lane it rates best, the
     /// nearer to home of two alike.
     fn way_out(&self, from: Hex) -> Result<Hex, String> {
-        if let Ok((step, _)) = self.way_home(from) {
-            return Ok(step);
+        if let Ok(way) = self.way_home(from) {
+            return Ok(way.step);
         }
         let nearer = |n: &Hex| std::cmp::Reverse(Hex::distance(n, &self.home));
         self.engine.world_gen.connected_neighbors(from).slice().iter().copied()
@@ -1283,8 +1342,9 @@ pub struct GameEngine {
 
     /// (player, sector key) pairs the player has entered.
     explored: KeySet<(u64, u32)>,
-    /// Explore credits already paid: once per player and sector.
-    credited: KeySet<(u64, u32, ExploreCredit)>,
+    /// (player, sector key) pairs whose chart the player has delivered and
+    /// been paid for: once per player and sector.
+    charted: KeySet<(u64, u32)>,
     /// (player, sector key) whose chart mark may have changed since the
     /// last chart refresh: delivered, or lost with the fleet that held it.
     pub(crate) chart_news: Vec<(u64, u32)>,
@@ -1317,7 +1377,7 @@ impl GameEngine {
         let Snapshot {
             world_seed, meta, tick, next_id, players, fleets, npc_fleets, combats,
             sector_overrides, policies, scan_reveals, raid_states, storage_marks, home_salvage_warned,
-            harvest_reports, bots, outposts, pending_events, explored, credited, known,
+            harvest_reports, bots, outposts, pending_events, explored, charted, known,
         } = snapshot;
 
         GameEngine {
@@ -1342,7 +1402,7 @@ impl GameEngine {
             pending_arrivals: Vec::new(),
             next_id,
             explored: explored.into_iter().collect(),
-            credited: credited.into_iter().collect(),
+            charted: charted.into_iter().collect(),
             chart_news: Vec::new(),
             known: KnownSectors::load(known),
             odds_memo: RefCell::default(),
@@ -1372,7 +1432,7 @@ impl GameEngine {
             outposts: self.outposts.clone(),
             pending_events: self.pending_events.clone(),
             explored: self.explored.iter().copied().collect(),
-            credited: self.credited.iter().copied().collect(),
+            charted: self.charted.iter().copied().collect(),
             known: self.known.rows(),
         }
     }
@@ -1595,8 +1655,6 @@ impl GameEngine {
 
             let fleets: Vec<Troop> = fleet_ids.iter().map(|id| self.fleets[id].troop()).collect();
             let groups: Vec<Troop> = group_ids.iter().map(|id| self.npc_fleets[id].troop()).collect();
-            let engaged: f32 = fleet_ids.iter().map(|id| fleet_power(&self.fleets[id])).sum();
-
             let mut dice = combat::Dice::of_round(self.world_gen.world_seed, sector, self.current_tick, round);
             let fought = combat::round(&fleets, &groups, &mut dice);
             let quiet = !fought.hull_lost();
@@ -1625,7 +1683,7 @@ impl GameEngine {
                 ..battle_side(&fought.hostiles)
             };
             let report = BattleRoundEvent { sector, round, fleets: fleet_side, hostiles: hostile_side, mine: false, raid: false };
-            let Some(quiet_rounds) = self.record_round(combat_id, report, engaged, quiet) else { continue; };
+            let Some(quiet_rounds) = self.record_round(combat_id, report, quiet) else { continue; };
 
             let enemies = group_ids.iter()
                 .map(|id| self.npc_fleets.get(id).map_or_else(|| "hostile group".to_string(), |n| n.label.clone()))
@@ -1696,10 +1754,9 @@ impl GameEngine {
 
     /// Count a round into its fight and send its report. Returns the rounds
     /// in a row that took no hull, this one included.
-    fn record_round(&mut self, combat_id: u64, report: BattleRoundEvent, engaged: f32, quiet: bool) -> Option<u16> {
+    fn record_round(&mut self, combat_id: u64, report: BattleRoundEvent, quiet: bool) -> Option<u16> {
         let active = self.active_combats.get_mut(&combat_id)?;
         active.round = report.round;
-        active.peak_power = active.peak_power.max(engaged);
         active.quiet_rounds = if quiet { active.quiet_rounds + 1 } else { 0 };
         for group in report.fleets.groups.iter().chain(&report.hostiles.groups) {
             tally_losses(&mut active.losses, group);
@@ -1909,7 +1966,6 @@ impl GameEngine {
             player_fleet_ids: Vec::new(),
             npc_fleet_ids: Vec::new(),
             round: 0,
-            peak_power: 0.0,
             quiet_rounds: 0,
             fled: Vec::new(),
             losses: Vec::new(),
@@ -1999,7 +2055,6 @@ impl GameEngine {
         }
         let raiders = [Troop { arms: siege.arms, squads: siege.raiders.squads(), silent: false }];
         let label = siege.label();
-        let engaged: f32 = fleet_ids.iter().map(|id| fleet_power(&self.fleets[id])).sum();
         let owner_name = self.players.get(&owner).map(|p| p.name.clone());
 
         let mut dice = combat::Dice::of_round(self.world_gen.world_seed, sector, self.current_tick, round);
@@ -2058,7 +2113,7 @@ impl GameEngine {
             mine: false,
             raid: true,
         };
-        let Some(quiet_rounds) = self.record_round(combat_id, report, engaged, quiet) else { return; };
+        let Some(quiet_rounds) = self.record_round(combat_id, report, quiet) else { return; };
         self.announce_wiped(&wiped, sector, &format!("the {label}"));
 
         let defenders_left = fought.fleets.units() > 0;
@@ -2110,7 +2165,8 @@ impl GameEngine {
                 losses: fleets.into_iter().chain(hostiles).collect(),
                 owners: self.players.get(&siege.owner).map(|p| p.name.clone()).into_iter().collect(),
                 mine: false,
-                salvage: dropped.map(|(_, pile, _)| pile),
+                salvage: dropped.map(|(salvage, _, _)| salvage),
+                salvage_pile: dropped.and_then(|(salvage, pile, _)| (pile != salvage).then_some(pile)),
                 salvage_despawn_tick: dropped.map(|(_, _, despawn)| despawn),
             }),
         });
@@ -2118,8 +2174,8 @@ impl GameEngine {
     }
 
     /// End a fight. Fleets still in it are free, and one charging its jump
-    /// out goes on charging. A group that was destroyed leaves its wreckage
-    /// and pays its score, and its lair is cleared. A group that was not
+    /// out goes on charging. A group that was destroyed leaves its wreckage,
+    /// which is all a kill pays, and its lair is cleared. A group that was not
     /// keeps its losses and its damage: when fleets jumped out it may follow
     /// the strongest of them (`begin_pursuit`), away from its own sector it
     /// turns back, and in it it mends (`process_npc_behavior`). `withdrew`
@@ -2136,25 +2192,24 @@ impl GameEngine {
                 fleet.state = if fleet.ships.is_empty() { FleetStatus::Docked } else { FleetStatus::Idle };
             }
             owners.extend(self.players.get(&fleet.owner_id).map(|p| p.name.clone()));
+            if let Some(patrol) = self.policies.get_mut(fid).filter(|p| p.preset == PolicyPreset::PatrolHome) {
+                patrol.work_sector = Some(sector);
+            }
         }
 
         let (fallen, standing): (Vec<u64>, Vec<u64>) = combat.npc_fleet_ids.iter().copied()
             .filter(|nid| self.npc_fleets.contains_key(nid))
             .partition(|nid| self.npc_fleets[nid].ships.is_empty());
 
-        let mut kills: Vec<(Hex, Resources, f32)> = Vec::new();
+        let mut lairs: Vec<Hex> = Vec::new();
         let mut total = Resources::default();
         for nid in &fallen {
             let group = &self.npc_fleets[nid];
             let lair = if group.of_lair() { group.home_sector } else { sector };
             let salvage = npc_salvage(group, &self.world.pace).scale(f64::from(self.sector_farm_factor(lair)));
             total = total.add(salvage);
-            match kills.iter_mut().find(|(at, ..)| *at == lair) {
-                Some((_, pile, power)) => {
-                    *pile = pile.add(salvage);
-                    *power += group.power;
-                }
-                None => kills.push((lair, salvage, group.power)),
+            if !lairs.contains(&lair) {
+                lairs.push(lair);
             }
             self.pending_events.push(GameEvent {
                 tick: self.current_tick,
@@ -2184,13 +2239,13 @@ impl GameEngine {
                 losses: fleets.into_iter().chain(hostiles).collect(),
                 owners: owners.into_iter().collect(),
                 mine: false,
-                salvage: pile.map(|(heap, _)| heap),
+                salvage: pile.map(|_| total),
+                salvage_pile: pile.and_then(|(heap, _)| (heap != total).then_some(heap)),
                 salvage_despawn_tick: pile.map(|(_, tick)| tick),
             }),
         });
 
-        for (lair, spoils, power) in kills {
-            self.credit_kill(combat.peak_power, &combat.player_fleet_ids, power, lair.to_key(), spoils);
+        for lair in lairs {
             self.heat_sector(lair);
             self.ensure_override(lair.to_key()).npc_cleared_tick = Some(self.current_tick);
         }
@@ -2402,32 +2457,9 @@ impl GameEngine {
             .collect()
     }
 
-    /// Score for destroying the groups of one lair, `power` between them as
-    /// they were generated, once per respawn of the sector and to every
-    /// player who fought (cooperation costs nothing). It follows the pile
-    /// the kill left (finds factor and anti-farming heat included), so
-    /// points and resources rise and fall together. `engaged` is the most
-    /// power the players' side brought to bear.
-    fn credit_kill(&mut self, engaged: f32, player_fleets: &[u64], power: f32, sector_key: u32, pile: Resources) {
-        let fresh = self.sector_overrides.get(&sector_key).is_none_or(|o| o.npc_cleared_tick.is_none());
-        if !fresh { return; }
-        let points = score::kill_points(pile, engaged, power);
-        if points <= 0.0 { return; }
-        let owners: HashSet<u64> = player_fleets.iter()
-            .filter_map(|f| self.fleets.get(f))
-            .map(|f| f.owner_id)
-            .collect();
-        for pid in owners {
-            if let Some(p) = self.players.get_mut(&pid) {
-                p.combat_points += points;
-            }
-        }
-    }
-
     /// Ticks for a sector's heat to halve.
     fn farm_half_life(&self, sector: Hex) -> u64 {
-        let hours = scaling::npc_respawn_hours(sector.dist_from_origin());
-        let respawn = self.world.pace.econ_ticks(f64::from(hours) * 3600.0);
+        let respawn = scaling::npc_respawn_ticks(sector.dist_from_origin(), &self.world.pace);
         (respawn as f32 * scaling::FARM_HALF_LIFE_RESPAWNS).ceil() as u64
     }
 
@@ -2692,15 +2724,7 @@ impl GameEngine {
                     let ov = self.sector_overrides.get_mut(&key).unwrap();
                     ov.salvage = remaining;
                     if remaining.is_none() { ov.salvage_despawn_tick = None; }
-                    self.pending_events.push(GameEvent {
-                        tick,
-                        kind: EventKind::SalvageCollected(iac_shared::protocol::SalvageCollectedEvent {
-                            fleet_id,
-                            sector: home,
-                            resources: taken,
-                            remaining,
-                        }),
-                    });
+                    self.push_stockpile(fleet_id, StockpileCause::Wreckage, taken);
                     left = rest;
                 }
             }
@@ -2758,9 +2782,7 @@ impl GameEngine {
     fn process_npc_behavior(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         for (&key, ov) in self.sector_overrides.iter_mut() {
             let Some(cleared_tick) = ov.npc_cleared_tick else { continue; };
-            let coord = Hex::from_key(key);
-            let hours = scaling::npc_respawn_hours(coord.dist_from_origin());
-            let delay = self.world.pace.econ_ticks(f64::from(hours) * 3600.0);
+            let delay = scaling::npc_respawn_ticks(Hex::from_key(key).dist_from_origin(), &self.world.pace);
             if self.current_tick >= cleared_tick + delay {
                 ov.npc_cleared_tick = None;
             }
@@ -2956,6 +2978,18 @@ impl GameEngine {
         player.resources = player.resources.add(room);
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
         fleet.cargo = fleet.cargo.sub(room);
+        self.push_stockpile(fleet_id, StockpileCause::Unloaded, room);
+    }
+
+    /// Tell `fleet_id`'s owner that `amount` went into or out of the
+    /// stockpile for `cause`. Less than `LOAD_SLACK` is not told.
+    fn push_stockpile(&mut self, fleet_id: u64, cause: StockpileCause, amount: Resources) {
+        if amount.total() <= LOAD_SLACK { return; }
+        let Some(player_id) = self.fleets.get(&fleet_id).map(|f| f.owner_id) else { return; };
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::Stockpile(StockpileEvent { player_id, fleet_id, cause, amount }),
+        });
     }
 
     /// A fleet that has lost ships keeps what the holds it has left carry.
@@ -2999,6 +3033,11 @@ impl GameEngine {
             }
             (None, None) => None,
         };
+        if let Some((_, stored)) = docked
+            && self.players.get(&owner).is_some_and(|p| p.homeworld == sector)
+        {
+            self.push_stockpile(fleet_id, StockpileCause::Unloaded, stored);
+        }
         let message = match docked {
             Some((dock, stored)) => {
                 let lost = shed.sub(stored);
@@ -4403,7 +4442,7 @@ impl GameEngine {
 
     /// Where `player_id`'s chart of a sector stands, given `charts_aboard`.
     pub fn chart_mark(&self, player_id: u64, sector_key: u32, aboard: &KeySet<u32>) -> Option<ChartMark> {
-        if self.credited.contains(&(player_id, sector_key, ExploreCredit::Charted)) {
+        if self.charted.contains(&(player_id, sector_key)) {
             Some(ChartMark::Delivered)
         } else if aboard.contains(&sector_key) {
             Some(ChartMark::Aboard)
@@ -4455,8 +4494,6 @@ impl GameEngine {
             research_pending: Vec::new(),
             token_hash: None,
             agent: false,
-            combat_points: 0.0,
-            explore_points: 0.0,
             relics: 0,
             exchange_pressure: 0.0,
             exchange_tick: 0,
@@ -5398,6 +5435,11 @@ impl GameEngine {
         *fleet.cargo.get_mut(resource) += loaded;
         fleet.laden = dock == Dock::Home;
         let (aboard, sector) = (fleet.cargo.total(), fleet.location);
+        if dock == Dock::Home {
+            let mut amount = Resources::default();
+            *amount.get_mut(resource) = loaded;
+            self.push_stockpile(fleet_id, StockpileCause::Loaded, amount);
+        }
         let label = resource.label();
         self.push_alert(AlertLevel::Info, fleet_id, sector, match dock {
             Dock::Home => format!(
@@ -6204,7 +6246,7 @@ impl GameEngine {
     fn note_chart(&mut self, fleet_id: u64, owner_id: u64, sector: Hex) {
         let key = sector.to_key();
         let at_home = self.players.get(&owner_id).is_none_or(|p| p.homeworld == sector);
-        if at_home || self.credited.contains(&(owner_id, key, ExploreCredit::Charted)) { return; }
+        if at_home || self.charted.contains(&(owner_id, key)) { return; }
         if let Some(fleet) = self.fleets.get_mut(&fleet_id)
             && !fleet.charts.contains(&key)
         {
@@ -6212,29 +6254,33 @@ impl GameEngine {
         }
     }
 
-    /// Pay explore points for the charts a docked fleet carries.
+    /// Pay for the charts a docked fleet carries: each sector new to its
+    /// empire pays `scaling::chart_value` of loot into the stockpile, as
+    /// far as the caps allow.
     fn deliver_charts(&mut self, fleet_id: u64) {
         let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
         if fleet.charts.is_empty() { return; }
         let owner = fleet.owner_id;
         let charts = std::mem::take(&mut fleet.charts);
 
-        let (mut sectors, mut points) = (0u32, 0.0f32);
+        let (mut sectors, mut value) = (0u32, 0.0f64);
         for key in charts {
             self.chart_news.push((owner, key));
-            if self.credited.insert((owner, key, ExploreCredit::Charted)) {
-                points += score::chart_points(ring_rating(Hex::from_key(key)));
+            if self.charted.insert((owner, key)) {
+                value += scaling::chart_value(ring_rating(Hex::from_key(key)));
                 sectors += 1;
             }
         }
         if sectors == 0 { return; }
-        if let Some(p) = self.players.get_mut(&owner) {
-            p.explore_points += points;
-        }
+        let worth = scaling::split_loot(value);
+        let Some(player) = self.players.get_mut(&owner) else { return; };
+        let paid = player.resources.shortfall(scaling::storage_cap(&player.buildings, &self.world.pace)).min(worth);
+        player.resources = player.resources.add(paid);
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
-            kind: EventKind::ChartDelivered(iac_shared::protocol::ChartDeliveredEvent { fleet_id, sectors, points }),
+            kind: EventKind::ChartDelivered(iac_shared::protocol::ChartDeliveredEvent { fleet_id, sectors }),
         });
+        self.push_stockpile(fleet_id, StockpileCause::Charts, paid);
     }
 
     /// Send a boarding party into the derelict in the fleet's sector.
@@ -6330,12 +6376,23 @@ impl GameEngine {
             return Ok(());
         }
 
-        // Clean breach: roll the loot.
+        // Clean breach: roll the loot, then the rare finds, by threat.
         let dist = location.dist_from_origin();
         let rating = ring_rating(location);
         let base_value = scaling::derelict_value(dist)
             * f64::from(rng.random_range(scaling::DERELICT_ROLL_MIN..=scaling::DERELICT_ROLL_MAX));
-        let loot_mult = self.world.pace.finds_mult() * if has_rigging { EXPLORE_RECYCLER_LOOT_MULTIPLIER } else { 1.0 };
+        let mut recovered_ship: Option<ShipClass> = None;
+        if rng.random_range(0.0..1.0) < scaling::recovery_chance(rating) {
+            recovered_ship = Some(recoverable_ship_class(tier, &mut rng));
+        }
+        let mut tech_cache: Option<ResearchType> = None;
+        if rng.random_range(0.0..1.0) < scaling::data_core_chance(rating) {
+            tech_cache = self.pick_tech_cache(owner_id, &mut rng);
+        }
+        let relic = rng.random_range(0.0..1.0) < scaling::relic_chance(rating);
+        let loot_mult = self.world.pace.finds_mult()
+            * if has_rigging { EXPLORE_RECYCLER_LOOT_MULTIPLIER } else { 1.0 }
+            * if relic { scaling::RELIC_LOOT_MULT } else { 1.0 };
         let rolled = scaling::split_loot(base_value).scale(loot_mult);
 
         // Cargo-cap the haul; anything the hold can't take drifts loose
@@ -6353,17 +6410,6 @@ impl GameEngine {
         remaining -= taken.crystal;
         taken.deuterium = rolled.deuterium.min(remaining);
         let overflow = rolled.sub(taken);
-
-        // Rare finds ride on top of the resources, by threat.
-        let mut recovered_ship: Option<ShipClass> = None;
-        if rng.random_range(0.0..1.0) < scaling::recovery_chance(rating) {
-            recovered_ship = Some(recoverable_ship_class(tier, &mut rng));
-        }
-        let mut tech_cache: Option<ResearchType> = None;
-        if rng.random_range(0.0..1.0) < scaling::data_core_chance(rating) {
-            tech_cache = self.pick_tech_cache(owner_id, &mut rng);
-        }
-        let relic = rng.random_range(0.0..1.0) < scaling::relic_chance(rating);
 
         // Apply: cargo, site consumed, overflow salvage.
         if let Some(f) = self.fleets.get_mut(&fleet_id) {
@@ -6386,15 +6432,7 @@ impl GameEngine {
             self.grant_tech_level(owner_id, tech);
         }
 
-        let mut points = 0.0;
-        if self.credited.insert((owner_id, key, ExploreCredit::Boarded)) {
-            points += score::board_points(scaling::split_loot(base_value).scale(self.world.pace.finds_mult()), rating);
-        }
-        if relic {
-            points += scaling::RELIC_POINTS;
-        }
         if let Some(p) = self.players.get_mut(&owner_id) {
-            p.explore_points += points;
             p.relics += u32::from(relic);
         }
 
@@ -6408,16 +6446,14 @@ impl GameEngine {
                 recovered_ship,
                 tech_cache,
                 relic,
-                points,
             }),
         });
         info!(
-            "Fleet {} stripped a tier-{} derelict at {} (+{:.0}M +{:.0}C +{:.0}D{}{}{}, +{:.2} explore)",
+            "Fleet {} stripped a tier-{} derelict at {} (+{:.0}M +{:.0}C +{:.0}D{}{}{})",
             fleet_id, tier, location, taken.metal, taken.crystal, taken.deuterium,
             recovered_ship.map(|c| format!(", recovered {}", c.label())).unwrap_or_default(),
             tech_cache.map(|t| format!(", data core: {:?}", t)).unwrap_or_default(),
             if relic { ", relic" } else { "" },
-            points,
         );
         Ok(())
     }
@@ -6503,7 +6539,7 @@ impl GameEngine {
         let policy = FleetPolicy {
             preset,
             params,
-            work_sector: Some(location),
+            work_sector: (preset == PolicyPreset::MineAndReturn).then_some(location),
             next_eval_tick: self.current_tick + 1,
             last_hold: None,
             fuel_credit,
@@ -6530,7 +6566,15 @@ impl GameEngine {
         Ok(())
     }
 
+    /// Report what a doctrine did. Anything it does but hold or ping the
+    /// sectors around it from where it stands ends the hold it was in, so
+    /// the next hold is news.
     fn push_policy_event(&mut self, fleet_id: u64, preset: PolicyPreset, action: &str, reason: &str) {
+        if !matches!(action, "hold" | "scan")
+            && let Some(p) = self.policies.get_mut(&fleet_id)
+        {
+            p.last_hold = None;
+        }
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
             kind: EventKind::PolicyAction(iac_shared::protocol::PolicyActionEvent {
@@ -6740,10 +6784,17 @@ impl GameEngine {
     /// "within N hops of home", noting when the tank rather than max_range
     /// is the limit.
     fn range_phrase(effective: u8, params: &PolicyParams) -> String {
+        format!("within {}", Self::reach_phrase(effective, params))
+    }
+
+    /// "N hops of home", noting when the tank rather than max_range is the
+    /// limit.
+    fn reach_phrase(effective: u8, params: &PolicyParams) -> String {
+        let hops = |n: u8| format!("{n} hop{} of home", if n == 1 { "" } else { "s" });
         if effective < params.max_range {
-            format!("within {effective} hops of home (the fuel tank limits range; max_range is {})", params.max_range)
+            format!("{} (the fuel tank limits range; max_range is {})", hops(effective), params.max_range)
         } else {
-            format!("within {} hops of home", params.max_range)
+            hops(params.max_range)
         }
     }
 
@@ -6782,8 +6833,11 @@ impl GameEngine {
         {
             return Some(true);
         }
-        let (Homeward::Fuel(why) | Homeward::Cargo(why)) = reason;
-        Some(self.policy_head_home(fleet_id, preset, &format!("returning: {why}")))
+        let why = match reason {
+            Homeward::Cargo(full) if preset == PolicyPreset::PatrolHome => format!("returning to unload the salvage: {full}"),
+            Homeward::Fuel(why) | Homeward::Cargo(why) => format!("returning: {why}"),
+        };
+        Some(self.policy_head_home(fleet_id, preset, &why))
     }
 
     /// A fleet whose orders have `refine` set turns the deuterium in its
@@ -6801,15 +6855,14 @@ impl GameEngine {
         true
     }
 
-    /// Whether a hold for `reason` is news: the same reason is announced at
-    /// most once a minute.
+    /// Whether a hold for `reason` is news: a hold is announced when it
+    /// begins and again when its reason changes, not while it goes on.
     fn hold_is_news(&mut self, fleet_id: u64, reason: &str) -> bool {
-        let tick = self.current_tick;
         match self.policies.get_mut(&fleet_id) {
             Some(p) => {
                 let key = hold_key(reason);
-                let repeat = matches!(&p.last_hold, Some((k, t)) if *k == key && tick < t + 60);
-                if !repeat { p.last_hold = Some((key, tick)); }
+                let repeat = p.last_hold.as_ref() == Some(&key);
+                p.last_hold = Some(key);
                 !repeat
             }
             None => true,
@@ -6886,6 +6939,8 @@ impl GameEngine {
     /// What the doctrine of `fleet` lets it do this evaluation.
     fn policy_reach<'a>(&'a self, fleet: &'a Fleet, params: &PolicyParams, home: Hex) -> Reach<'a> {
         let range = self.policy_effective_range(fleet, params);
+        let hold = fleet_cargo_capacity(fleet, &self.world.pace);
+        let hop = self.hop_fuel_cost(fleet);
         Reach {
             engine: self,
             fleet,
@@ -6895,11 +6950,14 @@ impl GameEngine {
             home,
             need: f32::from(params.engage_ratio_x10) / 10.0,
             range,
+            hop,
+            reserve: fleet.fuel_max * f64::from(params.min_fuel_pct) / 100.0,
             jump_weight: scaling::resource_weight(&Resources {
-                deuterium: self.hop_fuel_cost(fleet) * FUEL_DEUT_PER_UNIT,
+                deuterium: hop * FUEL_DEUT_PER_UNIT,
                 ..Resources::default()
             }),
-            room: (fleet_cargo_capacity(fleet, &self.world.pace) - fleet.cargo.total()).max(0.0),
+            hold,
+            room: (hold - fleet.cargo.total()).max(0.0),
             groups: self.npc_fleets.values().filter(|n| !n.ships.is_empty()).fold(KeyMap::default(), |mut groups, n| {
                 *groups.entry(n.location.to_key()).or_insert(false) |=
                     n.behavior != iac_shared::world::NpcBehaviorType::Passive;
@@ -6929,12 +6987,21 @@ impl GameEngine {
 
         let way = self.policy_reach(&fleet, &params, home).way_home(from);
         match way {
-            Ok((step, None)) => self.policy_move(fleet_id, step, true, preset, reason),
-            Ok((step, Some(worst))) => {
-                let why = format!(
-                    "{reason}; no lane home meets the doctrine's {:.1}x, taking the mildest ({} at worst)",
-                    f32::from(params.engage_ratio_x10) / 10.0, worst.label(),
+            Ok(WayHome { step, hops, worst }) => {
+                let need = f64::from(hops) * self.hop_fuel_cost(&fleet);
+                let mut why = format!(
+                    "{reason}; home is {hops} jump{} away by {step} ({need:.0} fuel, the fleet carries {:.0})",
+                    if hops == 1 { "" } else { "s" }, fleet.fuel,
                 );
+                if need > fleet.fuel {
+                    why.push_str("; that is more than it carries, so it flies as near home as its fuel takes it");
+                }
+                if let Some(worst) = worst {
+                    why.push_str(&format!(
+                        "; no lane home meets the doctrine's {:.1}x, taking the mildest ({} at worst)",
+                        f32::from(params.engage_ratio_x10) / 10.0, worst.label(),
+                    ));
+                }
                 self.policy_move(fleet_id, step, true, preset, &why)
             }
             Err(blocker) => {
@@ -6976,7 +7043,6 @@ impl GameEngine {
 
         match self.handle_move(owner, fleet_id, step) {
             Ok(()) => {
-                if let Some(p) = self.policies.get_mut(&fleet_id) { p.last_hold = None; }
                 self.push_policy_event(fleet_id, preset, "move", reason);
                 true
             }
@@ -7004,6 +7070,16 @@ impl GameEngine {
         } else {
             self.policy_head_home(fleet_id, preset, &format!("returning: {why}"))
         }
+    }
+
+    /// `policy_stand_down`, but a fleet away from home that nothing holds
+    /// but the fuel aboard refines its hold first when its orders say so,
+    /// and is weighed again.
+    fn policy_stand_down_or_refine(&mut self, fleet_id: u64, preset: PolicyPreset, at_home: bool, fuel_bound: bool, why: &str) -> bool {
+        if fuel_bound && !at_home && self.policy_refine(fleet_id, preset, why) {
+            return true;
+        }
+        self.policy_stand_down(fleet_id, preset, at_home, why)
     }
 
     /// Raw ore units the tiles of `coord` hold right now.
@@ -7067,44 +7143,70 @@ impl GameEngine {
             let reach = self.policy_reach(&fleet, &params, home);
             let aboard = self.charts_aboard(owner);
             let uncharted = |n: Hex| n != home && self.chart_mark(owner, n.to_key(), &aboard).is_none();
-            match reach.path_to(location, &uncharted) {
+            match reach.path_worth(location, &|n, hops| uncharted(n) && reach.affords(n, hops)) {
                 Some(path) => Ok(path[0]),
-                None => Err(format!(
-                    "{}; raise max_range or pick another doctrine",
-                    self.prospect_blocker(&reach, location, &params, &uncharted),
-                )),
+                None => Err(self.prospect_blocker(&reach, location, &params, &uncharted)),
             }
         };
         Ok(match plan {
             Ok(step) => self.policy_move(fleet_id, step, false, preset, "pushing frontier"),
-            Err(why) => self.policy_stand_down(fleet_id, preset, location == home, &why),
+            Err((why, fuel_bound)) => self.policy_stand_down_or_refine(fleet_id, preset, location == home, fuel_bound, &why),
         })
     }
 
-    /// Which constraint stops prospect: the nearest uncharted sector is
-    /// either behind a hazard, beyond the range limit, or there is none.
+    /// Which limit stops prospect, named as the one that holds it: the
+    /// nearest uncharted sector inside the range lies behind odds below the
+    /// engage ratio, or beyond the fuel there and back; or it lies outside
+    /// the range; or there is none.
     fn prospect_blocker(
         &self,
         reach: &Reach,
         from: Hex,
         params: &PolicyParams,
         uncharted: &dyn Fn(Hex) -> bool,
-    ) -> String {
+    ) -> (String, bool) {
         let home = reach.home;
-        let within = Self::range_phrase(reach.range, params);
 
         if let Some(path) = self.bfs_path(from, POLICY_SEARCH_HOPS, &|n| reach.in_range(n), uncharted) {
             let near = *path.last().unwrap();
             if let Some(why) = path.iter().find_map(|&n| reach.refusal(n)) {
-                return format!("no safe way to the nearest uncharted sector {near} {within}: {why}");
+                return (
+                    format!(
+                        "no way to the nearest uncharted sector {near} that the engage ratio allows: {why}; \
+                         lower engage_ratio_x10, send a stronger fleet or pick another doctrine",
+                    ),
+                    false,
+                );
+            }
+            let hops = path.len() as u32;
+            if !reach.affords(near, hops) {
+                return (
+                    format!(
+                        "the nearest uncharted sector is out of reach on this fuel: {}; dock to refuel, \
+                         lower min_fuel_pct or pick another doctrine",
+                        reach.beyond_the_tank(near, hops),
+                    ),
+                    true,
+                );
             }
         }
         if let Some(path) = self.bfs_path(from, POLICY_SEARCH_HOPS, &|_| true, uncharted) {
             let near = *path.last().unwrap();
             let d = Hex::distance(&near, &home);
-            return format!("the nearest uncharted sector {near} is {d} hexes from home, outside {within}");
+            return (
+                format!(
+                    "the nearest uncharted sector {near} is {d} hexes from home, and the doctrine goes no farther than {}; \
+                     raise max_range or pick another doctrine",
+                    Self::reach_phrase(reach.range, params),
+                ),
+                false,
+            );
         }
-        format!("every lane within {POLICY_SEARCH_HOPS} hops of {from} is charted {within}")
+        let charted = format!(
+            "every lane within {POLICY_SEARCH_HOPS} hops of {from} is charted {}; pick another doctrine",
+            Self::range_phrase(reach.range, params),
+        );
+        (charted, false)
     }
 
     /// MineAndReturn: work a claim until the hold is full, bring it home,
@@ -7156,7 +7258,7 @@ impl GameEngine {
         let plan = {
             let reach = self.policy_reach(&fleet, &params, home);
             let ore = |n: Hex, hops: u32| n != home && reach.seam(n).is_some_and(|worth| reach.repays(worth, hops));
-            let seam = |n: Hex, hops: u32| ore(n, hops) && !reach.starts_fight(n);
+            let seam = |n: Hex, hops: u32| ore(n, hops) && !reach.starts_fight(n) && reach.affords(n, hops);
             let kept = staked
                 .filter(|&claim| !ran_dry && claim != location)
                 .and_then(|claim| reach.path_worth(location, &|n, hops| n == claim && seam(n, hops)));
@@ -7165,12 +7267,19 @@ impl GameEngine {
                 None => {
                     let within = Self::range_phrase(reach.range, &params);
                     Err(match self.bfs_path_by_hops(home, POLICY_SEARCH_HOPS, &|n| reach.in_range(n), &ore) {
-                        None => format!("no seam {within} repays the fuel to fetch it (stripped tiles refill over hours)"),
+                        None => (format!("no seam {within} repays the fuel to fetch it (stripped tiles refill over hours)"), false),
                         Some(path) => {
                             let near = *path.last().unwrap();
                             match path.iter().find_map(|&n| reach.refusal(n)) {
-                                Some(why) => format!("no way it may take to the ore at {near} {within}: {why}"),
-                                None => format!("the ore at {near} {within} {NO_FIGHT_FOR_IT}"),
+                                Some(why) => (format!("no way to the ore at {near} that the engage ratio allows: {why}"), false),
+                                None if reach.starts_fight(near) => (format!("the ore at {near} {within} {NO_FIGHT_FOR_IT}"), false),
+                                None => (
+                                    format!(
+                                        "the nearest ore is out of reach on this fuel: {}",
+                                        reach.beyond_the_tank(near, self.lane_hops(location, near)),
+                                    ),
+                                    true,
+                                ),
                             }
                         }
                     })
@@ -7189,7 +7298,7 @@ impl GameEngine {
                 let reason = if ran_dry { "claim dry, moving to new seam" } else { "heading to claim" };
                 self.policy_move(fleet_id, path[0], false, preset, reason)
             }
-            Err(why) => self.policy_stand_down(fleet_id, preset, at_home, &why),
+            Err((why, fuel_bound)) => self.policy_stand_down_or_refine(fleet_id, preset, at_home, fuel_bound, &why),
         })
     }
 
@@ -7228,30 +7337,40 @@ impl GameEngine {
         // Otherwise the nearest payday it may reach and work.
         let plan = {
             let reach = self.policy_reach(&fleet, &params, home);
-            let wreck = |n: Hex, hops: u32| reach.repays(self.wreck_worth(n, reach.room), hops);
+            let wreck = |n: Hex, hops: u32| reach.wreck_repays(n, reach.room, hops);
             let contact = |n: Hex, hops: u32| {
                 n != home && n != location && (wreck(n, hops) || self.derelict_site_at(n).is_some())
             };
             let payday = |n: Hex, hops: u32| {
                 n != home && n != location && !reach.starts_fight(n)
-                    && (wreck(n, hops) || reach.boards(n))
+                    && (wreck(n, hops) || reach.boards(n)) && reach.affords(n, hops)
             };
             match reach.path_worth(location, &payday) {
                 Some(path) => Ok(path[0]),
                 None => {
                     let within = Self::range_phrase(reach.range, &params);
                     Err(match self.bfs_path_by_hops(home, POLICY_SEARCH_HOPS, &|n| reach.in_range(n), &contact) {
-                        None => format!("board is clear {within}: no derelict, no wreckage that repays the fuel"),
+                        None => (format!("board is clear {within}: no derelict, no wreckage that repays the fuel"), false),
                         Some(path) => {
                             let near = *path.last().unwrap();
                             match path.iter().find_map(|&n| reach.refusal(n)) {
-                                Some(why) => format!("no way it may take to the contact at {near} {within}: {why}"),
+                                Some(why) => (format!("no way to the contact at {near} that the engage ratio allows: {why}"), false),
                                 None if reach.starts_fight(near) => {
-                                    format!("the contact at {near} {within} {NO_FIGHT_FOR_IT}")
+                                    (format!("the contact at {near} {within} {NO_FIGHT_FOR_IT}"), false)
                                 }
-                                None => format!(
-                                    "the derelict at {near} {within} is too hot to board: its guard outrates the doctrine's {:.1}x",
-                                    reach.need,
+                                None if !reach.affords(near, self.lane_hops(location, near)) => (
+                                    format!(
+                                        "the nearest contact is out of reach on this fuel: {}",
+                                        reach.beyond_the_tank(near, self.lane_hops(location, near)),
+                                    ),
+                                    true,
+                                ),
+                                None => (
+                                    format!(
+                                        "the derelict at {near} {within} is too hot to board: its guard outrates the doctrine's {:.1}x",
+                                        reach.need,
+                                    ),
+                                    false,
                                 ),
                             }
                         }
@@ -7261,7 +7380,7 @@ impl GameEngine {
         };
         Ok(match plan {
             Ok(step) => self.policy_move(fleet_id, step, false, preset, "contact on the board"),
-            Err(why) => self.policy_stand_down(fleet_id, preset, at_home, &why),
+            Err((why, fuel_bound)) => self.policy_stand_down_or_refine(fleet_id, preset, at_home, fuel_bound, &why),
         })
     }
 
@@ -7270,8 +7389,11 @@ impl GameEngine {
     }
 
     /// PatrolHome: hunt the hostiles inside `max_range` of home that the
-    /// fleet rates at its engage ratio, scoop what the kill leaves, and wait
-    /// at the dock when there is nothing to hunt.
+    /// fleet rates at its engage ratio, and between fights collect the
+    /// wreckage in range that repays its fuel, the kill's or any other,
+    /// nearest first. It takes the hold home when it is full, when the next
+    /// pile would not fit what room is left, and when there is nothing left
+    /// to fight or collect; there it unloads, is mended and goes out again.
     fn policy_patrol_home(&mut self, fleet_id: u64) -> Result<bool, Box<dyn std::error::Error>> {
         let preset = PolicyPreset::PatrolHome;
         let Some(fleet) = self.fleets.get(&fleet_id).cloned() else { return Ok(false); };
@@ -7304,24 +7426,54 @@ impl GameEngine {
         }
 
         if !at_home && self.has_wreckage(location) && self.handle_collect_salvage(owner, fleet_id).is_ok() {
-            self.push_policy_event(fleet_id, preset, "salvage", "scooping the wreckage of the kill");
+            let killed_here = self.policies.get(&fleet_id).is_some_and(|p| p.work_sector == Some(location));
+            let why = if killed_here {
+                "scooping the wreckage of the kill".to_string()
+            } else {
+                format!("scooping wreckage at {location} that it did not make")
+            };
+            self.push_policy_event(fleet_id, preset, "salvage", &why);
             return Ok(true);
         }
 
-        let plan = {
+        enum Next {
+            Go(Hex, String),
+            Unload(String),
+            Idle(String),
+        }
+        let next = {
             let reach = self.policy_reach(&fleet, &params, home);
-            let contact = |n: Hex, _: u32| n != home && reach.has_hostiles(n);
-            match reach.path_through(location, &contact) {
-                Some(path) => Ok(path[0]),
-                None => Err(format!(
-                    "no contact {} that the fleet rates {:.1}x against",
+            let target = |n: Hex, hops: u32| {
+                n != home && (reach.has_hostiles(n) || reach.wreck_repays(n, reach.hold, hops))
+            };
+            match reach.path_through(location, &target) {
+                Some(path) => {
+                    let (at, hops) = (path[path.len() - 1], path.len() as u32);
+                    if reach.has_hostiles(at) {
+                        Next::Go(path[0], "intercepting contact".to_string())
+                    } else if reach.wreck_repays(at, reach.room, hops) {
+                        Next::Go(path[0], format!("collecting the wreckage at {at}"))
+                    } else {
+                        let pile = self.sector_overrides.get(&at.to_key()).and_then(|o| o.salvage).unwrap_or_default();
+                        Next::Unload(format!(
+                            "the hold has room for {:.0} of the {:.0} units of wreckage at {at}",
+                            reach.room, pile.total(),
+                        ))
+                    }
+                }
+                None => Next::Idle(format!(
+                    "no contact {} that the fleet rates {:.1}x against, and no wreckage that repays the fuel",
                     Self::range_phrase(reach.range, &params), reach.need,
                 )),
             }
         };
-        Ok(match plan {
-            Ok(step) => self.policy_move(fleet_id, step, false, preset, "intercepting contact"),
-            Err(why) => self.policy_stand_down(fleet_id, preset, at_home, &why),
+        Ok(match next {
+            Next::Go(step, why) => self.policy_move(fleet_id, step, false, preset, &why),
+            Next::Unload(why) if at_home => {
+                self.hold_policy(fleet_id, preset, &format!("waiting at the dock for the store to take the cargo aboard: {why}"))
+            }
+            Next::Unload(why) => self.policy_head_home(fleet_id, preset, &format!("returning to unload the salvage: {why}")),
+            Next::Idle(why) => self.policy_stand_down(fleet_id, preset, at_home, &why),
         })
     }
 
@@ -7424,7 +7576,9 @@ impl GameEngine {
 
         // Deposit cargo and refuel; docked fleets stay separate until the
         // player merges them.
+        let aboard = fleet.cargo;
         self.unload_cargo(fleet_id);
+        self.report_unload(fleet_id, aboard);
         self.deliver_charts(fleet_id);
 
         let player = self.players.get(&player_id).ok_or("Player not found")?;
@@ -7435,6 +7589,24 @@ impl GameEngine {
         self.tend_at_home(fleet_id, true);
 
         Ok(())
+    }
+
+    /// A fleet under orders that docks with a hold says what went into the
+    /// stockpile, and what stays aboard for want of room.
+    fn report_unload(&mut self, fleet_id: u64, aboard: Resources) {
+        let Some(preset) = self.policies.get(&fleet_id).map(|p| p.preset) else { return; };
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        let (left, stored) = (fleet.cargo, aboard.sub(fleet.cargo));
+        if stored.total() <= 0.0 { return; }
+        let why = if left.total() > 0.0 {
+            format!(
+                "unloaded {} into the stockpile; {} stay aboard until the store has room",
+                crate::commands::amount_words(stored), crate::commands::amount_words(left),
+            )
+        } else {
+            format!("unloaded {} into the stockpile", crate::commands::amount_words(stored))
+        };
+        self.push_policy_event(fleet_id, preset, "unload", &why);
     }
 
     fn check_npc_encounter(&mut self, fleet_id: u64) -> Result<(), Box<dyn std::error::Error>> {
@@ -7567,7 +7739,6 @@ impl GameEngine {
             player_fleet_ids: Vec::new(),
             npc_fleet_ids: Vec::new(),
             round: 0,
-            peak_power: 0.0,
             quiet_rounds: 0,
             fled: Vec::new(),
             losses: Vec::new(),

@@ -1,168 +1,58 @@
 // Score: one ranking for humans and agents (docs/design/economy/spec.md section 9).
 //
-//   core  = econ + fleet + defence + outpost
-//   score = core + min(combat + explore, 0.25 * core)
+//   score = buildings + research + fleet + outpost + DEFENCE_SHARE * defences
 //
-// econ, fleet, defence and outpost are recomputed from state whenever they
-// are asked for; combat and explore accumulate in the player row. Everything is
-// priced with `scaling::resource_weight`, so crystal and deuterium count
-// for more than metal.
+// What an empire has built and keeps, recomputed from state whenever it is
+// asked for: a fleet that is destroyed takes its ships out of the score.
+// Fighting and exploring score nothing themselves; they pay in resources,
+// which score once they are built into something at home. Everything is
+// priced with `scaling::resource_weight`, so crystal and deuterium count for
+// more than metal.
 
-use iac_shared::constants::{Resources, ShipClass};
-use iac_shared::maths;
+use iac_shared::constants::ShipClass;
 use iac_shared::protocol::{LeaderboardEntry, LeaderboardReply};
 use iac_shared::scaling::{self, DefenceKind};
 
 use crate::engine::{GameEngine, Player};
 
-/// Combat and exploration together may add at most this share of `core`.
-pub const EXTRA_CAP: f32 = 0.25;
-/// A kill pays this share of the weight of the pile it leaves, so points
-/// track the resources the same kill yields.
-pub const KILL_SHARE: f32 = 1.0;
-/// A kill earns full points up to this ratio of engaged power to the NPC
-/// group's power; beyond it pay falls as `FULL_PAY_RATIO / ratio`, down to
-/// `MIN_PAY`. The old rule paid nothing from 8x.
-pub const FULL_PAY_RATIO: f32 = 4.0;
-pub const MIN_PAY: f32 = 0.05;
-/// A first boarding pays this share of the weight of the loot it rolled
-/// (finds factor included), plus `DISCOVERY_POINTS * T^1.5`.
-pub const BOARD_VALUE_SHARE: f32 = 0.5;
-/// The points that are not counted from a cost (this one, the two of a
-/// chart and `scaling::RELIC_POINTS`) are ten times what they were before
-/// OGame's catalogue: the core they are capped against is counted in costs
-/// that are about ten times what they were. Provisional.
-pub const DISCOVERY_POINTS: f32 = 15.0;
-/// A sector's chart, once delivered to a dock, pays
-/// `CHART_BASE_POINTS + CHART_THREAT_POINTS * T^1.5`.
-pub const CHART_BASE_POINTS: f32 = 1.5;
-pub const CHART_THREAT_POINTS: f32 = 1.0;
-/// The exponent of the threat rating T in both.
-pub const THREAT_POINTS_EXPONENT: f32 = 1.5;
-/// Defence structures count at half value, so farming defenceless-looking
-/// players with a wall of cheap turrets does not pay.
-pub const DEFENCE_SHARE: f32 = 0.5;
+/// The share of their cost that defence structures score. Provisional, and
+/// the owner's: "0 points on defense BUT raids give good resources", so a
+/// defence pays for itself in the wreckage of the raids it beats.
+pub const DEFENCE_SHARE: f32 = 0.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Score {
-    pub econ: f32,
+    pub buildings: f32,
+    pub research: f32,
+    /// Every ship of the empire's, docked or away, its Solar Satellites
+    /// among them.
     pub fleet: f32,
-    pub defence: f32,
-    /// The finished levels of the outpost, while it stands. Kept apart from
-    /// `econ`, which sizes the raids on the homeworld.
+    /// The finished levels of the outpost, while it stands.
     pub outpost: f32,
-    pub combat: f32,
-    pub explore: f32,
+    /// What the standing defences cost, whether or not they score.
+    pub defences: f32,
 }
 
 impl Score {
-    pub fn core(&self) -> f32 {
-        self.econ + self.fleet + self.defence + self.outpost
+    /// The part of the score the defences make.
+    pub fn defence(&self) -> f32 {
+        DEFENCE_SHARE * self.defences
     }
 
     pub fn total(&self) -> f32 {
-        self.total_under(ExtraRule::GAME)
+        self.total_with(DEFENCE_SHARE)
     }
 
-    pub fn total_under(&self, rule: ExtraRule) -> f32 {
-        let core = self.core();
-        core + rule.counted(self.combat + self.explore, core)
-    }
-}
-
-/// How combat and exploration points count toward a score. Every world plays
-/// under `ExtraRule::GAME`. The others are alternatives for `sim-run --cap`
-/// to measure: nothing a client sees is scored with them.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ExtraRule {
-    /// In full up to this share of core, not at all beyond it.
-    Cap(f32),
-    /// In full up to this share of core (the knee). Beyond it the counted
-    /// points grow with the square root of the raw ones: four times the
-    /// points count double.
-    Soft(f32),
-    /// In full.
-    Uncapped,
-}
-
-impl ExtraRule {
-    pub const GAME: ExtraRule = ExtraRule::Cap(EXTRA_CAP);
-
-    /// What `raw` combat and exploration points add to a score of `core`.
-    pub fn counted(self, raw: f32, core: f32) -> f32 {
-        match self {
-            ExtraRule::Cap(share) => raw.min(share * core),
-            ExtraRule::Soft(knee) if raw > knee * core => (knee * core * raw).sqrt(),
-            ExtraRule::Soft(_) | ExtraRule::Uncapped => raw,
-        }
-    }
-
-    /// What one more point would add to a score standing at `raw` and `core`:
-    /// 1 while points count in full, 0 once they do not count at all.
-    pub fn next_point(self, raw: f32, core: f32) -> f32 {
-        match self {
-            ExtraRule::Cap(share) if raw >= share * core => 0.0,
-            ExtraRule::Soft(knee) if raw > knee * core => 0.5 * (knee * core / raw).sqrt(),
-            ExtraRule::Cap(_) | ExtraRule::Soft(_) | ExtraRule::Uncapped => 1.0,
-        }
-    }
-}
-
-/// Ticks in which a `Meter` drains by one allowance.
-const METER_WINDOW: f64 = 86_400.0;
-
-/// A daily allowance for combat and exploration points: another alternative
-/// no world plays under, which `sim-run --meter` measures beside the run's
-/// own rule. The meter fills with every point earned and drains by one
-/// allowance (`share` of core) a day. A point counts in full while the
-/// meter stands under one allowance and by the square root beyond it: a
-/// burst of four allowances counts as two. Unlike a cap this needs a memory:
-/// what a point counted is banked when it is earned.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Meter {
-    pub share: f32,
-    level: f64,
-    banked: f64,
-}
-
-impl Meter {
-    pub fn new(share: f32) -> Meter {
-        Meter { share, level: 0.0, banked: 0.0 }
-    }
-
-    /// What the points earned so far have added to the score.
-    pub fn banked(&self) -> f32 {
-        self.banked as f32
-    }
-
-    fn allowance(&self, core: f32) -> f64 {
-        f64::from(self.share) * f64::from(core)
-    }
-
-    /// One tick passes for an empire of `core`.
-    pub fn drain(&mut self, core: f32) {
-        self.level = (self.level - self.allowance(core) / METER_WINDOW).max(0.0);
-    }
-
-    /// An empire of `core` earns `points`.
-    pub fn earn(&mut self, points: f32, core: f32) {
-        let allowance = self.allowance(core);
-        let counted_up_to = |level: f64| if level <= allowance { level } else { (allowance * level).sqrt() };
-        let after = self.level + f64::from(points);
-        self.banked += counted_up_to(after) - counted_up_to(self.level);
-        self.level = after;
-    }
-
-    /// What one more point would add now: 1 under the allowance, less beyond it.
-    pub fn next_point(&self, core: f32) -> f32 {
-        let allowance = self.allowance(core);
-        if self.level <= allowance { 1.0 } else { (0.5 * (allowance / self.level).sqrt()) as f32 }
+    /// The score were defences to count at `defence_share` of their cost:
+    /// `sim-run --defence-share` measures another share beside the game's.
+    pub fn total_with(&self, defence_share: f32) -> f32 {
+        self.buildings + self.research + self.fleet + self.outpost + defence_share * self.defences
     }
 }
 
 /// `player`'s score: their levels, every ship of theirs docked or away,
-/// their Solar Satellites as ships, their defences and the finished levels
-/// of their outpost.
+/// their Solar Satellites as ships, the finished levels of their outpost and
+/// their defences at `DEFENCE_SHARE`.
 pub fn score_of(engine: &GameEngine, player: &Player) -> Score {
     let fleet: f32 = engine
         .fleets
@@ -172,44 +62,17 @@ pub fn score_of(engine: &GameEngine, player: &Player) -> Score {
         .map(|(class, count)| count as f32 * scaling::resource_weight(&class.build_cost()))
         .sum();
     let satellites = player.satellites as f32 * scaling::resource_weight(&ShipClass::SolarSatellite.build_cost());
-    let defence: f32 = DefenceKind::ALL
+    let defences: f32 = DefenceKind::ALL
         .iter()
         .map(|&k| player.defences.count[k as usize] as f32 * scaling::resource_weight(&k.build_cost()))
         .sum();
     Score {
-        econ: scaling::econ_points(&player.buildings, &player.research),
+        buildings: scaling::building_points(&player.buildings),
+        research: scaling::research_points(&player.research),
         fleet: fleet + satellites,
-        defence: DEFENCE_SHARE * defence,
         outpost: scaling::outpost_points(engine.outposts.get(&player.id).map_or(0, |o| o.level)),
-        combat: player.combat_points,
-        explore: player.explore_points,
+        defences,
     }
-}
-
-/// Share of a kill's points paid when `engaged_power` of the player's ships
-/// fought a group of `npc_power`.
-pub fn kill_pay_factor(engaged_power: f32, npc_power: f32) -> f32 {
-    if npc_power <= 0.0 {
-        return MIN_PAY;
-    }
-    (FULL_PAY_RATIO * npc_power / engaged_power.max(1e-3)).clamp(MIN_PAY, 1.0)
-}
-
-/// Points for a kill that left `pile` behind.
-pub fn kill_points(pile: Resources, engaged_power: f32, npc_power: f32) -> f32 {
-    KILL_SHARE * scaling::resource_weight(&pile) * kill_pay_factor(engaged_power, npc_power)
-}
-
-/// Points for the first boarding of a derelict that rolled `loot` (finds
-/// factor included) at threat `rating`.
-pub fn board_points(loot: Resources, rating: u8) -> f32 {
-    BOARD_VALUE_SHARE * scaling::resource_weight(&loot)
-        + DISCOVERY_POINTS * maths::powf(f32::from(rating), THREAT_POINTS_EXPONENT)
-}
-
-/// Points for delivering the chart of one new sector at threat `rating`.
-pub fn chart_points(rating: u8) -> f32 {
-    CHART_BASE_POINTS + CHART_THREAT_POINTS * maths::powf(f32::from(rating), THREAT_POINTS_EXPONENT)
 }
 
 /// The table, best first, for `viewer`. Built-in bots are ranked apart from
@@ -230,9 +93,11 @@ pub fn leaderboard(engine: &GameEngine, limit: usize, viewer: u64) -> Leaderboar
         name: p.name.clone(),
         agent: p.agent,
         score: s.total(),
-        core: s.core(),
-        combat: s.combat,
-        explore: s.explore,
+        buildings: s.buildings,
+        research: s.research,
+        fleet: s.fleet,
+        outpost: s.outpost,
+        defence: s.defence(),
     };
     let (bots, ranked): (Vec<_>, Vec<_>) = rows.into_iter().partition(|(p, _)| engine.is_bot(p.id));
     let list = if engine.is_bot(viewer) { &bots } else { &ranked };

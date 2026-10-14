@@ -9,7 +9,7 @@ The server answers commands at its next tick (about once a second): errors and
 state changes arrive together in that tick. Read-only commands (state, status,
 costs, map, sector) never wait: they read a view kept incrementally from the log.
 """
-import json, os, re, sys, time, subprocess, pathlib, threading
+import json, math, os, re, sys, time, subprocess, pathlib, threading
 
 HERE = pathlib.Path(__file__).resolve().parent
 LIVE = pathlib.Path(os.environ.get("IAC_RUN") or HERE / "run").resolve()
@@ -22,17 +22,20 @@ WEIGHT = {"metal": 1.0, "crystal": 1.5, "deuterium": 2.0}
 WAIT_DEFAULT, WAIT_MAX = 45, 60
 SEND_GAP = 0.25
 ACK_CAP = 1.6
-SCORE_RULE = ("score = core + min(combat + explore, 25% of core); core = built levels, living ships and half of "
-              "defences at cost (metal 1: crystal 1.5: deut 2). Unspent stock scores 0: spend it. Kills pay in full "
-              "up to 4x your strength and less above; repeat kills in one sector pay less; charts pay when a fleet "
-              "docks with them; derelicts pay on first boarding.")
+SCORE_RULE = ("score = what your empire has built and keeps: buildings + research + the ships you have now "
+              "(Solar Satellites included) + outpost levels, each at cost (metal 1: crystal 1.5: deut 2). Defences "
+              "score 0. A fleet destroyed leaves the score. Unspent stock scores 0: spend it. Kills, charts and "
+              "derelicts score nothing themselves: they pay in resources (a kill's wreckage, worth scooping and "
+              "bringing home; a repelled raid's wreckage at home; charts paid into the stockpile when a fleet docks "
+              "with them; a derelict's loot), which score once you build with them.")
 QUEUE_NAMES = {"build": "Building", "research": "Research", "ship": "Ship"}
+SCORE_PARTS = ("buildings", "research", "fleet", "outpost", "defence")
 ALERT_LEVELS = ("Warning", "Critical")
-CHART_MARKS = {"aboard": "aboard one of your fleets; it scores when that fleet docks at home alive",
-               "delivered": "delivered (already scored; no need to visit again)"}
+CHART_MARKS = {"aboard": "aboard one of your fleets; it pays when that fleet docks at home or your outpost alive",
+               "delivered": "delivered (already paid; no need to visit again)"}
 NOTABLE = {"BuildingCompleted", "ResearchCompleted", "ShipBuilt", "DefenceBuilt", "FleetArrived", "CombatStarted",
            "CombatEnded", "ShipsLost", "FleetDestroyed", "RaidIncoming", "RaidResolved", "SiteExplored", "SiteAmbush",
-           "SalvageCollected", "ChartDelivered", "ScanCompleted", "Exchanged"}
+           "SalvageCollected", "ChartDelivered", "ScanCompleted", "Exchanged", "Stockpile"}
 
 
 def session():
@@ -360,10 +363,20 @@ def event_text(e):
             + (", ".join(f"{u['count']}x {u['unit']}" for u in l["lost"]) or "nothing")
             + (" and is destroyed" if l["destroyed"] else "")
             for l in e.get("losses") or [])
-        pile = f"; wreckage {res(e['salvage'])}" if e.get("salvage") else ""
         what = "raid's fight" if e.get("raid") else "combat"
         return (f"{what} @{hexs(e['sector'])} ended after {e['rounds']} round(s): {e['outcome']}"
-                + (f"; {lost}" if lost else "") + pile)
+                + (f"; {lost}" if lost else "") + wreckage_words(e))
+    if k == "FleetDestroyed":
+        if e.get("is_npc"):
+            return (f"hostile {e.get('label') or e['fleet_id']} destroyed @{hexs(e['sector'])}, "
+                    f"its wreckage {res(e.get('salvage'))} added to the pile there")
+        whose = "YOUR fleet" if e.get("mine") else f"{e.get('owner')}'s fleet"
+        return f"{whose} {e['fleet_id']} destroyed @{hexs(e['sector'])}"
+    if k == "SalvageCollected":
+        rest = f", {res(e['remaining'])} left on the ground" if e.get("remaining") else ", the pile is gone"
+        return f"fleet {e['fleet_id']} scooped {res(e['resources'])} of wreckage @{hexs(e['sector'])} into its hold{rest}"
+    if k == "Stockpile":
+        return stockpile_words(e)
     if k == "ShipsLost":
         ships = ", ".join(f"{s['count']}x {s['class']}" for s in e["ships"])
         return f"fleet {e['fleet_id']} lost {ships} at {hexs(e['sector'])}"
@@ -380,6 +393,8 @@ def event_text(e):
                "fled": "LOST, the last defender left", "withdrawn": "LOST, the last defender left",
                None: "LOST without a fight, nothing stood in its way"}[e.get("outcome")]
         fought = f" after {e['rounds']} round(s)" if e.get("rounds") else ""
+        if e.get("defended"):
+            how += ", and you LOST some of what stood there" if e.get("lost") else ", and you lost nothing"
         parts = [f"you lost {units_text(e.get('lost'))}"]
         if e.get("rebuilt"):
             parts.append(f"rebuilt at once {units_text(e['rebuilt'])}")
@@ -401,6 +416,24 @@ def event_text(e):
                 f"it follows {e['hexes_left']} more hex(es) after that")
     rest = {a: b for a, b in e.items() if a not in ("kind", "tick", "player_id")}
     return k + " " + json.dumps(rest, separators=(",", ":"))[:220]
+
+
+STOCKPILE_PHRASES = {"unloaded": "unloaded into the stockpile", "loaded": "loaded from the stockpile",
+                     "wreckage": "scooped wreckage at home into the stockpile",
+                     "charts": "delivered charts, paid into the stockpile"}
+
+
+def stockpile_words(e):
+    """A `Stockpile` event in the server's phrase: what went into the stockpile or came out of it, and why."""
+    return f"STOCKPILE: fleet {e['fleet_id']} {STOCKPILE_PHRASES.get(e['cause'], e['cause'])}: {res(e['amount'])}"
+
+
+def wreckage_words(e):
+    """'; wreckage 89/49/24 (on wreckage from before: 279/152/76 lie there now)': what a fight left, from `CombatEnded`."""
+    if not e.get("salvage"):
+        return ""
+    pile = f" (on wreckage from before: {res(e['salvage_pile'])} lie there now)" if e.get("salvage_pile") else ""
+    return f"; wreckage {res(e['salvage'])}{pile}"
 
 
 def print_events(lines, limit=40):
@@ -482,8 +515,11 @@ def units_text(units, key="unit"):
 
 
 def odds_words(o):
-    """A raid's odds as the server played them: the label and how the fights it played ended."""
-    return (f"{o['label'].upper().replace('_', ' ')} (destroyed {o['destroyed'] * 100:.0f}%, outlasted {o['outlasted'] * 100:.0f}%, "
+    """A raid's odds as the server played them: the label, what it costs the defence, and how the fights it played
+    ended. A raid repelled is one that does not breach the dock, not one that costs nothing."""
+    lose = round((1 - o["kept"]) * 100)
+    cost = "and you lose nothing that stands there" if lose == 0 else f"and you LOSE about {lose}% of what stands there"
+    return (f"{o['label'].upper().replace('_', ' ')} {cost} (destroyed {o['destroyed'] * 100:.0f}%, outlasted {o['outlasted'] * 100:.0f}%, "
             f"lost {o['lost'] * 100:.0f}% of the fights played; you keep {o['kept'] * 100:.0f}% of what stands there, "
             f"the raiders {o['raiders_kept'] * 100:.0f}% of theirs)")
 
@@ -711,6 +747,41 @@ def short_cover(short, prod):
     return need
 
 
+def queue_note(free, waiting):
+    """Why a queue with a free slot starts nothing, from the server's `waiting_on` for each waiting order.
+
+    The server starts the earliest waiting order that is ready and payable. A ready order that is short and has
+    `reserve` set holds the line: nothing behind it starts, and those that could start say `Order`. Without one,
+    a short order is passed over, so the slot stays free only while every ready order is short."""
+    if free <= 0 or not waiting:
+        return None
+
+    def name(w):
+        return f"{w['item']}" + (f"->L{w['to']}" if "to" in w else "") + (f" #{w['id']}" if "id" in w else "")
+
+    def need(w):
+        return ", ".join(f"{v} {k}" for k, v in (w.get("short") or {}).items()) or "resources"
+
+    holder = next((w for w in waiting if w.get("reserve") and w.get("waiting_on") == "Resources"), None)
+    held = [w for w in waiting if w.get("waiting_on") == "Order"]
+    if holder and held:
+        cover = f", covered in ~{age(holder['covered_in_s'])}" if "covered_in_s" in holder else ", with no income of it"
+        return (f"the reserve on {name(holder)} holds the free slot while it is short ({need(holder)}{cover}); "
+                f"{len(held)} order(s) behind it that could start now wait for it: {', '.join(name(w) for w in held)}. "
+                "cancel_queued it, or order it again without reserve, to let them start")
+    short = [w for w in waiting if w.get("waiting_on") == "Resources"]
+    later = [w for w in waiting if w.get("waiting_on") == "Prerequisite"]
+    if short and len(short) + len(later) == len(waiting):
+        every = "every waiting order is short" + (" or waits for a level still to be built" if later else "")
+        covered = [w for w in short if "covered_in_s" in w]
+        if not covered:
+            return f"{every}, of something you have no income of; the free slot stays idle"
+        first = min(covered, key=lambda w: w["covered_in_s"])
+        return (f"{every}, so the free slot stays idle; the first to be covered is {name(first)} "
+                f"({need(first)}) in ~{age(first['covered_in_s'])}. Order something payable to use the slot now")
+    return None
+
+
 def queues_of(fs):
     """The three homeworld queues as plain dicts: running items, waiting items, room."""
     hw, t = fs["homeworld"], fs["tick"]
@@ -721,7 +792,11 @@ def queues_of(fs):
         depth = slots + waiting_max
         room = max(depth - len(running) - len(waiting), 0)
         free = max(slots - len(running), 0) if not waiting else 0
-        return {"slots": slots, "depth": depth, "running": running, "waiting": waiting, "room": room, "open": free}
+        q = {"slots": slots, "depth": depth, "running": running, "waiting": waiting, "room": room, "open": free}
+        note = queue_note(slots - len(running), waiting)
+        if note:
+            q["note"] = note
+        return q
 
     def wait_item(i, item, to, each, w, q=None):
         d = {"index": i, "item": item, "ticks": each}
@@ -881,7 +956,8 @@ def recent_alerts(name, tick, window=300):
 
 
 def score_of(fs, board):
-    """Own row of the cached leaderboard, with rank out of the players listed."""
+    """Own row of the cached leaderboard, with rank out of the players listed, its parts, and the leader
+    with the gap to them, in all and by part."""
     if not board:
         return None
     me = fs["player"]["name"]
@@ -890,10 +966,26 @@ def score_of(fs, board):
     if not mine:
         return None
     total = max([e["rank"] for e in rows] or [0])
-    return {"score": round(mine["score"], 1), "rank": mine["rank"], "of": total, "core": round(mine["core"], 1),
-            "combat": round(mine["combat"], 1), "explore": round(mine["explore"], 1),
-            "age_s": max(fs["tick"] - board.get("tick", fs["tick"]), 0),
-            "bonus_capped": mine["combat"] + mine["explore"] > 0.25 * mine["core"]}
+    out = {"score": round(mine["score"], 1), "rank": mine["rank"], "of": total,
+           **{part: round(mine[part], 1) for part in SCORE_PARTS},
+           "age_s": max(fs["tick"] - board.get("tick", fs["tick"]), 0)}
+    lead = next((e for e in board.get("entries") or [] if e["rank"] == 1), None)
+    if lead:
+        out["leader"] = {"name": lead["name"], "score": round(lead["score"], 1), "gap": round(lead["score"] - mine["score"], 1),
+                         "gap_by_part": {part: round(lead[part] - mine[part], 1) for part in SCORE_PARTS
+                                         if round(lead[part] - mine[part], 1)}}
+    return out
+
+
+def leader_words(s):
+    """The leader, how far ahead, and in which parts of the score."""
+    lead = s.get("leader")
+    if not lead:
+        return ""
+    if s["rank"] == 1:
+        return "you lead"
+    parts = ", ".join(f"{part} {gap:+.1f}" for part, gap in lead.get("gap_by_part", {}).items())
+    return f"leader {lead['name']} {lead['score']:.1f}, {lead['gap']:.1f} ahead of you" + (f" ({parts})" if parts else "")
 
 
 def build_state(fs, board=None, left=None, alerts=None):
@@ -917,7 +1009,14 @@ def build_state(fs, board=None, left=None, alerts=None):
         if unmet:
             d["locked"] = unmet
         elif step is not None:
-            d["ok"] = all(pl["resources"].get(k, 0) >= step["cost"].get(k, 0) for k in RES)
+            short = {k: math.ceil(step["cost"].get(k, 0) - pl["resources"].get(k, 0)) for k in RES
+                     if step["cost"].get(k, 0) > pl["resources"].get(k, 0)}
+            d["ok"] = not short
+            if short:
+                d["short"] = short
+                cover = short_cover(short, hw.get("production") or {})
+                if cover is not None:
+                    d["covered_in_s"] = math.ceil(cover)
         nxt.setdefault(section, {})[label] = d
     idle = [n for n, q in qs.items() if q["open"] > 0]
     docked = {s["class"]: s["count"] for s in hw.get("docked_ships") or []}
@@ -957,6 +1056,8 @@ def queue_line(label, q):
         parts.append(f"waiting{tag} {what}{w['item']}{to}{need}")
     if q["room"] and not q["open"]:
         parts.append(f"{q['room']} more fit")
+    if q.get("note"):
+        parts.append(f"NOTE: {q['note']}")
     return " | ".join(parts)
 
 
@@ -1026,12 +1127,15 @@ def wait_reasons(base, cur, events, until="any"):
 
 def headline(name, doc):
     s = doc["score"]
-    sc = (f"SCORE {s['score']:.1f} rank {s['rank']}/{s['of']} (core {s['core']:.1f}, combat {s['combat']:.1f}, explore {s['explore']:.1f}"
-          + (", bonus CAPPED at 25% of core" if s["bonus_capped"] else "") + ")") if s else "SCORE unknown yet"
+    sc = (f"SCORE {s['score']:.1f} rank {s['rank']}/{s['of']} ("
+          + ", ".join(f"{part} {s[part]:.1f}" for part in SCORE_PARTS if s[part] or part in ("buildings", "research", "fleet"))
+          + ")") if s else "SCORE unknown yet"
     idle = ", ".join(doc["idle"]) if doc["idle"] else "none"
     left = doc["minutes_left"]
+    standing = leader_words(s) if s else ""
     return (f"{sc} | {'' if left is None else '%.0f min left | ' % left}IDLE QUEUES: {idle}\n"
-            f"Scoring: {doc['score_rule']}")
+            + (f"Standing: {standing}\n" if standing else "")
+            + f"Scoring: {doc['score_rule']}")
 
 
 def fleet_line(f):
@@ -1041,11 +1145,31 @@ def fleet_line(f):
             + (" CARGO BLOCKED" if f.get("cargo_blocked") else "") + (" LADEN" if f.get("laden") else ""))
 
 
-def cmd_state(name, pretty=False):
+def pick_keys(doc, keys):
+    """Only the top-level KEYS of the state document; an unknown key is named with the ones there are."""
+    unknown = [k for k in keys if k not in doc]
+    if unknown:
+        return None, f"no such key in state: {', '.join(unknown)}; the keys are {', '.join(doc)}"
+    return {k: doc[k] for k in keys}, None
+
+
+def cmd_state(name, args=()):
+    pretty = "--pretty" in args
+    keys = None
+    for i, a in enumerate(args):
+        if a.startswith("--keys="):
+            keys = a.split("=", 1)[1]
+        elif a == "--keys" and i + 1 < len(args):
+            keys = args[i + 1]
     fs, board = view(name)
     if not fs:
         return no_state(name)
     doc = build_state(fs, board, minutes_left(), recent_alerts(name, fs["tick"]))
+    if keys is not None:
+        doc, err = pick_keys(doc, [k for k in keys.split(",") if k])
+        if err:
+            print(err)
+            return
     print(json.dumps(doc, indent=1 if pretty else None, separators=None if pretty else (",", ":")))
 
 
@@ -1058,8 +1182,11 @@ def cmd_status(name, brief=False):
     print(headline(name, doc))
     if brief:
         st = doc["stock"]
+        raid = doc["defence"]["raid"]
+        lose = round((1 - raid["odds"]["kept"]) * 100) if raid else 0
         print("Stock " + " ".join(f"{k[0]}={st[k]:.0f}/{doc['cap'][k]}" for k in RES) + "  income/s " + "/".join(f"{doc['per_s'][k]:.4g}" for k in RES)
-              + (f"  raid forecast {doc['defence']['raid']['odds']['label'].upper().replace('_', ' ')}" if doc["defence"]["raid"] else ""))
+              + (f"  raid forecast {raid['odds']['label'].upper().replace('_', ' ')}"
+                 + (f", losing about {lose}% of what stands there" if lose else ", nothing lost") if raid else ""))
         for n, q in doc["queues"].items():
             print("  " + queue_line(n, q))
         if fs.get("outpost"):
@@ -1120,6 +1247,8 @@ def summarize(fs, doc, odds):
             tag = f"#{w['id']}" if "id" in w else f"[{w['index']}]"
             hold = " RESERVE (holds the line)" if w.get("reserve") else ""
             print(f"    waiting {tag}: {what}{w['item']}{to} ({age(w['ticks'])}{' each' if what else ''}){need}{why}{hold}")
+        if q.get("note"):
+            print(f"    NOTE: {q['note']}")
     stand = [f"{d['count']}x {d['kind']}" for d in hw.get("defences") or [] if d["count"]]
     print("Defences: " + (", ".join(stand) or "none") + f"; Solar Satellites: {hw.get('satellites', 0)}")
     if hw.get("raid"):
@@ -1318,14 +1447,15 @@ def cmd_score(name, limit=10):
     if not board:
         print("No answer from the server yet. Try again shortly.")
         return
-    print("rank  name                  score    core  combat  explore   (one table for humans and AI agents)")
+    parts = lambda e: " ".join(f"{e[part]:>9.1f}" for part in SCORE_PARTS)
+    print("rank  name                    score buildings  research     fleet   outpost   defence   (one table for humans and AI agents)")
     for e in board["entries"] + ([board["you"]] if board.get("you") else []):
         tag = "AI " if e["agent"] else "   "
-        print(f"{e['rank']:>4}  {e['name']:<20} {tag}{e['score']:>7.1f} {e['core']:>7.1f} {e['combat']:>7.1f} {e['explore']:>8.1f}")
+        print(f"{e['rank']:>4}  {e['name']:<20} {tag}{e['score']:>7.1f} {parts(e)}")
     if board.get("bots"):
         print("built-in bots (names start BOT-; they play by your rules and are not ranked with you):")
         for e in board["bots"]:
-            print(f" BOT  {e['name']:<20}    {e['score']:>7.1f} {e['core']:>7.1f} {e['combat']:>7.1f} {e['explore']:>8.1f}")
+            print(f" BOT  {e['name']:<20}    {e['score']:>7.1f} {parts(e)}")
     print(board.get("rule") or SCORE_RULE)
 
 
@@ -1472,52 +1602,50 @@ def cmd_label(c):
     return head + (" " + " ".join(rest) if rest else "")
 
 
-ERR_HINTS = {"NoConnection": ("move", "preview_move"), "ResourceNotPresent": ("harvest",),
-             "CargoFull": ("collect_salvage", "harvest")}
+MESSAGES = ("policy_update",)
 
 
-QUEUE_WORDS = {"building queue": ("build",), "research queue": ("research",),
-               "shipyard queue": ("build_ship", "build_defence"), "ship queue": ("build_ship", "build_defence")}
+def normalize(c):
+    """An order is {"action": ...}; standing orders are a message of their own, {"type": "policy_update", ...}.
+    Either form is taken for standing orders, and the one the server reads is sent."""
+    if c.get("action") in MESSAGES and "type" not in c:
+        return {"type": c["action"], **{k: v for k, v in c.items() if k != "action"}}
+    return c
 
 
-def mentions(c, msg):
-    """True when the error text names something in the command: its fleet or one of its names."""
-    fid = c.get("fleet_id")
-    if fid is not None and re.search(rf"\bfleet {fid}\b", msg):
-        return True
-    if c.get("id") is not None:   # cancels name their order by id; queue_type is not an item name
-        return re.search(rf"\border {c['id']}\b", msg) is not None
-    flat = re.sub(r"[\s_]", "", msg).lower()   # the server writes "Combustion Drive" for CombustionDrive
-    return any(re.sub(r"[\s_]", "", v).lower() in flat for k, v in c.items() if isinstance(v, str) and k not in ("action", "type"))
+def fence_for(fs, cmd):
+    """A question sent behind an order: the server answers one player's messages in the order they came, so
+    whatever comes back between the order and this answer is the order's own. It asks the odds of a fleet in
+    no sector, which costs nothing and is never asked otherwise; a fleet the order does not name is preferred,
+    and with no fleet at all the answer is the refusal for fleet 0. Returns (fleet id, message)."""
+    ids = [f["id"] for f in (fs or {}).get("fleets") or []]
+    fid = next((i for i in ids if i != cmd.get("fleet_id")), ids[0] if ids else 0)
+    return fid, {"action": "odds", "fleet_id": fid, "sectors": []}
 
 
-def match_errors(cmds, errors):
-    """Attribute server errors (which carry no command id) to commands, in order.
+def is_fence(m, fid):
+    if m.get("type") == "odds":
+        return m.get("fleet_id") == fid and not m.get("sectors")
+    return (m.get("type") == "error" and m.get("code") == "FleetNotFound"
+            and str(m.get("message", "")).startswith(f"fleet {fid} not found"))
 
-    A command takes at most one error. An error goes to the first free command whose
-    fleet id or building, tech, ship or defence name its text mentions; else to the
-    first free command its code fits; else to the first free one. Returns
-    (per-command error or None, errors that fit nothing).
-    """
-    got, left = [None] * len(cmds), []
-    for e in errors:
-        msg = e.get("message", "")
-        free = [i for i in range(len(cmds)) if got[i] is None]
-        pick = next((i for i in free if mentions(cmds[i], msg)), None)
-        if pick is None:
-            hint = ERR_HINTS.get(e.get("code"), ())
-            for words, acts in QUEUE_WORDS.items():
-                if words in msg.lower():
-                    hint = acts
-            fits = [i for i in free if cmds[i].get("action") in hint]
-            pick = (fits[-1] if e.get("code") == "QueueFull" else fits[0]) if fits else None
-        if pick is None and free and len(errors) >= len(free):
-            pick = free[0]
-        if pick is None:
-            left.append(e)
+
+def split_windows(msgs, fids):
+    """The logged messages cut at the answers to the fences FIDS, in order: one list per order of what came
+    back for it, the number of fences answered, and what came after the last answer."""
+    windows, cur = [], []
+    for m in msgs:
+        if len(windows) < len(fids) and is_fence(m, fids[len(windows)]):
+            windows.append(cur)
+            cur = []
         else:
-            got[pick] = e
-    return got, left
+            cur.append(m)
+    return windows, len(windows), cur
+
+
+def refusal_of(window):
+    """The server's or the client's refusal of the order whose answers are WINDOW, or None."""
+    return next((m for m in window if m.get("type") in ("error", "client_error")), None)
 
 
 def flat(text):
@@ -1574,41 +1702,68 @@ def outcome(cmd, qs):
     return "accepted (already finished or not visible yet)"
 
 
-def run_commands(name, cmds, gap=SEND_GAP, fast=False):
-    """Send commands in order and report each. Returns after the server's next tick.
+FENCE_WAIT = 4.0
 
-    Commands are spaced by GAP seconds. The server handles them at its next tick, so errors
-    and state changes show up together there; with fast=True nothing waits for it.
-    """
+
+def reply_line(cmd, m):
+    """The line for a question's answer in the window of the order that asked it; None for anything else."""
+    if m.get("type") != cmd.get("action"):
+        return None
+    words = {"preview_move": preview_line, "odds": odds_line, "leaderboard": leaderboard_line,
+             "exchange_quote": quote_line, "outpost_survey": survey_line}.get(m["type"])
+    return words(m) if words else None
+
+
+def send_fenced(name, pairs, gap):
+    """Send each (order, fence) pair and wait until every fence is answered and the tick after the last
+    answer has arrived. Returns (the logged messages since sending, the fleet ids of the fences)."""
     start = log_size(name)
-    base = start
-    for i, c in enumerate(cmds):
+    fids = []
+    for i, (cmd, (fid, fence)) in enumerate(pairs):
         if i:
             time.sleep(gap)
-        base = log_size(name)
-        send(name, c)
-    if fast:
-        time.sleep(0.15)
-    else:
-        deadline = time.time() + ACK_CAP
-        while time.time() < deadline:
-            time.sleep(0.04)
-            after, _ = log_lines(name, base)
-            if any(m.get("type") == "tick_update" for m in after):
-                time.sleep(0.05)
-                break
-    lines, _ = log_lines(name, start)
-    errors = [m for m in lines if m.get("type") in ("error", "client_error")]
-    fs, _b = view(name)
-    qs = queues_of(fs) if fs and not fast else None
-    return lines, errors, qs
+        send(name, cmd)
+        send(name, fence)
+        fids.append(fid)
+
+    def answered(ls):
+        _, seen, after = split_windows(ls, fids)
+        return seen == len(fids) and any(m.get("type") == "tick_update" for m in after)
+
+    lines, _ = collect(name, start, answered, FENCE_WAIT + gap * len(pairs))
+    return lines, fids
+
+
+def run_commands(name, cmds, gap=SEND_GAP, keep_going=False):
+    """Send orders in order, each followed by a fence, so that every answer is the order's own.
+
+    By default an order is sent only once the one before it has been answered and not refused: the first
+    refusal stops the batch. With keep_going every order is sent at once, each behind its fence, and all are
+    answered in one tick. Returns (results, messages): one (order, window, refusal or "timeout" or None) per
+    order sent, and every message logged meanwhile."""
+    results, lines = [], []
+    batches = [cmds] if keep_going else [[c] for c in cmds]
+    for batch in batches:
+        fs, _ = view(name)
+        got, fids = send_fenced(name, [(c, fence_for(fs, c)) for c in batch], gap)
+        lines += got
+        windows, seen, _ = split_windows(got, fids)
+        for i, c in enumerate(batch):
+            if i >= seen:
+                results.append((c, [], "timeout"))
+                continue
+            results.append((c, windows[i], refusal_of(windows[i])))
+        if not keep_going and results[-1][2] is not None:
+            break
+    return results, lines
 
 
 def cmd_do(name, args):
     fast = "--fast" in args
+    keep_going = "--keep-going" in args
     gap = SEND_GAP
     rest = []
-    it = iter(a for a in args if a != "--fast")
+    it = iter(a for a in args if a not in ("--fast", "--keep-going"))
     for a in it:
         if a == "--gap":
             gap = float(next(it, SEND_GAP))
@@ -1619,32 +1774,44 @@ def cmd_do(name, args):
         header(name)
         print(err or "no command given")
         return
+    cmds = [normalize(c) for c in cmds]
     unseen, _ = log_lines(name, cursor(name))
     caught_up = not collapse_events(unseen, errors=False)
-    lines, errors, qs = run_commands(name, cmds, gap, fast)
+    n = len(cmds)
+    tags = [f"[{i + 1}/{n}] " if n > 1 else "" for i in range(n)]
+    if fast:
+        for i, c in enumerate(cmds):
+            if i:
+                time.sleep(gap)
+            send(name, c)
+        time.sleep(0.15)
+        header(name, last_tick(name))
+        for tag, c in zip(tags, cmds):
+            print(f"{tag}sent {cmd_label(c)} (not confirmed: --fast does not wait for the server)")
+        return
+    results, lines = run_commands(name, cmds, gap, keep_going)
     fs, _ = view(name)
     header(name, fs["tick"] if fs else None)
-    client_errs = [e for e in errors if e["type"] == "client_error"]
-    server_errs = [e for e in errors if e["type"] == "error"]
-    per, left = match_errors(cmds, server_errs)
+    qs = queues_of(fs) if fs else None
     qev = [e for m in lines if m.get("type") == "tick_update" for e in (m.get("events") or []) if e.get("kind") == "Queue"]
     used = set()
-    n = len(cmds)
-    for i, c in enumerate(cmds):
-        tag = f"[{i + 1}/{n}] " if n > 1 else ""
-        if per[i] is not None:
-            print(f"{tag}ERR {cmd_label(c)}: {per[i].get('code')} {per[i].get('message')}")
-        elif fast:
-            print(f"{tag}sent {cmd_label(c)}")
+    for tag, (c, window, refused) in zip(tags, results):
+        if refused == "timeout":
+            print(f"{tag}NO ANSWER {cmd_label(c)}: the server did not answer in {FENCE_WAIT:.0f}s; it may still be applied, "
+                  "check `./play state`")
+        elif refused is not None:
+            print(f"{tag}ERR {cmd_label(c)}: " + " ".join(str(x) for x in (refused.get("code"), refused.get("message")) if x))
         else:
             o = queue_outcome(c, qev, used) or outcome(c, qs)
             print(f"{tag}ok {cmd_label(c)}" + (f" -> {o}" if o else ""))
-    for e in client_errs + left:
-        print("  rejected: " + " ".join(x for x in (e.get("code"), e.get("message")) if x))
-    for m in lines:
-        if m.get("type") in ("preview_move", "odds", "leaderboard", "exchange_quote", "outpost_survey"):
-            print("  " + {"preview_move": preview_line, "odds": odds_line, "leaderboard": leaderboard_line,
-                          "exchange_quote": quote_line, "outpost_survey": survey_line}[m["type"]](m))
+        for m in window:
+            line = reply_line(c, m)
+            if line:
+                print("  " + line)
+    unsent = cmds[len(results):]
+    if unsent:
+        print(f"NOT SENT, because an order before them was refused (--keep-going sends the rest anyway): "
+              + "; ".join(f"{tags[len(results) + i]}{cmd_label(c)}" for i, c in enumerate(unsent)))
     ev = collapse_events([m for m in lines if m.get("type") == "tick_update"], errors=False)
     if ev:
         print_events(ev, 8)
@@ -1799,8 +1966,11 @@ def hlog(msg):
 
 
 USAGE = """usage: play <command>
-  state [--pretty]       ONE compact JSON document, returns at once: stock, caps, income, levels, queues (running,
-                         waiting, shortfalls), idle queues, next costs, fleets, score and rank, minutes left, alerts
+  state [--pretty] [--keys a,b,...]
+                         ONE compact JSON document, returns at once: stock, caps, income, levels, queues (running,
+                         waiting, shortfalls, a note when a free slot starts nothing), idle queues, next costs (with
+                         what is short), fleets, score (rank, its parts, the leader and the gap),
+                         minutes left, alerts; --keys prints only those top-level keys, e.g. --keys stock,queues,score
   status [--brief]       readable view: headline (score, rank, time, idle queues, scoring rule), stock, queues with
                          their waiting items and shortfalls, fleets and their sector; --brief is the short form
   costs [buildings|research|ships|defences]  next 3 levels with cost, time, what each unlocks, mine payback
@@ -1815,9 +1985,12 @@ USAGE = """usage: play <command>
                          in four or better at the cost of a third or more, RISKY >= 0.9x is as likely lost as won,
                          else DEADLY)
   do '<json>' ['<json>' ...]   send commands in order (or one JSON array: do '[{...},{...}]'); one result line each,
-                         returns at the server's next tick (about 0.5 s) or at once on an error; --fast skips that wait
+                         each the server's own answer to that order. The batch stops at the first order refused and
+                         says which were not sent, so a refused load does not send the move after it; --keep-going
+                         sends them all (in one tick); --fast sends them all and does not wait for any answer
                          e.g. play do '{"action":"build","building_type":"MetalMine"}' '{"action":"research","tech":"EnergyTechnology"}'
                          standing orders: play do '{"type":"policy_update","fleet_id":2,"preset":"prospect"}'
+                         ({"action":"policy_update",...} is taken too and sent as the message it is)
                          with settings:   play do '{"type":"policy_update","fleet_id":2,"preset":"mine_and_return",
                                                     "params":{"max_range":8,"engage_ratio_x10":15,"fuel_budget_pct":40}}'
                          (fuel_budget_pct: the share of your deuterium income the fleet may spend on fuel, default 20,
@@ -1844,7 +2017,7 @@ def main():
     flags = [x for x in rest if x.startswith("--")]
     pos = [x for x in rest if not x.startswith("--")]
     if cmd == "status": cmd_status(name, "--brief" in flags)
-    elif cmd == "state": cmd_state(name, "--pretty" in flags)
+    elif cmd == "state": cmd_state(name, rest)
     elif cmd == "costs": cmd_costs(name, *pos[:1])
     elif cmd == "score" or cmd == "leaderboard": cmd_score(name, *pos[:1])
     elif cmd == "map": cmd_map(name, *pos[:1])

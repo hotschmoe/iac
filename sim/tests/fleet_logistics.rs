@@ -17,8 +17,7 @@ use iac_shared::protocol::{
 };
 use iac_shared::scaling::{ratio_label, ship_tank, RatioLabel, ResearchLevels};
 use iac_shared::world::{self, NpcBehaviorType};
-use iac_sim::engine::{template_npc_id, Errand, FleetStatus, Ships};
-use iac_sim::snapshot::ExploreCredit;
+use iac_sim::engine::{template_npc_id, Errand, FleetStatus, SectorOverride, Ships};
 use iac_sim::GameEngine;
 
 fn alerts_since(e: &Empire, mark: usize) -> Vec<AlertEvent> {
@@ -324,7 +323,7 @@ fn charted_prospector(engage_ratio_x10: u8) -> (Empire, u64) {
                 let h = Hex { q: home.q + dq, r: home.r + dr };
                 if Hex::distance(&h, &home) <= 2 {
                     s.explored.insert((pid, h.to_key()));
-                    s.credited.insert((pid, h.to_key(), ExploreCredit::Charted));
+                    s.charted.insert((pid, h.to_key()));
                 }
             }
         }
@@ -365,8 +364,13 @@ fn a_doctrine_enters_unscouted_sectors_only_at_the_engage_ratio_the_player_set()
     let need = f32::from(stays) / 10.0;
     let (moves, holds) = outings(stays);
     assert_eq!(moves, 0);
-    assert!(!holds.is_empty(), "the refusal is reported");
+    assert_eq!(holds.len(), 1, "the refusal is reported when the hold begins, and not again while it does not change: {holds:?}");
     for hold in &holds {
+        assert!(
+            hold.contains("that the engage ratio allows") && hold.contains("below the doctrine's engage ratio"),
+            "the limit that holds it is named: {hold}",
+        );
+        assert!(!hold.contains("fuel tank"), "and no other: {hold}");
         let rated: f32 = hold
             .split_once("your fleet rates ")
             .and_then(|(_, rating)| rating.split_once('x'))
@@ -398,9 +402,121 @@ fn an_autopilot_will_not_take_a_hop_that_strands_it_and_turns_for_home() {
         EventKind::PolicyAction(p) if p.action == "move" => Some(p.reason.clone()),
         _ => None,
     });
-    assert!(reasons[0].starts_with("returning"), "turning for home counts as acting: {reasons:?}");
+    assert!(reasons.iter().any(|why| why.starts_with("returning")), "turning for home counts as acting: {reasons:?}");
     let critical = alerts_since(&e, mark).into_iter().filter(|a| matches!(a.level, AlertLevel::Critical)).count();
     assert_eq!(critical, 0, "the autopilot never stranded itself");
+}
+
+/// A sector `d` hexes from `home`, reached from it over lanes that stay
+/// within `d` hexes of home, whose fewest jumps home are more than `d`.
+fn maze_sector(engine: &GameEngine, home: Hex) -> Option<(Hex, u16)> {
+    (2u16..=6).find_map(|d| {
+        iac_shared::hex::hex_ring(home, d).find(|&at| {
+            if world::is_home_ground(at) || engine.world_gen.generate_sector(at).npc_template.is_some() {
+                return false;
+            }
+            let inside = lane_path_through(engine, home, at, 16, &|n| Hex::distance(&n, &home) <= d);
+            let fewest = lane_path(engine, at, home, 16).map_or(0, |path| path.len());
+            inside.is_some() && fewest > usize::from(d)
+        })
+        .map(|at| (at, d))
+    })
+}
+
+#[test]
+fn a_prospector_whose_nearest_uncharted_sector_is_beyond_its_fuel_stays_home_and_says_so() {
+    let mut engine = world("test");
+    let (pid, fid, home, target, d) = (0..24)
+        .find_map(|i| {
+            let (pid, fid) = join(&mut engine, &format!("Tethered{i}"));
+            let home = engine.players[&pid].homeworld;
+            maze_sector(&engine, home).map(|(target, d)| (pid, fid, home, target, d))
+        })
+        .expect("a home seat near lanes that wind");
+    let mut e = Empire { engine, pid, fid, log: Vec::new() };
+    let hop = hop_fuel(&e);
+    let tank = (2.0 * f64::from(d) + 1.0) * hop / 0.9;
+    edit(&mut e.engine, |s| {
+        for at in iac_shared::hex::hex_spiral(home, d) {
+            if at != target {
+                s.explored.insert((pid, at.to_key()));
+                s.charted.insert((pid, at.to_key()));
+            }
+        }
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.fuel_max = tank;
+        fleet.fuel = tank;
+    });
+    let params = PolicyParams {
+        max_range: u8::try_from(d).unwrap(),
+        engage_ratio_x10: 1,
+        min_fuel_pct: 10,
+        fuel_budget_pct: 100,
+        ..PolicyParams::default()
+    };
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
+    let mark = e.mark();
+    e.run(300);
+
+    assert!(policy_reasons(&e, mark, "move").is_empty(), "it never sets out on a trip it cannot fly back from");
+    assert_eq!(e.engine.fleets[&fid].location, home);
+    let held = policy_reasons(&e, mark, "hold");
+    assert_eq!(held.len(), 1, "one hold, told once: {held:?}");
+    assert!(
+        held[0].starts_with(&format!("the nearest uncharted sector is out of reach on this fuel: {target} is farther than")),
+        "{held:?}",
+    );
+}
+
+/// A sector near `home` whose fewest jumps home cross a sector where a fight
+/// waits, while a longer way home crosses none: the sector, and the two ways.
+fn detour(engine: &GameEngine, home: Hex) -> (Hex, Vec<Hex>, Vec<Hex>) {
+    let fights = |n: Hex| engine.pending_template_npc(n).is_some_and(|t| t.behavior != NpcBehaviorType::Passive);
+    for at in iac_shared::hex::hex_spiral(home, 6) {
+        if at == home || fights(at) {
+            continue;
+        }
+        let Some(short) = lane_path(engine, at, home, 12) else { continue };
+        if !short.iter().any(|&n| fights(n)) {
+            continue;
+        }
+        let calm = lane_path_through(engine, at, home, 12, &|n| !fights(n));
+        if let Some(calm) = calm.filter(|calm| calm.len() > short.len()) {
+            return (at, short, calm);
+        }
+    }
+    panic!("no sector near {home} with a detour around a fight");
+}
+
+#[test]
+fn a_fleet_turning_home_on_tight_fuel_takes_the_way_its_fuel_flies_and_says_so() {
+    let mut e = Empire::join(world("test"), "Frugal");
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let (at, short, calm) = detour(&e.engine, home);
+    empower(&mut e.engine, pid, fid);
+    let hop = hop_fuel(&e);
+    let fuel = (short.len() as f64 + 0.5) * hop;
+    assert!(fuel < calm.len() as f64 * hop, "the way round is beyond the tank");
+    let capacity = iac_sim::engine::fleet_cargo_capacity(&e.engine.fleets[&fid], &e.engine.pace());
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.location = at;
+        fleet.fuel_max = fuel;
+        fleet.fuel = fuel;
+        fleet.cargo = Resources { metal: capacity, ..Resources::default() };
+    });
+    let params = PolicyParams { min_fuel_pct: 0, max_range: 12, ..PolicyParams::default() };
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::MineAndReturn, Some(params)).unwrap();
+    let mark = e.mark();
+    e.run_until(300, |e| e.engine.fleets[&fid].location == home);
+
+    assert_eq!(e.engine.fleets[&fid].location, home, "it got home");
+    let jumps = policy_reasons(&e, mark, "move");
+    assert_eq!(jumps.len(), short.len(), "by the fewest jumps, through the fight: {jumps:?}");
+    assert!(jumps[0].starts_with(&format!("returning: cargo 100%; home is {} jumps away by ", short.len())), "{jumps:?}");
+    let critical = alerts_since(&e, mark).into_iter().filter(|a| matches!(a.level, AlertLevel::Critical)).count();
+    assert_eq!(critical, 0, "it never stranded");
 }
 
 fn policy_reasons(e: &Empire, mark: usize, action: &str) -> Vec<String> {
@@ -713,9 +829,13 @@ fn a_fleet_that_loses_a_ship_in_a_fight_leaves_what_it_can_no_longer_carry_as_wr
     let mark = e.mark();
     edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().refit.weapons = MIGHTY.weapons);
     e.run_until(20, |e| e.engine.active_combats.is_empty());
-    let (pile, _) = pile_of(&e.log[mark..]);
+    let ended = e.since(mark, |k| match k {
+        EventKind::CombatEnded(c) => Some((c.salvage, c.salvage_pile)),
+        _ => None,
+    });
+    let [(Some(dropped), Some(pile))] = ended[..] else { panic!("the victory names what it dropped and the pile: {ended:?}") };
     assert_eq!(pile, wreckage(&e, at), "the victory reports the pile that lies there");
-    assert!(pile.metal >= spilled.metal && pile.crystal >= spilled.crystal && pile.deuterium >= spilled.deuterium);
+    assert!(same(pile, spilled.add(dropped)), "the kill's wreckage on top of the cargo that spilled: {pile:?}");
 
     let _ = e.order(Command::CollectSalvage { fleet_id: fid });
     let scooped = e.fleet();
@@ -1153,6 +1273,189 @@ fn a_patrol_that_fought_the_convoy_over_its_own_dock_is_mended_there_and_never_w
     assert!(reports(&e, mark).iter().all(|(_, why)| !why.contains("mended")), "so the patrol never waited for it: {:?}", reports(&e, mark));
 }
 
+/// A patrol of `ships` at home under `params`, its fuel unbounded, every
+/// lair within a hex of its beat cleared: only the wreckage put out for it
+/// decides where it flies.
+fn quiet_patrol(name: &str, ships: &[(ShipClass, u32)], params: PolicyParams) -> (Empire, Hex) {
+    let mut e = Empire::join(world("persistent"), name);
+    let (pid, fid) = (e.pid, e.fid);
+    let home = e.engine.players[&pid].homeworld;
+    let lairs: Vec<u32> = iac_shared::hex::hex_spiral(home, u16::from(params.max_range) + 1)
+        .filter(|h| e.engine.world_gen.generate_sector(*h).npc_template.is_some())
+        .map(|h| h.to_key())
+        .collect();
+    muster(&mut e.engine, fid, ships, home);
+    edit(&mut e.engine, |s| {
+        let player = s.players.get_mut(&pid).unwrap();
+        (player.buildings.metal_storage, player.buildings.deuterium_tank) = (8, 8);
+        player.resources = Resources { metal: 20_000.0, crystal: 20_000.0, deuterium: 50_000.0 };
+        for key in lairs {
+            s.sector_overrides.entry(key).or_insert_with(SectorOverride::default).npc_cleared_tick = Some(s.tick);
+        }
+    });
+    let params = PolicyParams { fuel_budget_pct: 100, ..params };
+    e.engine.handle_policy_update(pid, fid, PolicyPreset::PatrolHome, Some(params)).expect("patrol orders");
+    (e, home)
+}
+
+fn drop_wreckage(e: &mut Empire, at: Hex, pile: Resources) {
+    edit(&mut e.engine, |s| {
+        let ov = s.sector_overrides.entry(at.to_key()).or_insert_with(SectorOverride::default);
+        ov.salvage = Some(pile);
+        ov.salvage_despawn_tick = Some(s.tick + 1_000_000);
+    });
+}
+
+const BEAT: PolicyParams = PolicyParams {
+    min_fuel_pct: 10,
+    cargo_return_pct: 85,
+    max_range: 3,
+    engage_ratio_x10: 15,
+    disengage_ratio_x10: 9,
+    fuel_budget_pct: 100,
+    refine: false,
+};
+
+#[test]
+fn a_patrol_flies_out_for_wreckage_it_did_not_make_and_brings_it_home() {
+    let (mut e, home) = quiet_patrol("Gleaner", &[(ShipClass::LightFighter, 10)], BEAT);
+    let fid = e.fid;
+    let at = outward_chain(&e.engine, home, 2)[1];
+    drop_wreckage(&mut e, at, Resources { metal: 300.0, crystal: 100.0, deuterium: 0.0 });
+
+    let mark = e.mark();
+    e.run_until(1200, |e| wreckage(e, at).total() == 0.0 && e.engine.fleets[&fid].location == home);
+    let acts = reports(&e, mark);
+    assert_eq!(
+        acts.iter().filter(|(action, _)| action != "move").cloned().collect::<Vec<_>>(),
+        [
+            ("salvage".to_string(), format!("scooping wreckage at {at} that it did not make")),
+            ("unload".to_string(), "unloaded 300 metal and 100 crystal into the stockpile".to_string()),
+        ],
+        "{acts:?}",
+    );
+    let moves = policy_reasons(&e, mark, "move");
+    assert_eq!(moves[0], format!("collecting the wreckage at {at}"), "{moves:?}");
+    assert!(
+        moves[moves.len() - 1].starts_with("returning: no contact within 3 hops of home that the fleet rates 1.5x against, and no wreckage"),
+        "with the pile aboard and nothing left in range it goes home: {moves:?}",
+    );
+    assert_eq!(e.engine.fleets[&fid].cargo.total(), 0.0);
+}
+
+#[test]
+fn a_patrol_with_a_full_hold_takes_it_home_unloads_is_mended_and_goes_back_for_the_rest() {
+    let (mut e, home) = quiet_patrol("Hauler", &[(ShipClass::LightFighter, 10)], BEAT);
+    let fid = e.fid;
+    let at = outward_chain(&e.engine, home, 1)[0];
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.ships = squadron(ShipClass::LightFighter, 9, &[350]);
+        fleet.location = at;
+    });
+    let hold = e.fleet().cargo_capacity;
+    drop_wreckage(&mut e, at, Resources { metal: 1.6 * hold, crystal: 0.0, deuterium: 0.0 });
+
+    let mark = e.mark();
+    e.run_until(1200, |e| wreckage(e, at).total() == 0.0);
+    let acts = reports(&e, mark);
+    assert!(
+        acts.len() == 5
+            && acts[1].0 == "move"
+            && acts[1].1.starts_with(&format!("returning to unload the salvage: cargo 100%; home is 1 jump away by {home} (")),
+        "{acts:?}",
+    );
+    assert_eq!(
+        [&acts[..1], &acts[2..]].concat(),
+        [
+            ("salvage".to_string(), format!("scooping wreckage at {at} that it did not make")),
+            ("unload".to_string(), format!("unloaded {} metal into the stockpile", hold.ceil())),
+            ("move".to_string(), format!("collecting the wreckage at {at}")),
+            ("salvage".to_string(), format!("scooping wreckage at {at} that it did not make")),
+        ],
+    );
+    let told = mended(&e, mark);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].starts_with(&format!("fleet {fid} was mended at the home dock: 1 ship(s) made whole")), "{}", told[0]);
+    assert_eq!(e.fleet().hull, e.fleet().hull_max);
+}
+
+#[test]
+fn a_patrol_whose_next_pile_would_not_fit_the_room_left_unloads_first() {
+    let (mut e, home) = quiet_patrol("Tidy", &[(ShipClass::LightFighter, 10)], PolicyParams { cargo_return_pct: 100, ..BEAT });
+    let fid = e.fid;
+    let chain = outward_chain(&e.engine, home, 2);
+    let hold = e.fleet().cargo_capacity;
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.location = chain[0];
+        fleet.cargo.metal = hold - 1.0;
+    });
+    drop_wreckage(&mut e, chain[1], Resources { metal: hold, crystal: 0.0, deuterium: 0.0 });
+
+    let mark = e.mark();
+    e.run_until(1200, |e| wreckage(e, chain[1]).total() == 0.0);
+    let acts = reports(&e, mark);
+    let unload_first = format!(
+        "returning to unload the salvage: the hold has room for 1 of the {hold:.0} units of wreckage at {}; home is 1 jump away by {home} (",
+        chain[1],
+    );
+    assert!(acts[0].0 == "move" && acts[0].1.starts_with(&unload_first), "{acts:?}");
+    assert_eq!(
+        acts[1..3],
+        [
+            ("unload".to_string(), format!("unloaded {} metal into the stockpile", (hold - 1.0).ceil())),
+            ("move".to_string(), format!("collecting the wreckage at {}", chain[1])),
+        ],
+        "{acts:?}",
+    );
+}
+
+#[test]
+fn a_patrol_passes_over_wreckage_not_worth_the_fuel_to_fetch_it() {
+    let (mut e, home) = quiet_patrol("Frugal", &[(ShipClass::LightFighter, 10)], BEAT);
+    let fid = e.fid;
+    let at = outward_chain(&e.engine, home, 3)[2];
+    let burned = 6.0 * e.engine.hop_fuel_cost(&e.engine.fleets[&fid]) * FUEL_DEUT_PER_UNIT;
+    assert!(burned < e.fleet().cargo_capacity, "the pile fits the hold: {burned:.0}");
+
+    drop_wreckage(&mut e, at, Resources { metal: burned, crystal: 0.0, deuterium: 0.0 });
+    let mark = e.mark();
+    e.run(300);
+    assert!(policy_reasons(&e, mark, "move").is_empty(), "{burned:.0} metal for {burned:.0} deuterium of fuel: {:?}", reports(&e, mark));
+    let held = policy_reasons(&e, mark, "hold");
+    assert!(
+        !held.is_empty()
+            && held.iter().all(|why| why == "no contact within 3 hops of home that the fleet rates 1.5x against, and no wreckage that repays the fuel"),
+        "{held:?}",
+    );
+
+    let hold = e.fleet().cargo_capacity;
+    drop_wreckage(&mut e, at, Resources { metal: hold, crystal: 0.0, deuterium: 0.0 });
+    let mark = e.mark();
+    e.run_until(300, |e| wreckage(e, at).total() == 0.0);
+    assert_eq!(policy_reasons(&e, mark, "move")[0], format!("collecting the wreckage at {at}"));
+}
+
+#[test]
+fn a_patrol_with_a_small_cargo_in_it_brings_home_more_of_the_same_wreckage() {
+    let haul = |ships: &[(ShipClass, u32)]| {
+        let (mut e, home) = quiet_patrol("Convoy", ships, BEAT);
+        let at = outward_chain(&e.engine, home, 2)[1];
+        drop_wreckage(&mut e, at, Resources { metal: 200_000.0, crystal: 0.0, deuterium: 0.0 });
+        let mark = e.mark();
+        e.run(600);
+        let trips = policy_reasons(&e, mark, "unload").len();
+        (200_000.0 - wreckage(&e, at).metal - e.fleet().cargo.metal, trips, e.fleet().cargo_capacity)
+    };
+    let (warships, trips, hold) = haul(&[(ShipClass::LightFighter, 10)]);
+    let (with_cargo, cargo_trips, cargo_hold) = haul(&[(ShipClass::LightFighter, 10), (ShipClass::SmallCargo, 1)]);
+    assert!(
+        with_cargo > 3.0 * warships,
+        "{warships:.0} metal home in {trips} trips with a hold of {hold:.0}, {with_cargo:.0} in {cargo_trips} with a Small Cargo and a hold of {cargo_hold:.0}",
+    );
+}
+
 #[test]
 fn a_jump_takes_the_ticks_the_fleet_reports() {
     use ShipClass as S;
@@ -1160,21 +1463,23 @@ fn a_jump_takes_the_ticks_the_fleet_reports() {
     let fighters: Classes = &[(S::LightFighter, 2)];
     let with_a_heavy: Classes = &[(S::LightFighter, 1), (S::HeavyFighter, 1)];
     // The drives as (Combustion, Impulse, Hyperspace). A fleet jumps at the
-    // speed of its slowest ship: max(1, ceil(sqrt(50,000 / speed))) ticks.
-    let cases: [(Classes, (u8, u8, u8), u16); 13] = [
+    // speed of its slowest ship: max(1, ceil(25,000 / speed)) ticks.
+    let cases: [(Classes, (u8, u8, u8), u16); 15] = [
         (fighters, (0, 0, 0), 2),
         (fighters, (9, 0, 0), 2),
         (with_a_heavy, (0, 0, 0), 3),
         (with_a_heavy, (0, 2, 0), 2),
         (&[(S::EspionageProbe, 2)], (0, 0, 0), 1),
-        (&[(S::SmallCargo, 1)], (0, 0, 0), 4),
-        (&[(S::SmallCargo, 1)], (2, 0, 0), 3),
+        (&[(S::SmallCargo, 1)], (0, 0, 0), 5),
+        (&[(S::SmallCargo, 1)], (2, 0, 0), 5),
+        (&[(S::SmallCargo, 1)], (5, 0, 0), 4),
         (&[(S::SmallCargo, 1)], (2, 5, 0), 2),
-        (&[(S::Recycler, 1), (S::Cruiser, 3)], (6, 4, 0), 4),
-        (&[(S::Cruiser, 3)], (0, 4, 0), 2),
+        (&[(S::Recycler, 1), (S::Cruiser, 3)], (6, 4, 0), 8),
+        (&[(S::Cruiser, 3)], (0, 3, 0), 2),
+        (&[(S::Cruiser, 3)], (0, 4, 0), 1),
         (&[(S::Battleship, 1)], (0, 0, 4), 2),
         (&[(S::Bomber, 1)], (0, 6, 8), 2),
-        (&[(S::Deathstar, 1)], (0, 0, 7), 13),
+        (&[(S::Deathstar, 1)], (0, 0, 7), 81),
     ];
     for (classes, drives, ticks) in cases {
         let mut e = Empire::join(world("test"), "Jumper");
@@ -1324,16 +1629,19 @@ fn dry_prospector(hops: usize, fuel: f64, deuterium: f64, refine: bool) -> (Empi
 
 #[test]
 fn a_doctrine_told_to_refine_does_so_before_it_would_turn_home_for_fuel_and_turns_home_only_if_that_was_not_enough() {
-    let (mut e, mark) = dry_prospector(1, 100.0, 16.0, false);
+    let (mut e, mark) = dry_prospector(1, 70.0, 16.0, false);
     let fid = e.fid;
     assert!(!policy_reasons(&e, mark, "engage")[0].contains("refining"), "the switch is off unless set");
     e.run_until(60, |e| !policy_reasons(e, mark, "move").is_empty());
     let moves = policy_reasons(&e, mark, "move");
-    assert!(moves[0].starts_with("returning: a jump to"), "without the switch it turns home: {moves:?}");
+    assert!(
+        moves[0].starts_with("returning: the nearest uncharted sector is out of reach on this fuel: "),
+        "without the switch it turns home: {moves:?}",
+    );
     assert!(policy_reasons(&e, mark, "refine").is_empty());
     assert_eq!(e.engine.fleets[&fid].cargo.deuterium, 16.0, "with its deuterium for the stockpile");
 
-    let (mut e, mark) = dry_prospector(1, 100.0, 16.0, true);
+    let (mut e, mark) = dry_prospector(1, 70.0, 16.0, true);
     assert!(
         policy_reasons(&e, mark, "engage")[0].ends_with("fuel budget 20% of deuterium income, refining from the hold when short of fuel)"),
         "{:?}", policy_reasons(&e, mark, "engage"),
@@ -1342,8 +1650,7 @@ fn a_doctrine_told_to_refine_does_so_before_it_would_turn_home_for_fuel_and_turn
     let refined = policy_reasons(&e, mark, "refine");
     assert_eq!(refined.len(), 1, "{refined:?}");
     assert!(
-        refined[0].starts_with("refined 16 deuterium from the hold into 170 fuel: a jump to ")
-            && refined[0].ends_with(" would leave 60 fuel against 80 needed to return home"),
+        refined[0].starts_with("refined 16 deuterium from the hold into 170 fuel: the nearest uncharted sector is out of reach on this fuel: "),
         "{refined:?}",
     );
     assert_eq!(policy_reasons(&e, mark, "move")[0], "pushing frontier", "and then flies on");
@@ -1363,10 +1670,10 @@ fn a_doctrine_told_to_refine_does_so_before_it_would_turn_home_for_fuel_and_turn
         policy_reasons(&e, mark, "refine"),
         ["refined 2 deuterium from the hold into 21.3 fuel: fuel 20 is below the route home 80 plus reserve 0"],
     );
-    assert_eq!(
-        policy_reasons(&e, mark, "move")[0],
-        "returning: fuel 41 is below the route home 80 plus reserve 0",
-        "what it refined was not enough, so it turns home",
+    assert!(
+        policy_reasons(&e, mark, "move")[0].starts_with("returning: fuel 41 is below the route home 80 plus reserve 0; home is 2 jumps away by "),
+        "what it refined was not enough, so it turns home: {:?}",
+        policy_reasons(&e, mark, "move"),
     );
 }
 

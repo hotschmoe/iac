@@ -42,6 +42,11 @@
     "metal": 60.0
   },
   "salvage_despawn_tick": 137,
+  "salvage_pile": {
+    "crystal": 37.5,
+    "deuterium": 22.5,
+    "metal": 150.0
+  },
   "sector": {
     "q": 2,
     "r": 2

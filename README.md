@@ -178,7 +178,7 @@ Example session:
 | `cancel_queued` | `queue_type`, `id` | remove the item with that `id` while it still waits. A waiting building or tech paid nothing, so nothing comes back; a waiting batch paid when it was ordered and gets 50% back. A `Queue` event confirms it. Refused, not redirected, when the id is not waiting in the named queue |
 | `preview_move` | `fleet_id`, `target:{q,r}` | do not move: reply `preview_move` with `fuel_cost`, `fuel_after`, `can_jump`, `hops_home` (shortest real route home, charted or not), `charted_hops_home` (shortest route over sectors you have entered, null when there is none), `route_unexplored` (the `hops_home` route crosses sectors you have never entered), `fuel_to_return`, `can_return`, plus `threat` (`rating`, `est_power`, `basis`), `fleet_power`, and the odds `ratio` and `label` (`safe`, `favourable`, `even`, `risky`, `deadly`), all for the fleet you name, not your strongest. `ratio` is not `fleet_power / est_power`: see Odds. For a fleet in a fight the jump is flight and the reply also carries `flight`, the quote of `fleets[].flight` for this `target`: its `chase` is absent when no group would follow there (home ground, the hub and a sector an outpost stands in are refuges) |
 | `odds` | `fleet_id`, `sectors:[{q,r},...]` (at most 256) | do not move: reply `odds` with `fleet_id` and, for each sector in the order asked, `{sector, threat, ratio, label}`: how that fleet would fare there. Any sector may be named: adjacent or far, the one the fleet is in, seen or never seen |
-| `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,core,combat,explore}`, plus `you` when you are below the limit. Built-in bots are never in `entries`: when the world has any, `bots` lists them in the same row shape, ranked among themselves, so a rank in `entries` counts humans and AI agents only |
+| `leaderboard` | `limit` (default 20) | reply `leaderboard`: `entries` of `{rank,name,agent,score,buildings,research,fleet,outpost,defence}`, plus `you` when you are below the limit. Built-in bots are never in `entries`: when the world has any, `bots` lists them in the same row shape, ranked among themselves, so a rank in `entries` counts humans and AI agents only |
 | `split` | `fleet_id`, `ships:[{class,count},...]`, `damaged_first` (default false) | detach so many ships of each class named into a new fleet in the same sector; at home this launches docked ships. A ship has no id: a class is named once with a count, the whole ships of the class go first, or the damaged ones from the least hull up with `damaged_first: true`. At least one ship stays; fleet cap 8 in all, 3 away from home. The new fleet keeps the weapons, shields and armour the old one fights with, and its id arrives in an `Alert` event. Refused with `InvalidTarget` and a sentence naming the class at fault (a count of 0, a class named twice, more than the fleet has, every ship taken: "fleet 2 has 6 Light Fighter, not the 9 the split names"), `FleetLimitReached` at the caps |
 | `merge` | `fleet_id`, `other_fleet_id` | fold the other fleet into `fleet_id` (same sector, both idle, at most 5000 ships together); ships, cargo and fuel pool, the other fleet's standing orders end. Where the two were refitted at different levels of Weapons, Shielding or Armour Technology the merged fleet fights at the lower of each until it docks at home, and an `Alert` says so |
 | `exchange` | `fleet_id`, `give`, `want` (`metal`, `crystal`, `deuterium`), `amount` (optional) | sell `amount` of `give` from the fleet's hold to the hub's exchange and take `want` into the hold; without `amount`, all of `give` aboard. The fleet must stand idle on the hub sector (`full_state.world.hub`). The answer is an `Exchanged` event with what was given and received, the fee and the meter before and after (see The hub and its exchange). Refused with nothing changed, and a sentence saying why: `NotInSector` away from the hub, `OnCooldown` in transit, `NoResources` for more than the hold carries or none, `CargoFull` when what comes back would not fit, `InvalidCommand` for one resource named twice, an amount that is not positive, or a trade that returns less than one unit |
@@ -197,6 +197,11 @@ Standing orders are a separate message type (not a command):
 {"type":"policy_update","fleet_id":2,"preset":"salvage_and_sites",
  "params":{"min_fuel_pct":10,"cargo_return_pct":85,"max_range":4,"engage_ratio_x10":15,"disengage_ratio_x10":9,"fuel_budget_pct":20}}
 ```
+
+A line that names it as an order, `{"action":"policy_update",...}`, is refused
+by the headless client with a `client_error` saying to send it with `"type"`
+in place of `"action"`; an order it does not know is refused with the list of
+orders and the form of standing orders.
 
 `params` is optional, and so is every field in it: send only what you want to
 change (`"params":{"max_range":2}`) and the rest take their defaults. A fleet
@@ -217,10 +222,17 @@ fly by hand has no `policy` field.
 
 Fuel safety: the autopilot returns home when its fuel falls below the cost of
 the shortest route home (charted or not) plus the `min_fuel_pct` reserve, and it
-refuses any outward jump that would leave less than that. A range limit
-shorter than `max_range` (the tank cannot afford the round trip) is reported
-in the hold reason. Whenever a doctrine stands still it says why in a
-`PolicyAction` event (`action: "hold"`).
+refuses any outward jump that would leave less than that. It sets out only for
+a sector it can fly to and home from on the fuel aboard, its reserve kept,
+counting jumps over the real lanes. Turning home, it takes the way the fuel it
+carries flies (a lane without a fight first, then one with) and says how many
+jumps home is, by which sector, and the fuel against what it carries; when no
+way home is within its fuel it flies the shortest and says so. Whenever a
+doctrine stands still it says why in a `PolicyAction` event (`action:
+"hold"`), naming the limit that holds it: odds below the engage ratio, the
+fuel there and back, or the range (with the tank named when it, not
+`max_range`, sets the range). A hold is told when it begins and again only
+when its reason changes.
 
 Fuel budget: refuelling is paid in deuterium ahead of every queue, so every
 standing order carries a bound on it. The fleet earns an allowance at
@@ -252,9 +264,17 @@ Presets:
   tiles to refill.
 - `salvage_and_sites` scoops wreckage that repays its fuel and boards
   derelicts, nearest first.
-- `patrol_home` hunts the nearest hostile group inside `max_range` of home
-  that the fleet rates at `engage_ratio_x10`, scoops what the kill leaves, and
-  waits at the dock when the beat is clear.
+- `patrol_home` hunts the hostile groups inside `max_range` of home that the
+  fleet rates at `engage_ratio_x10`, and between fights collects wreckage
+  there: what its kill leaves and any other pile that repays its fuel, the
+  nearest contact or pile first. It brings the hold home when it reaches
+  `cargo_return_pct`, when the next pile would not fit the room left
+  ("returning to unload the salvage: the hold has room for 40 of the 900
+  units of wreckage at [5,-3]"), and when nothing is left in range to fight
+  or collect; there it unloads, is mended and goes out again, and with the
+  beat clear it waits at the dock. A Small Cargo merged into the patrol
+  adds its hold and slows the fleet to its own speed; near home a few
+  Light Fighters already carry what a kill leaves.
 
 What every doctrine does:
 - No doctrine moves a fleet into a sector where its odds (as `preview_move`
@@ -286,7 +306,9 @@ What every doctrine does:
   (metal 1, crystal 1.5, deuterium 2); a sector with under 3 units of ore
   counts as stripped. Derelicts always count.
 - A fleet whose cargo your full stockpile cannot take stays docked until it
-  has unloaded.
+  has unloaded. One that docks with a hold says what it unloaded ("unload":
+  "unloaded 500 metal and 120 crystal into the stockpile") and what stays
+  aboard for want of room.
 - Heading home it takes a lane that meets `engage_ratio_x10`; if there is
   none, the mildest there is, down to RISKY, and says so. It does not jump
   into DEADLY odds: it holds where it is ("cut off from home") and you get a
@@ -776,14 +798,17 @@ worldgen rolls inside `shared/src/world.rs`.
   living.
 - **Threat** — NPC group power grows 1.22x per ring (`40 x 1.22^(ring-1)`;
   a Light Fighter is 91 on that scale), and a group's ships add up to exactly
-  that, so the ring estimate is the real strength of an unscouted lair. The
-  Inner Ring is Light Fighter country: one or two of them to ring 8, then a
-  Cruiser to ring 12, a Battlecruiser to ring 20 and a Destroyer beyond, each
-  weakened or strengthened to its ring's power. The step in danger is at
-  ring 9, where rapid fire starts: the two starting Light Fighters win every
+  that, so the ring estimate is the real strength of an unscouted lair. A group flies the heaviest of Light Fighter,
+  Heavy Fighter, Cruiser and Battleship of which its power makes at least
+  three ships, each weakened or strengthened to its ring's power: one or
+  two Light Fighters to ring 8, then packs of three to eight of them to
+  ring 15, of three to seven Heavy Fighters to ring 20, of Cruisers to
+  ring 25 and of Battleships beyond, so a group past the Inner Ring that
+  loses a ship keeps the rest. The two starting Light Fighters win every
   lair of ring 5 (keeping about nine tenths of their hull), nearly every one
-  of ring 7 (58 of 60, keeping two thirds), two in three at ring 8 and none
-  from ring 9; a third Light Fighter makes ring 8 a sure win. Every
+  of ring 7 (58 of 60, keeping two thirds), two in three at ring 8, one in
+  ten at ring 9 and none from ring 10; a third Light Fighter makes ring 8 a
+  sure win. Every
   sector carries `threat`:
   `rating` T1 to T9 (one step per doubling of power over 40), `est_power` and
   `basis` (`observed`: a group is there, its own power, Aggressive and Swarm
@@ -791,7 +816,9 @@ worldgen rolls inside `shared/src/world.rs`.
   A stale chart entry keeps the rating last seen. Scans list the threat of
   every revealed sector (`threats`) and each faint contact has a
   `threat_band` (1: T1-3, 2: T4-6, 3: T7-9). Pirates return
-  `2 + 0.25 x ring` game hours (divided by P) after a kill.
+  `2 + 0.25 x ring` game hours after a kill, divided by P^0.5 (a finds
+  timer, as a derelict's is: 52 minutes to 2.2 hours for rings 3 to 20 in a
+  season, 7 to 17 minutes in a blitz).
 - **Odds** — `threat` says how big a group is; your odds against it are a
   separate number that only the server gives (`preview_move` for a jump,
   `odds` for any sectors). There is no second model of the fight: the
@@ -811,15 +838,15 @@ worldgen rolls inside `shared/src/world.rs`.
   that was not won every time it was played is never rated above EVEN, one
   won less than four times in five never above RISKY, and one in which the
   fleet was destroyed every time is DEADLY, whatever was kept or taken
-  along. Power against power is not it: four Light Fighters are 1.9x the
-  power of the ring-9 Cruiser and rate 1.01x RISKY against it (33 fights of
-  60 won, a quarter of the hull kept on average), because a Cruiser fires
-  again five times in six at a Light Fighter; two Heavy Fighters, which it
-  has no rapid fire against, rate 2.95x SAFE (92% kept). In OGame's round
+  along. Power against power is not it: three Light Fighters
+  are 1.14x the power of the ring-10 pack of three Light Fighters and rate
+  1.09x RISKY against it (46 fights of 60 won, two fifths of the hull kept on
+  average); one Cruiser, which fires again five times in six at a Light
+  Fighter, is 2.3x the power of the ring-11 pack and rates 3.87x SAFE (95%
+  kept). In OGame's round
   a ship at 70% of its hull or under may explode at every shot that lands,
-  so a win costs ships and not only hull, and SAFE takes a fleet that ends
-  the fight in a round or two: four Light Fighters at ring 7, two Heavy
-  Fighters or one Cruiser at ring 9. A sector with nothing in sight is
+  so a win costs ships and not only hull, and SAFE takes a fleet that ends the fight in a round or two: four Light
+  Fighters at ring 7, six at ring 10 or one Cruiser at ring 11. A sector with nothing in sight is
   rated against the group its ring spawns, a remembered one against what
   was last seen there: a group seen wounded is rated as it was seen until
   the tick it was to be whole by (`whole_at`), and whole from then on; one
@@ -990,10 +1017,14 @@ worldgen rolls inside `shared/src/world.rs`.
   ticks one jump takes it from the order to the arrival. A jump burns the
   sum of its ships' OGame fuel figures (20 for a Light Fighter, 300 for a
   Cruiser, 1000 for a Destroyer), less Energy Technology's saving, and takes
-  `max(1, ceil(sqrt(50000 / speed)))` ticks at the speed of its slowest
-  ship with the owner's drive research: 2 for Light Fighters and Cruisers, 3
-  for a Heavy Fighter until Impulse Drive 2, 4 for a Small Cargo until
-  Combustion Drive 2, 1 for Probes. Drive, fuel and tank research reach
+  `max(1, ceil(25000 / speed))` ticks at the speed of its slowest
+  ship with the owner's drive research: 2 for Light Fighters (1 from
+  Combustion Drive 10), 2 for Cruisers until Impulse Drive 4 and 1 from it,
+  3 for a Heavy Fighter until Impulse Drive 2, 5 for a Small Cargo until
+  Combustion Drive 3, 4 for a Large Cargo, 13 for a Recycler, 1 for
+  Probes. A fast fleet is something you build: a Cruiser on Impulse Drive 4
+  outruns every pirate of the Outer Ring, whose jumps take 2 ticks, and
+  heavy and cargo hulls are slow to flee. Drive, fuel and tank research reach
   every fleet at once. Refuelling at the
   homeworld costs 0.08 deuterium per fuel unit (the Deuterium Tank adds +25% tank
   per level); with no deuterium the tank fills only as far as the stockpile
@@ -1032,16 +1063,24 @@ worldgen rolls inside `shared/src/world.rs`.
   the jump's fuel at once and its jump charges as any does, set by its
   slowest ship; while it charges it fires nothing and is fired on, for one
   round fewer than its `jump_ticks` and never fewer than one: Cruisers and
-  Light Fighters take one parting round, Small Cargos three, Recyclers
-  four. `fleets[].flight` quotes it beforehand (`fuel`, `ticks`, `rounds`,
+  Light Fighters take one parting round, Large Cargos three, Small Cargos
+  four, Recyclers twelve. `fleets[].flight` quotes it beforehand (`fuel`, `ticks`, `rounds`,
   the `ratio` and `label` of the fight as it stands, a `refusal` sentence
   when the tank is short, and `chase`); `fleets[].fleeing` (`to`, `ticks`,
   `rounds`) says a fleet is leaving. `stop` calls the jump off, forfeits its
   fuel, and the fleet fights on. What flight costs is those rounds, the
   damage (it stays until a dock), the fuel, and everything the fight had
-  earned: a group pays its wreckage and its score when it is destroyed and
-  not before. `recall` is the other way out: at once, all the way home, for
+  earned: a group pays its wreckage when it is
+  destroyed and not before. `recall` is the other way out: at once, all the way home, for
   twice the fuel and a chance of harm to every ship.
+  *Caught while charging.* The same holds for a fleet that ordered a jump
+  before any fight: if a group attacks it in its sector while its jump
+  charges, it is in the fight as a fleet that is leaving, fired on every
+  round until the jump lands and not firing back, and the jump goes on
+  (`stop` calls it off, its fuel forfeit, and the fleet then fights). This
+  is meant: a fleet that has paid for its jump has turned its back. One
+  `Alert` (warning) says so when it happens, with the ticks until the jump
+  lands.
   *Pursuit.* When the last fleet has left, a group goes after the strongest
   of those that jumped out, if it was beating it (its power at least the
   fleet's) and the fleet is next door: convoys never, patrols one jump,
@@ -1063,12 +1102,13 @@ worldgen rolls inside `shared/src/world.rs`.
   with the hull they hold), and is found so by the next fleet. At rest in
   its own sector it mends in ten steps over half the time a destroyed group
   takes to return (1.4 to 3.5 game hours for rings 3 to 20, divided by the
-  pace: 8 to 21 minutes in a season, seconds in a blitz): at each step a
+  square root of the pace: 26 to 66 minutes in a season, 4 to 9 minutes in
+  a blitz): at each step a
   tenth of its ships return, as far as it is short, and every damaged ship
   regains a tenth of its hull. `hostiles[].whole_at` is the tick it will be
   whole by. A fight or a pursuit stops the clock, and the ticks rested
-  toward the next step are lost. Killed after any number of visits it pays
-  in full, as it was generated.
+  toward the next step are lost. Killed after any number of visits it pays its whole
+  wreckage, as it was generated.
   One `BattleRound` event a round takes the place of a message a shot:
   `round`, and for `fleets` and `hostiles` the `groups` as they stand after
   it (`fleet_id`, `owner`, `label`, `mine`, `fleeing` for a fleet that is
@@ -1091,10 +1131,13 @@ worldgen rolls inside `shared/src/world.rs`.
   `losses` so far, and in the full state the `last_round`, which a tick
   update carries as its `BattleRound` event instead. Ships that break up
   in a `recall` are a `ShipsLost` event.
-  Victors drop salvage (`FleetDestroyed.salvage`
-  is exactly the pile `collect_salvage` can take; it lasts 180 ticks, its
-  sector view carries `salvage_despawn_tick`, and a `SalvageDespawned` event
-  says when one expires). You only receive combat
+  Victors drop salvage. `FleetDestroyed.salvage` is what that kill added to
+  the sector's pile, `CombatEnded.salvage` the sum of the fight's kills, and
+  when wreckage from before still lay there `CombatEnded.salvage_pile` is the
+  whole pile, which is what `collect_salvage` takes and the sector view shows.
+  The pile lasts 180 ticks from the last kill, its sector view carries
+  `salvage_despawn_tick`, and a `SalvageDespawned` event says when one
+  expires. You only receive combat
   events for fights your fleets or homeworld are in, or that happen in a
   sector where you have a fleet or your homeworld. Each carries `owner`
   (empire name, `null` for NPCs) and `mine`; losing a fleet also raises a
@@ -1119,9 +1162,9 @@ worldgen rolls inside `shared/src/world.rs`.
   boarding, a collection, a scan that finds nothing there). Tick updates add a
   sector to `sector_updates` once more when it turns stale or loses a pin.
   A sector you have entered carries `chart`: `"aboard"` while its chart rides
-  with one of your fleets (it scores when that fleet docks at home alive and
-  is lost with the fleet), `"delivered"` once it is banked; a sector without
-  `chart` still has its chart points to give. A remembered sector is sent
+  with one of your fleets (it pays when that fleet docks at home or at your outpost alive and is
+  lost with the fleet), `"delivered"` once it is banked; a sector without
+  `chart` still has its chart to pay. A remembered sector is sent
   once more when its mark changes.
   The `signals` of a scan lie one hop beyond the scanned range and never name
   the scanning sector, which is `ScanCompleted.sector`.
@@ -1136,20 +1179,23 @@ worldgen rolls inside `shared/src/world.rs`.
   and is gone once it is whole.
 - **Loot** — everything the map pays is three times what it paid before the
   catalogue was OGame's (`MAP_PAYS`, provisional), against costs that are
-  about ten times what they were. A kill pays `0.57 x group_power^0.8` units (55% metal, 30%
+  about ten times what they were. A kill pays `1.71 x group_power^0.8` units (three times
+  what it paid when a kill also scored) (55% metal, 30%
   crystal, 15% deuterium) times P^0.5, for the whole group; far hunting pays
   more but the odds fall faster than the pay rises. Derelict tier follows the
   threat (T1-3, T4-6, T7-9). A kill in a sector that has been killed in
-  recently pays less: each recent kill multiplies the next one's loot and
-  score by 0.75 (heat halves every 4 respawn delays), so a sector is not an
+  recently pays less: each recent kill multiplies the next one's wreckage by 0.75 (heat halves every 4 respawn delays), so a sector is not an
   endless tap. Holds grow with the pace like the loot: a ship's cargo is
   multiplied by P^0.5 (OGame's holds: 5,000 for a Small Cargo, 25,000 for a
   Large one, 20,000 for a Recycler, 50 for a Light Fighter; a blitz Small
   Cargo holds 122,000). A site pays `720 x 1.14^(ring-4)` units at 60 to
   140% times P^0.5; ambush odds `0.10 + 0.03 x (T-1)` (max 0.35); a recovered
   ship `0.05 x (T-2)` (max 0.30), a data core `0.03 x (T-5)` (max 0.15), and
-  from T6 an ancient relic (2% per point above 5, max 8%, worth 300 explore
-  points, no other use yet). A stripped derelict is replaced after 120 game hours / P^0.5.
+  from T6 an ancient relic (2% per point above 5, max 8%), with which the site pays six times its loot. A
+  chart delivered to your homeworld or your finished outpost pays
+  `50 + 50 x T^1.5` units of loot into your stockpile for each sector new to
+  your empire (T its ring's threat rating), at any pace, as far as your
+  caps allow (a `Stockpile` event with `cause: "charts"`). A stripped derelict is replaced after 120 game hours / P^0.5.
 - **Standing orders** — assign a fleet a doctrine and the server flies it
   (see `policy_update` above). Doctrines respect fuel/cargo thresholds,
   return home to deposit and refuel within their fuel budget, go home to be
@@ -1202,7 +1248,10 @@ worldgen rolls inside `shared/src/world.rs`.
   is rebuilt), `raiders_kept` the raiders' share, and `label` is `repelled`
   (destroyed every time), `held` (never lost, not always destroyed),
   `at_risk` (lost in some) or `lost`. Build against the label, not against
-  a power figure: nothing compares two powers any more.
+  a power figure: nothing compares two powers any more. `repelled` and
+  `held` say the raid does not breach the dock, not that it costs nothing:
+  what falls before the last raider does is lost, and `kept` below 1 is
+  that cost.
   **The fight.** When the raid arrives it stands at your homeworld and
   fights the next tick: the round of every fight (Combat, above), one a
   tick, the raiders against every ship of yours standing at home, every
@@ -1250,10 +1299,20 @@ worldgen rolls inside `shared/src/world.rs`.
   `satellites_lost` (those that fell, before the rebuild),
   `structures_lost`, `structures_restored` (the defences alone),
   `resources_lost`, `protected_kept`, and for a destroyed raid `salvage_dropped` and
-  `salvage_despawn_tick`. The wreckage is on your own planet, so
+  `salvage_despawn_tick`. `defended: true` with something in `lost` is a
+  raid repelled at a cost. The wreckage is on your own planet, so
   a fleet docked at home scoops it into storage by itself, up to what the
-  stores hold (`SalvageCollected` says what); with no fleet docked, or the
-  stores full, an `Alert` fires once when 60 s are left.
+  stores hold (a `Stockpile` event with `cause: "wreckage"` says what); with
+  no fleet docked, or the stores full, an `Alert` fires once when 60 s are
+  left.
+- **What enters or leaves the stockpile** — besides production and what is
+  paid for orders, repairs and fuel, the stockpile changes only when a hold
+  is emptied into it at the home dock (a fleet docked with cargo, an
+  `unload`, or the cargo of ships a fleet lost there), when `load` fills a
+  hold from it, when a docked fleet scoops wreckage on the homeworld, or
+  when a fleet delivers charts. Each is a `Stockpile` event (`fleet_id`,
+  `cause`: `unloaded`, `loaded`, `wreckage`, `charts`, and the `amount`), shown in the web client's log and alerts
+  and in `play`'s events in the words of `StockpileCause::phrase`.
 - **The hub and its exchange** — the sector at the centre, `[0,0]`, is a
   neutral post: empty space with no ore, no hostile group and no derelict,
   and no hostile group wanders in. `full_state.world.hub` lists it with what
@@ -1377,23 +1436,21 @@ worldgen rolls inside `shared/src/world.rs`.
     `repair_waiting_for`), `at_outpost` and `outpost_fuel` on each fleet,
     `outpost` on a sector that holds one (its `threat` is rated 0), the
     `OutpostCompleted` event, and `outpost` on `RaidIncoming` and
-    `RaidResolved`. Each finished level adds its cost to `core`.
+    `RaidResolved`. Each finished level adds its cost to the score.
   - Standing orders, bots and `recall` do not use the outpost yet.
-- **Score** — one ranking for humans and AI agents (`leaderboard`).
-  `core` = completed building and research levels + living ships and Solar
-  Satellites + half of
-  the defence structures + the finished levels of the outpost, each priced
-  at cost x (1 metal, 1.5 crystal, 2
-  deuterium) / 1000. Kills add the weight of the pile they leave (so points
-  follow the finds factor and the sector's heat), in full up to 4x the NPC
-  group's power and falling as 4/ratio beyond (half at 8x, a 5% floor, never
-  zero), once per respawn. Exploration adds `0.5 x weight(loot) + 15 x T^1.5`
-  for the first boarding of each derelict, 300 for a relic, and
-  `1.5 + 1.0 x T^1.5` for each new sector whose chart you deliver to the
-  homeworld or to your finished outpost (the fleet must arrive alive:
-  `ChartDelivered`). `score = core + min(combat + explore, 0.25 x core)`. Cancelling
-  a build or losing a ship scores nothing; resources received from others
-  never count. Accounts that log in with `"agent": true` (the headless client
+- **Score** — one ranking for humans and AI agents (`leaderboard`). Your
+  score is what your empire has built and keeps: `buildings` + `research` +
+  `fleet` + `outpost` + `defence`, each part the cost of what stands, at
+  cost x (1 metal, 1.5 crystal, 2 deuterium) / 1000. `fleet` is the ships
+  you have now, docked or away, Solar Satellites among them, so a fleet
+  destroyed leaves the score; `outpost` is the finished levels of your
+  outpost while it stands; `defence` is 0, as defences score nothing and pay
+  for themselves in the wreckage of the raids they beat (Raids). Kills,
+  charts and derelicts score nothing themselves: they pay in resources (a
+  kill's wreckage, a delivered chart, a derelict's loot), which score once
+  you build with them. Unspent stock scores nothing. Cancelling a build or
+  losing a ship scores nothing; resources received from others never
+  count. Accounts that log in with `"agent": true` (the headless client
   does) carry the `agent` flag on the board, which labels and never scores.
   Built-in bots (names starting `BOT-`) score by the same rule and are listed
   apart, in `bots`: they take no rank among humans and agents.
@@ -1467,40 +1524,34 @@ beside the engine: `resume` the bots a world has, `enlist` the ones it should ha
 and a browser host would do the same.
 
 `sim-run` seats a mix and prints, for every player and sample interval, the score
-split (econ, fleet, defence, raw combat, raw explore, the capped extra, total) and
-what the field paid, then one row per style with ships lost, the fights its
-fleets jumped out of under fire, the deuterium paid for refuelling, the share of production a full store turned away, and the hours
-fleets spent away from home with the part of them flown while one more point
-would not have counted. A table of the raids on homeworlds follows, a row a
+split (buildings, research, fleet, outpost, what the defences cost, total) and
+what the field paid, then one row per style with what the field, the raids and the
+charts paid, ships lost, the fights its fleets jumped out of under fire, the
+deuterium paid for refuelling, the share of production a full store turned away,
+the hours fleets spent away from home, and the share of its fights begun against a
+pirate group that had fought before and had not mended. A table of the raids on homeworlds follows, a row a
 player and one for all: how many came, how many were destroyed, outlasted, lost
 and met by nothing; the rounds fought; the ships, Solar Satellites and defences
 they destroyed and the satellites and defences rebuilt; what did not come back at cost weight,
 what was taken from stockpiles and the wreckage scooped. A last table says why each building slot, the lab and
 the yard stood empty: the engine's reason where an order waited (resources or a
 prerequisite), and where none did, what the bot's own planner would have done
-with the place (`ScriptedPlayer::outlook`). `--json` adds every order that paid
-and when.
+with the place (`ScriptedPlayer::outlook`). A last one counts flight and pursuit by
+the kind of fleet (its most numerous class and the ticks one jump takes it). `--json`
+adds every order that paid and when.
 
 ```sh
 sim-run --pace season --days 7                      # every style once and an idle player
 sim-run --seat explorer:all:2 --seat turtle:hands-on --sessions 8 --seed 3
-sim-run --pace blitz --hours 1 --seat all:hands-on --ignore-cap --json
-sim-run --pace season --days 7 --cap soft:0.25      # the week scored, and played, under another cap
+sim-run --pace blitz --hours 1 --seat all:hands-on --json
+sim-run --pace season --days 7 --defence-share 0.5  # the week scored with defences at half
 ```
 
 `--seat` is `<personality>:<attention>[:<count>]` or `idle[:<count>]`, `all` standing
 for every personality or attention; `--sessions` sets the look-ins per day;
-`--ignore-cap` lets bots chase combat and exploration points past the score cap
-(by default they stop once it is banked). `--cap` measures another rule for those
-points without touching the game's: `<share>` (a hard cap at that share of core),
-`soft:<share>` (in full up to the share, by the square root beyond it) or `none`;
-the report is scored by it and the bots fly to it, while the world and its
-leaderboard keep the 25% cap. `--meter <share>` (repeatable) adds a table of what a
-daily allowance would have counted instead: a meter per player that fills with the
-points earned and drains by one allowance (that share of core) a day, a point
-counting in full under one allowance and by the square root beyond; the bots do not
-play to it, so it goes with `--cap none`. A world has 24 home seats; `sim-run`
-refuses a roster of more.
+`--defence-share <share>` scores the report with defences at that share of their
+cost instead of the game's (none): no bot reads the score, so the world plays as it
+would. A world has 24 home seats; `sim-run` refuses a roster of more.
 
 No bot founds an outpost, so `--outpost <ring>:<grade>:<level>[:<repairs>]` stands
 one for every bot at the start of day 3, by an edit of the world's snapshot: on the

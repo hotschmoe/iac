@@ -29,7 +29,7 @@ use iac_shared::constants::{
 };
 use iac_shared::protocol::{
     BOT_NAME_PREFIX, ClientMessage, EffectKind, ErrorCode, ExchangeMeter, MAX_ODDS_SECTORS, NAME_MAX_LEN,
-    PolicyParams, PolicyPreset, RaidLabel, ServerMessage, SignalKind, SiteRisk,
+    PolicyParams, PolicyPreset, RaidLabel, ServerMessage, SignalKind, SiteRisk, StockpileCause,
 };
 use iac_shared::scaling::{
     BuildingType, DefenceKind, MAX_THREAT, RATIO_EVEN, RATIO_FAVOURABLE, RATIO_RISKY, RATIO_SAFE, RatioLabel,
@@ -163,6 +163,7 @@ pub fn extras(model: &Model) -> Extras {
         column(model, "outcome", RatioLabel::outcome),
         column(model, "label", RaidLabel::label),
         column(model, "outcome", RaidLabel::outcome),
+        column(model, "phrase", StockpileCause::phrase),
         column(model, "label", PolicyPreset::label),
         column(model, "label", SiteRisk::label),
         column(model, "label", SignalKind::label),

@@ -3,15 +3,353 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-14 (the built-in bots take the new score)
+
+The bots' branch (`414fcfc`, economy 14, format 13) is merged onto the score
+(`fbd5285`, economy 16, format 14). The merged game is economy 17 and format
+15: a world of bots plays differently, and a stored bot keeps the lairs it
+farmed (`Memory::heat`). Nothing is migrated.
+
+Kills and charts pay in resources and do not raise the score, so the branches
+that charted, boarded or patrolled while points still counted are gone. The
+strike wing flies the recovery wing's doctrines. The rest of what the bots
+do is their own entry, after the score's, written before this merge.
+
+## 2026-10-14 (the score is what an empire has built and keeps; the knobs a playtest found wrong)
+
+The playtest of 2026-10-14 (`docs/playtests/2026-10-14/README.md`) was won by
+the player who never left home: charts filled the 25% cap early, kills
+barely scored, raids scored nothing, and a fleet in the field was core not
+built. Asked how combat and exploration should score, the owner first chose
+"Rebalance + soften cap" (kills worth more, charts a third, points past the
+cap counting at a falling rate), then said:
+
+> i kinda want kills to not count, but give more resources, so the
+> resources turn into points back at home? i think ogame scored 0 for
+> defense (disensenctive turtling) but scored per ship in your fleet. so you
+> score was basically buildings+research+fleet. but fleets could be
+> destroyed which would drop your score a lot. i LIKE 0 points or half on
+> defense, if we went 0 poitns on defense BUT raids give good ressources it
+> would encourage some defense building so you can acquire materials that
+> turn into points via building/research/fleet creation. explore those
+> avenues as well
+
+On the jump law, the owner's words: "users may make large, fast ship fleets
+for guerilla warfare type battling".
+
+**The decision as built.**
+
+- *The score* is `buildings + research + fleet + outpost + defence`
+  (`sim/src/score.rs`), recomputed from state: the cost of every finished
+  building and research level, of the ships the empire has now (Solar
+  Satellites among them), of the outpost's finished levels, and of its
+  defences at `DEFENCE_SHARE`, which is **0**. A fleet destroyed takes its
+  ships out of the score. There are no combat or exploration points, no cap,
+  no `EXTRA_CAP`, `KILL_SHARE`, kill pay factor, `BOARD_VALUE_SHARE`,
+  `DISCOVERY_POINTS`, chart points or `RELIC_POINTS`; `Player.combat_points`
+  and `explore_points` and the combat's `peak_power` are gone, and
+  `Snapshot.credited` is `Snapshot.charted` (a first boarding is no longer
+  remembered: nothing pays for it). The board's row is the parts
+  (`LeaderboardEntry`: `score`, `buildings`, `research`, `fleet`, `outpost`,
+  `defence`).
+- *Kills pay in wreckage*: `WRECK_VALUE_K` 0.57 to **1.71** (three times).
+  The farm heat stays on wreckage (`FARM_DECAY`, `FARM_HALF_LIFE_RESPAWNS`):
+  it still bounds one sector as a tap.
+- *Raids pay well*: `RAID_DEFENSE_SALVAGE_FRACTION` stays **0.30** (the
+  owner's earlier halving to 0.15 was for a world in which defences scored).
+- *Exploration pays in resources and scores nothing*, as kills do (the
+  builder's recommendation; the owner did not say). A chart delivered to a
+  dock pays `chart_value(T) = 50 + 50 x T^1.5` units of loot into the
+  stockpile for each sector new to the empire, at any pace and as far as the
+  caps allow (`CHART_VALUE_*`; since the merge with master a `Stockpile` event of cause `Charts`); a first boarding pays
+  its loot as any boarding does; a relic makes a site pay `RELIC_LOOT_MULT`
+  (6) times its loot.
+- *The jump law* is linear: `max(1, ceil(JUMP_SPEED_REF / speed))` with
+  `JUMP_SPEED_REF` **25,000** (was `sqrt(50,000 / speed)`). A Light Fighter
+  keeps its 2 ticks, a Cruiser 2 until Impulse Drive 4 and 1 from it; a
+  Small Cargo takes 5, a Large Cargo 4, a Recycler 13, a Deathstar 81 on
+  Hyperspace Drive 7. Pirates jump by the same law.
+- *The pirates' clock* (a destroyed group's return, a wounded one's
+  mending and the farm heat's half-life) is a finds timer, P^0.5
+  (`scaling::npc_respawn_ticks`; `NPC_HEAL_SHARE` is classed Finds): a group
+  is whole again 4 to 9 minutes after a fight at blitz, 26 to 66 at season.
+- *Pirates past ring 8 are packs*: a group flies the heaviest of
+  `NPC_LADDER` (Light Fighter, Heavy Fighter, Cruiser, Battleship) of which
+  its ring's power makes `NPC_MIN_PACK` (3) ships. Power per ring is
+  unchanged; Light Fighters to ring 15 (3 to 8 of them), Heavy Fighters to
+  ring 20 (3 to 7), Cruisers to 25, Battleships beyond. `NPC_CRUISER_RING`
+  and `NPC_BATTLECRUISER_RING` are gone. `WORLDGEN_VERSION` is 5.
+- *The deuterium opening*: `STARTING_RESOURCES` deuterium 100 to **800**,
+  what Robotics Factory 2 and the Research Lab ask of it. A starting
+  Deuterium Synthesizer 1 was the other candidate; the starting stock is
+  the smaller change (one number, no energy and no production moved).
+- *Pace*: no preset moved. `tools/playtest/README.md` says an hour of
+  agents wants `IAC_PACE=1200` and a person `IAC_PACE=300`.
+- `ECONOMY_VERSION` is 15, `WORLDGEN_VERSION` 5, `SAVE_FORMAT` 13 (the
+  player row and the combat lost fields, the bots' memory lost its standing).
+
+**Measured beside it.** Bot worlds of `sim-run`, seeds 1, 2 and 3, against
+master at 1b2197e: `--pace season --days 7`, `--pace blitz --days 1`,
+`--pace blitz --hours 1 --seat all:all`, `--pace 1200 --hours 1 --seat
+all:hands-on`; every variant one change on the branch, its diff kept with the
+runs. Hands-on medians; flyers are the raider, explorer and mixed bots.
+
+| variant | season 7 d: turtle / flyers | blitz 1 d: turtle / flyers | blitz 1 h | pace 1200, 1 h | raid wreckage, season week, all bots |
+|---|---|---|---|---|---|
+| master (old score, capped extras) | 9264 / 9870 | 16503 / 24046 | 1336 / 1523 | 4444 / 4972 | 14423 |
+| **as built** | 8644 / 9129 (1.06) | 15607 / 20022 (1.28) | 1136 / 1645 (1.45) | 4159 / 5102 (1.23) | 15672 |
+| wreckage x2 | 8648 / 8657 (1.00) | 15607 / 20039 | 1136 / 1575 | 4159 / 4742 (1.14) | 15472 |
+| wreckage x4 | 8097 / 8895 (1.10) | 15607 / 20098 | 1136 / 1993 (1.75) | 4159 / 5234 | 15974 |
+| raid wreckage 0.15 | 7890 / 8060 (1.02) | 15607 / 18760 (1.20) | | | 7385 |
+| raid wreckage 0.20 | 9155 / 8469 (0.93) | 15607 / 18784 (1.20) | | | 10418 |
+| raid wreckage 0.45 | 10504 / 9796 (0.93) | 15679 / 21249 | | | 25621 |
+| exploration in points, soft cap (A) | 8648 / 9403 (1.09) | 15607 / 22633 (1.45) | 1136 / 2120 (1.87) | 4159 / 6069 (1.46) | 14694 |
+| defences at half (same runs as built) | 9014 / 9384 | 16454 / 20936 | | | |
+| deuterium 100 at the start | 8648 / 8773 | | 1303 / 1665 | 4302 / 5089 | 15105 |
+
+What decided each value, and the rest of the numbers, are in
+`docs/journal.md` (2026-10-14, the score rework). In short: at x3 a hunt
+pays its fuel several times over at a fast pace (at pace 1200 the flyers'
+wreckage is 1,921 points against 255 of fuel, about a twelfth of what the
+mines made) and does not beat the mines; at season wreckage stays a few
+percent of an empire's income at any multiplier tried, because loot grows
+with P^0.5 and the economy with P. At 0.30 a season week's raid wreckage is
+13.5% of what the mines made and the turtle and the flyers end level; at
+0.45 it is 21% and the turtle wins, at 0.20 9.2% and at 0.15 6.7% (the
+turtle against the flyers is a median of three bots and moves by a tenth
+from seed to seed, so the ratio is a direction, not a measurement). Exploration in
+points under a soft cap gave the flyers the most (1.45x a turtle in a blitz
+hour against 1.28x) and keeps a second currency the owner's model has no
+place for; exploration in resources is the one rule for everything the
+field pays.
+
+**What undoes each.**
+
+- The score: `score::score_of` and `Score::total`; kill points come back
+  with a `credit_kill` in `end_combat`, chart and boarding points with the
+  two `explore_points` lines, and they need the player row's fields back
+  (`SAVE_FORMAT`). The exploration-in-points variant is
+  `scratchpad/tuning/patches/exploreA.py` of the builder's run (not in the
+  repository): it is not reachable in `sim-run`, because it needs state the
+  engine no longer keeps.
+- Defences at half: `score::DEFENCE_SHARE` 0.5; `sim-run --defence-share
+  0.5` scores any run so without changing the game.
+- Wreckage: `scaling::WRECK_VALUE_K`. Raids: `RAID_DEFENSE_SALVAGE_FRACTION`.
+  Charts: `scaling::CHART_VALUE_*`; a chart that pays nothing is
+  `CHART_VALUE_BASE` and `CHART_VALUE_THREAT` 0. Relics: `RELIC_LOOT_MULT` 1.
+- The jump law: `scaling::jump_ticks` and `JUMP_SPEED_REF`.
+- The pirates' clock: `scaling::npc_respawn_ticks` and
+  `npc_heal_step_ticks` back to `econ_ticks`, the `NPC_HEAL_SHARE` class.
+- The packs: `scaling::npc_class` and `NPC_LADDER`, `NPC_MIN_PACK`.
+- The opening: `STARTING_RESOURCES`.
+
+**What the builder decided within it.** None of it was put to the owner.
+
+- *Charts pay at any pace.* A fleet charts as many sectors in an hour at
+  any pace, and a probe charts one every tick or two; a chart priced as loot
+  (P^0.5) paid an explorer 13,700 points in a blitz hour in the first try.
+  Undo: `.scale(finds_mult())` in `deliver_charts`.
+- *A chart pays the homeworld's stockpile*, also when it is delivered at the
+  outpost: it is information sold, not cargo.
+- *A relic multiplies the site's loot* rather than paying a fixed sum; its
+  roll moved before the hold is filled, with no draw moved.
+- *The board shows `defence`* although it is 0 today, so the parts always
+  add up to the score if the share moves.
+- *At the merge with master's playtest fixes* (3dae48e) the bonus room
+  (`LeaderboardReply.bonus`, `BonusRoom`; master's entry below) went with the
+  cap, and the play tool's `Standing:` line says the leader and the gap, in
+  all and by part (`score.leader.gap_by_part`). A delivered chart's pay is a
+  `Stockpile` event of cause `Charts` (worded "delivered charts, paid into
+  the stockpile") and no longer `ChartDelivered.paid`. A boarding's loot and
+  a relic's go into the hold, so they send none.
+- *The bots* (`sim/src/bot/`, the other agent's ground): the smallest change
+  that compiles. With no cap there is nothing for a wing to stop for:
+  `Brief.points_wanted`, `has_work`, `Bot::under`, the bot's `rule`, its
+  remembered `Standing` and its leaderboard request, and `Style::ignore_cap`
+  are gone. Every wing now flies whenever it has work.
+- *`sim-run`* lost `--cap`, `--meter` and `--ignore-cap` and gained
+  `--defence-share`, a flight table by the kind of fleet, the share of fights
+  begun against a group that had not mended, and what charts paid.
+- *The outposts' platforms were not retuned.* Against packs a level-2
+  platform holds through ring 13 (it held through the middle of the Outer
+  Ring against a lone Cruiser or Battlecruiser) and level 3 to ring 20; the
+  forecast table of `sim/tests/outposts.rs` was measured again and the
+  season week's post at ring 14 is level 3.
+
+**Unsure of.**
+
+- At season wreckage is a few percent of income at x2, x3 or x4: fighting
+  near home is income a player notices at a fast pace and not at season.
+  That is the finds class (P^0.5) against the economy (P), and a constant
+  cannot mend it.
+- The bots build defences for the half that scored, and in a blitz day the
+  check-in and hybrid flyers, whose walls are largest, fall to 0.6 to 0.8 of
+  a turtle at zero (0.9 to 1.2 at half). The bots' rewrite should build against
+  what raids leave, not against a score.
+- Bots almost never leave a fight (2 to 20 flights a world), so "a group is
+  fought again while hurt" was counted 0 to 3 times a world: the clock's
+  change is measured in tests, not in bot play.
+- The planning simulation says flying styles lose under the new rule (in a
+  blitz hour the explorer 64% of the builder, the raider 61%; at season 87%
+  and 78%), where the bots say they lead; its field model pays less than the
+  bots fly for.
+- In a blitz hour the hands-on turtle scored 13% less with 800 deuterium
+  than with 100 (its opening goes to the lab first); the season week moved 2%.
+
+## 2026-10-14 (a patrol brings the salvage home)
+
+`patrol_home` hunted the groups in range of home, scooped the wreckage of
+its own kill where it stood, and went home only when the beat was clear or
+the hold reached `cargo_return_pct`. The owner asked:
+
+> i would like patrol home to also collect salvage and return when cargo
+> full or does another policy do that? like fighting and returning with
+> salvage it good income it seems.
+
+Asked which gap he meant, he answered:
+
+> for patrol-home salvage tweak do what you recommend
+
+**The decision.** `patrol_home` hunts within its range at its engage ratio
+as it did, and between fights it collects salvage: any pile within its
+range that it can reach on lanes it may enter, not only the wreck of its own
+kill, nearest first, and a pile worth the fuel to fetch it by the rule the
+hauling doctrines use. It keeps doing so while its hold has room. When the
+hold is full (`cargo_return_pct`), or the next pile it would fetch would not
+fit, or there is nothing left within range to fight or collect, it flies
+home, unloads, is mended and refitted there as any docked fleet is, and goes
+out again. Its fuel budget, its disengage ratio, its refine switch and its
+way home under bad odds are as they were. Every act says why.
+
+**What undoes it.** `GameEngine::policy_patrol_home` (`sim/src/engine.rs`):
+its search for the next target takes a contact or a pile that repays its
+fuel on an empty hold (`Reach::wreck_repays` with `hold`); taking `|| ...`
+out of that goal is the old patrol, which still scooped what lay where it
+stood.
+
+**What the builder decided within it.** None of it was put to the owner.
+
+- *Contact and pile are one search.* The patrol goes to the nearest of
+  either, by lanes it may enter (`path_through`, fights on the way allowed,
+  as the patrol always flew). A pile in a sector with a group is a contact.
+  Undo: two searches, contacts first.
+- *"Would not fit"* is read with the one rule: the nearest pile is judged on
+  an empty hold, and if what the room left would take of it no longer
+  repays the fuel, the fleet goes home to unload first ("returning to unload
+  the salvage: the hold has room for 40 of the 900 units of wreckage at
+  [5,-3]"). A pile that repays on the room left is fetched, and the
+  `cargo_return_pct` threshold brings it home after. Undo: the `Unload`
+  branch of the patrol.
+- *One rule of "worth the fuel"*: `Reach::wreck_repays`, which
+  `salvage_and_sites` now calls too; it is `repays` on `wreck_worth`, as
+  that doctrine's closure was.
+- *Its own kill's wreck, or another's.* `FleetPolicy::work_sector`, unused
+  by every doctrine but `mine_and_return`, holds for a patrol the sector of
+  its last fight, set when a fight it stood in ends; a pile scooped there is
+  "the wreckage of the kill", anywhere else "wreckage at X that it did not
+  make". New orders other than `mine_and_return` start with no
+  `work_sector` (they started with the sector the fleet stood in, which
+  nothing but `mine_and_return` read). Nothing new is stored, so
+  `SAVE_FORMAT` stays 12; what a stored world plays next moves, so
+  `ECONOMY_VERSION` is 14. Undo: the line in `end_combat`'s loop over the
+  fleets.
+- *Turning home with a full hold* is worded for the patrol "returning to
+  unload the salvage: cargo 87%" (the hauling doctrines still say
+  "returning: cargo 87%"). With nothing left the hold reason is the old one
+  and ", and no wreckage that repays the fuel".
+- *Unloading is said by every doctrine.* A fleet under orders that docks at
+  home with a hold reports `unload` ("unloaded 500 metal and 120 crystal
+  into the stockpile", and what stays aboard for want of room). It is
+  `report_unload` beside `dock_fleet`, so `mine_and_return` and
+  `salvage_and_sites` say it too; making it the patrol's alone would have
+  been a doctrine's name inside docking. Undo: the call in `dock_fleet`.
+- *The bots are not touched.* Their check-in strike wings fly
+  `patrol_home` and now bring salvage home. What it did to them is in
+  `docs/journal.md`.
+
+**Unsure of.**
+
+- Whether it is the income the owner expected. Measured, a patrol alone
+  brings home what it did before to the unit in most runs: the old patrol
+  already scooped its own kills and went home at `cargo_return_pct`, and a
+  Light Fighter's hold (50 times the square root of the pace) is such that
+  a few of them carry what a kill near home leaves, so the hold seldom
+  limits it; fuel does. At
+  season pace ten Light Fighters burned more points of deuterium in a day
+  than they brought home in salvage. The new rule matters where piles the
+  patrol did not make lie in its range: other empires' fights and losses,
+  and the leftovers of its own big kills. The figures are in the journal.
+- A Small Cargo merged into a patrol carries the salvage and works under
+  the doctrine (the scenario shows it), but in the measured runs it only
+  slowed the fleet. The README and the rules say so.
+- The bots' strike wings stay under the doctrine longer, since it now
+  finds work more often, and a world of bots plays differently after the
+  first changed fight. The sum of all totals fell by 0.5 to 2.0% in all
+  five runs measured, inside a spread where single styles moved 18%.
+
+## 2026-10-14 (what the builder chose fixing the playtest of 2026-10-14)
+
+None of these was put to the owner; they came with the fixes to the eight
+problems the playtest of 2026-10-14 reported (`docs/playtests/2026-10-14/`,
+and the journal of the same day). Each line ends with what undoes it.
+`ECONOMY_VERSION` is 14 and `SAVE_FORMAT` 13.
+
+- *A doctrine sets out only on a trip the fuel aboard flies there and home.*
+  The goal of `prospect`, `mine_and_return` and `salvage_and_sites` must be
+  reachable in its jumps and home again in the fewest jumps over the real
+  lanes, with the reserve on top (`Reach::affords`). Before, a sector inside
+  the hex range whose lanes wind took the fleet out until its next jump
+  failed the fuel check, home, and out again, for ever. The built-in bots
+  fly these doctrines, so the version moves. Undo: drop `reach.affords` from
+  the three goals in `sim/src/engine.rs`.
+- *The way home is the one the fuel flies.* `Reach::way_home` still prefers
+  a lane without a fight, at the engage ratio first, but takes a lane only
+  if the fuel aboard flies it; when none does, it takes the shortest and the
+  reason says the fleet cannot reach home on it. Undo: the `flies` test in
+  `way_home`.
+- *A hold is told once.* A doctrine's hold is reported when it begins and
+  again when its reason (less its figures) changes, no longer every minute;
+  any act but another hold or a scan ends it. `FleetPolicy::last_hold` keeps
+  the reason only. Undo: `hold_is_news` and `push_policy_event`.
+- *A hold names the limit that holds it.* Odds below the engage ratio, the
+  fuel there and back, or the range; the tank is named only where it sets
+  the range and the range is what holds. Wording only.
+- *Wreckage is one figure per thing it names.* `CombatEnded.salvage` is now
+  what the fight dropped, the sum of its `FleetDestroyed`; the new
+  `salvage_pile` is the whole pile when wreckage from before lay under it.
+  Before, `salvage` was the pile, and a kill on an uncollected pile printed
+  three figures for one fight. Undo: the two `CombatEnded` sites in
+  `end_combat` and `end_siege`.
+- *What enters or leaves the stockpile outside production and paying is a
+  `Stockpile` event:* a hold emptied at the home dock (docked with cargo,
+  `unload`, or the cargo of ships lost there), `load`, and wreckage scooped
+  on the homeworld, which is no longer a `SalvageCollected` (that event now
+  only means a hold). Refuelling at the home dock is not one: it is paying
+  for fuel, it would fire on every trickle of a dry stockpile, and the tank
+  says it. The web client logs every one and raises an alert for what came
+  in (unloaded, wreckage), not for `load`, which the player ordered. Undo:
+  `push_stockpile` and its four callers; `StockpileEvent` in
+  `shared/src/protocol.rs`.
+- *Repelled is not free.* `RaidLabel::Repelled`'s sentence now ends "what of
+  yours falls before that is lost", and the play tool prints a forecast's
+  `kept` as the share lost and a resolved raid that lost units as repelled
+  at a cost. The label and its figures are as they were.
+- *The leaderboard carries the asker's bonus room* (`LeaderboardReply.bonus`:
+  `banked`, `cap`, `room`, `core_to_count`), so no client works out the cap.
+- *The play tool sends an order at a time behind a fence and stops at the
+  first refusal.* A batch of five takes up to five ticks instead of one;
+  `--keep-going` sends all at once and is still answered order by order.
+  Undo: `run_commands` in `tools/playtest/play.py`.
+
 ## 2026-10-14 (the built-in bots play every style at every pace: what the agent decided)
 
 The playtest of 2026-10-14 and the balance study beside it found the bots
 broken in seven ways (`docs/playtests/2026-10-14/README.md`); the journal
 entry of the same date has what was found and measured. None of what follows
 was put to the owner; each line ends with what undoes it. The bots are not a
-rule of the game, but every world of bots plays differently, so
-`ECONOMY_VERSION` is 14; a bot's stored record gained the lairs it remembers,
-so `SAVE_FORMAT` is 13. Nothing is migrated.
+rule of the game, but every world of bots plays differently. On this branch
+`ECONOMY_VERSION` was 14 and `SAVE_FORMAT` 13; the merge onto the score, at
+the top of this file, made them 17 and 15. Nothing is migrated.
 
 While this was built the owner said where scoring is going: kills that count
 for nothing but pay more wreckage, defences at half or nothing, raids that
@@ -47,19 +385,15 @@ what defences score.
   the lair by one, cooling as the game's farm heat does; the wreckage it
   expects there is cut by `farm_factor`. Kills by other empires are not
   seen. This is the record change. Undo: the field and `Heat`.
-- *The strike wing works past the score cap*, for wreckage; *the survey
-  wing charts past it*, because charting finds what the other wings live
-  on. Another wing charts and boards for points only while points still
-  raise the score and the trip pays for them (`chart_worth`, the boarding
-  points in `worth_a_visit`, `nothing_pays`). A strike wing under standing
-  orders patrols only while kills still raise the score, and otherwise
-  flies the recovery wing's doctrines (`Wing::doctrines`): a patrol does not
-  weigh a fight against its fuel, and in a season week the check-in and
-  hybrid raiders' and mixed empires' patrols past the cap burned more
-  deuterium than they brought home. When `patrol_home` collects the wreckage
-  it makes, this is worth trying again. These, and the leaderboard row the
-  bot asks for, are the only places a bot reads the score's parts. Undo:
-  `has_work` as it was, and the strike line of `Wing::doctrines`.
+- *The strike wing scoops and boards*, and *the survey wing charts*, because
+  charting finds what the other wings live on. Kills and charts do not raise
+  the score, so no other wing charts or boards for points, and a strike wing
+  under standing orders flies the recovery wing's doctrines
+  (`Wing::doctrines`): a patrol does not weigh a fight against its fuel, and
+  in a season week the check-in and hybrid raiders' and mixed empires'
+  patrols burned more deuterium than they brought home. When `patrol_home`
+  collects the wreckage it makes, the strike line is worth trying again.
+  Undo: the strike line of `Wing::doctrines`.
 - *A fleet with no warship leaves home for any raid announced*, as every
   fleet does for one forecast `at_risk` or `lost`: the explorer lost 5,084
   Espionage Probes in a blitz day to raids it repelled, the raiders' rapid

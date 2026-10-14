@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::constants::{
-    Density, Drive, ResourceKind, Resources, ShipClass, ShipStats, Zone, BUILD_SLOT_LEVELS, EXCHANGE_FEE_MAX,
+    Density, Drive, ResourceKind, Resources, ShipClass, ShipStats, BUILD_SLOT_LEVELS, EXCHANGE_FEE_MAX,
     EXCHANGE_FEE_MIN, EXCHANGE_METER_SHARE, EXCHANGE_WINDOW_TICKS, FUEL_DEUT_PER_UNIT, FUEL_SAVING_MAX,
     FUEL_SAVING_PER_LEVEL, HARVEST_YIELD_LEVELS, HARVEST_YIELD_PER_LEVEL, HOME_TEMPERATURE_MAX, JUMP_SPEED_REF,
     MAP_PAYS, NPC_DRIVE_FREE_RINGS, NPC_DRIVE_RINGS_PER_LEVEL, NPC_HEAL_SHARE, NPC_HEAL_STEPS, OUTPOST_BUILD_RATE,
@@ -911,7 +911,7 @@ pub fn jump_ticks(speed: f64) -> u16 {
     if speed <= 0.0 {
         return u16::MAX;
     }
-    (JUMP_SPEED_REF / speed).sqrt().ceil().clamp(1.0, f64::from(u16::MAX)) as u16
+    (JUMP_SPEED_REF / speed).ceil().clamp(1.0, f64::from(u16::MAX)) as u16
 }
 
 /// Fuel one jump burns for a ship of `class`, before Energy Technology's saving.
@@ -1355,18 +1355,23 @@ pub fn exchange_pressure_after(pressure: f64, elapsed: u64, span: f64, window: u
 /// Points for every completed building and research level, at the cost paid.
 /// Fleets and defences do not count.
 pub fn econ_points(buildings: &BuildingLevels, research: &ResearchLevels) -> f32 {
-    let mut points = 0.0;
-    for b in BuildingType::ALL {
-        for level in 1..=buildings.get(b) {
-            points += resource_weight(&building_cost(b, level));
-        }
-    }
-    for t in ResearchType::ALL {
-        for level in 1..=research.get(t) {
-            points += resource_weight(&research_cost(t, level));
-        }
-    }
-    points
+    building_points(buildings) + research_points(research)
+}
+
+/// Points for every completed building level, at the cost paid.
+pub fn building_points(buildings: &BuildingLevels) -> f32 {
+    BuildingType::ALL
+        .iter()
+        .flat_map(|&b| (1..=buildings.get(b)).map(move |level| resource_weight(&building_cost(b, level))))
+        .sum()
+}
+
+/// Points for every completed research level, at the cost paid.
+pub fn research_points(research: &ResearchLevels) -> f32 {
+    ResearchType::ALL
+        .iter()
+        .flat_map(|&t| (1..=research.get(t)).map(move |level| resource_weight(&research_cost(t, level))))
+        .sum()
 }
 
 /// A raid's mean power is `RAID_POWER_FLOOR + RAID_POWER_PER_POINT * econ^RAID_POWER_EXPONENT`.
@@ -1642,10 +1647,11 @@ pub fn ore_density_odds(dist: u16) -> [f32; 4] {
 // ── Loot ─────────────────────────────────────────────────────────
 
 /// A destroyed group leaves `WRECK_VALUE_K * power^WRECK_VALUE_EXPONENT`
-/// units: 1.2 * `MAP_PAYS` / 10^0.8, the 10 being what a group's power
-/// grew by with `NPC_POWER_BASE`, so the wreckage of a ring follows
-/// `MAP_PAYS` and not the scale power is counted on. Provisional.
-pub const WRECK_VALUE_K: f64 = 0.57;
+/// units: three times 1.2 * `MAP_PAYS` / 10^0.8, the 10 being what a
+/// group's power grew by with `NPC_POWER_BASE`. A kill scores nothing and
+/// pays in its wreckage, so the wreckage is three times what it was when a
+/// kill also scored. Provisional.
+pub const WRECK_VALUE_K: f64 = 1.71;
 pub const WRECK_VALUE_EXPONENT: f64 = 0.8;
 /// Metal, crystal and deuterium shares of any loot value.
 pub const LOOT_SPLIT: [f64; 3] = [0.55, 0.30, 0.15];
@@ -1657,18 +1663,32 @@ pub const DERELICT_VALUE_RING: u16 = 4;
 /// A site pays between these shares of its value, uniformly.
 pub const DERELICT_ROLL_MIN: f32 = 0.6;
 pub const DERELICT_ROLL_MAX: f32 = 1.4;
-/// Score points an ancient relic is worth.
-pub const RELIC_POINTS: f32 = 300.0;
+/// A site with an ancient relic aboard pays this many times its loot.
+/// Provisional.
+pub const RELIC_LOOT_MULT: f64 = 6.0;
+/// A sector's chart, delivered to a dock, pays
+/// `CHART_VALUE_BASE + CHART_VALUE_THREAT * T^CHART_VALUE_EXPONENT` units
+/// of loot into the stockpile, T being the threat rating its ring gives it.
+/// No pace scales it: a fleet charts as many sectors in an hour at any
+/// pace, and there are only so many. Provisional.
+pub const CHART_VALUE_BASE: f64 = 50.0;
+pub const CHART_VALUE_THREAT: f64 = 50.0;
+pub const CHART_VALUE_EXPONENT: f64 = 1.5;
+
+/// Units of loot the chart of a sector at threat `rating` pays.
+pub fn chart_value(rating: u8) -> f64 {
+    CHART_VALUE_BASE + CHART_VALUE_THREAT * maths::powf(f64::from(rating), CHART_VALUE_EXPONENT)
+}
 
 /// Anti-farming: every kill in a sector adds one point of heat, and the next
-/// kill's loot and score are multiplied by `FARM_DECAY^heat`. Heat halves
-/// every `FARM_HALF_LIFE_RESPAWNS` respawn delays, so a group left to respawn
-/// a few times pays in full again but one sector is not an endless tap: at
+/// kill's wreckage is multiplied by `FARM_DECAY^heat`. Heat halves every
+/// `FARM_HALF_LIFE_RESPAWNS` respawn delays, so a group left to respawn a
+/// few times pays in full again but one sector is not an endless tap: at
 /// the respawn rate its steady yield is about a fifth of a fresh kill.
 pub const FARM_DECAY: f32 = 0.75;
 pub const FARM_HALF_LIFE_RESPAWNS: f32 = 4.0;
 
-/// Share of a fresh kill's loot and score a sector with `heat` pays.
+/// Share of a fresh kill's wreckage a sector with `heat` pays.
 pub fn farm_factor(heat: f32) -> f32 {
     maths::powf(FARM_DECAY, heat.max(0.0))
 }
@@ -1739,9 +1759,14 @@ pub const NPC_POWER_BASE: f32 = 40.0;
 /// decides whether pirates come in hundreds. Provisional.
 pub const NPC_POWER_GROWTH: f32 = 1.22;
 pub const NPC_MAX_SHIPS: usize = 32;
-/// The last ring of Cruiser packs, and of Battlecruiser packs.
-pub const NPC_CRUISER_RING: u16 = 12;
-pub const NPC_BATTLECRUISER_RING: u16 = 20;
+/// The classes pirates fly, lightest first.
+pub const NPC_LADDER: [ShipClass; 4] =
+    [ShipClass::LightFighter, ShipClass::HeavyFighter, ShipClass::Cruiser, ShipClass::Battleship];
+/// A group flies the heaviest class of `NPC_LADDER` of which its power
+/// makes at least this many ships, so a group that loses one keeps the
+/// rest. Provisional: with it Light Fighters reach ring 15, Heavy Fighters
+/// ring 20, Cruisers ring 25.
+pub const NPC_MIN_PACK: f32 = 3.0;
 /// The most an NPC ship's hull, shield and weapon are scaled by.
 pub const NPC_STAT_MULT_MAX: f32 = 1.3;
 /// The highest threat rating.
@@ -1760,19 +1785,16 @@ pub fn npc_power(dist: u16) -> f32 {
     NPC_POWER_BASE * maths::powi(NPC_POWER_GROWTH, i32::from(dist.max(1)) - 1)
 }
 
-/// Light Fighters through the Inner Ring: the first heavier class waits past
-/// it. Each rung has rapid fire against the one below. Provisional: it sets
-/// where the steps in danger fall.
+/// The class of the group at `dist`: the heaviest of `NPC_LADDER` that its
+/// power makes `NPC_MIN_PACK` ships of at the ring's base multiplier, and
+/// Light Fighters where none does.
 pub fn npc_class(dist: u16) -> ShipClass {
-    if dist <= Zone::INNER_RING_RADIUS {
-        ShipClass::LightFighter
-    } else if dist <= NPC_CRUISER_RING {
-        ShipClass::Cruiser
-    } else if dist <= NPC_BATTLECRUISER_RING {
-        ShipClass::Battlecruiser
-    } else {
-        ShipClass::Destroyer
-    }
+    let (power, multiplier) = (npc_power(dist), npc_base_multiplier(dist));
+    NPC_LADDER
+        .into_iter()
+        .rev()
+        .find(|&class| power / (ship_power(class) * multiplier) >= NPC_MIN_PACK)
+        .unwrap_or(NPC_LADDER[0])
 }
 
 /// The stat multiplier a group at `dist` is sized around.
@@ -1816,16 +1838,23 @@ pub fn npc_passive_share(dist: u16) -> f32 {
     (0.5 - 0.08 * (dist as f32 - 8.0)).clamp(0.0, 0.5)
 }
 
-/// Game hours before a cleared group returns.
+/// Game hours before a cleared group returns, at pace 1.
 pub fn npc_respawn_hours(dist: u16) -> f32 {
     2.0 + 0.25 * dist as f32
 }
 
+/// Ticks before a cleared group at ring `dist` returns: a finds timer, as a
+/// derelict's is, so a group worn down at a fast pace stays worn for a
+/// player's session (ring 3 to 20: 26 to 66 minutes to mend at season, 4
+/// to 9 at blitz).
+pub fn npc_respawn_ticks(dist: u16, pace: &Pace) -> u64 {
+    pace.finds_ticks(f64::from(npc_respawn_hours(dist)) * 3600.0)
+}
+
 /// Ticks between two steps of a wounded group's healing at ring `dist`:
-/// `NPC_HEAL_SHARE` of the respawn delay, an economy timer, cut into
-/// `NPC_HEAL_STEPS`.
+/// `NPC_HEAL_SHARE` of the respawn delay, cut into `NPC_HEAL_STEPS`.
 pub fn npc_heal_step_ticks(dist: u16, pace: &Pace) -> u64 {
-    let whole = pace.econ_ticks(f64::from(npc_respawn_hours(dist)) * 3600.0 * NPC_HEAL_SHARE);
+    let whole = pace.finds_ticks(f64::from(npc_respawn_hours(dist)) * 3600.0 * NPC_HEAL_SHARE);
     whole.div_ceil(u64::from(NPC_HEAL_STEPS)).max(1)
 }
 

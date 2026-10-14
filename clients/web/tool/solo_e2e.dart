@@ -652,7 +652,8 @@ Future<Map<String, dynamic>> firstFleet(Browser browser) async =>
 String grouped(int n) => '$n'.replaceAllMapped(RegExp(r'\B(?=(\d{3})+$)'), (_) => ',');
 
 /// A new empire's two Light Fighters stand at the home dock with an empty
-/// hold and the stockpile holds 100 deuterium, which nothing adds to yet.
+/// hold and the stockpile holds its starting deuterium, which nothing adds
+/// to yet.
 /// The Storage tab's hold panel loads it, the dock leaves it aboard, the
 /// panel says so at desktop width and at a phone's, and a typed `unload`
 /// puts it back.
@@ -671,22 +672,24 @@ Future<void> loadHold(Browser browser) async {
   check((await browser.text()).contains('0 / $hold'), 'the panel shows what is aboard and the size of the hold');
   await browser.shot('03a-hold-empty-1440');
 
-  await browser.click('deuterium 100 in the stockpile');
-  await browser.click('load 100 de');
+  final deut = ((await stockpile(browser))['deuterium'] as num).floor();
+  final amount = grouped(deut);
+  await browser.click('deuterium $amount in the stockpile');
+  await browser.click('load $amount de');
   await browser.until('the load on the wire',
       () => browser.tap('t.sent.some((m) => m.action === "load" && m.resource === "deuterium" && !("amount" in m))'));
   await browser.until('the hold loaded and marked', () async {
     final fleet = await firstFleet(browser);
-    return fleet['laden'] == true && (fleet['cargo']['deuterium'] as num) == 100;
+    return fleet['laden'] == true && (fleet['cargo']['deuterium'] as num) == deut;
   });
-  check((await browser.tap('t.events.some((e) => e.kind === "Alert" && e.message.includes("loaded 100 deuterium from the stockpile"))')) == true,
-      'the engine moved 100 deuterium into the hold and said so');
+  check((await browser.tap('t.events.some((e) => e.kind === "Alert" && e.message.includes("loaded $deut deuterium from the stockpile"))')) == true,
+      'the engine moved $deut deuterium into the hold and said so');
   check(((await stockpile(browser))['deuterium'] as num) == 0, 'out of the stockpile');
   await Future<void>.delayed(const Duration(seconds: 4));
   final later = await firstFleet(browser);
-  check(later['laden'] == true && (later['cargo']['deuterium'] as num) == 100, 'four ticks later the dock has left it aboard');
+  check(later['laden'] == true && (later['cargo']['deuterium'] as num) == deut, 'four ticks later the dock has left it aboard');
   await browser.untilText('laden');
-  check((await browser.text()).contains('100 / $hold'), 'the panel shows the laden hold');
+  check((await browser.text()).contains('$amount / $hold'), 'the panel shows the laden hold');
   await browser.shot('03a-hold-laden-1440');
   await browser.resize(390, 844);
   await browser.wheel(600, x: 195);
@@ -701,7 +704,7 @@ Future<void> loadHold(Browser browser) async {
     final fleet = await firstFleet(browser);
     return fleet['laden'] == false && (fleet['cargo']['deuterium'] as num) == 0;
   });
-  check(((await stockpile(browser))['deuterium'] as num) == 100, 'a typed unload put the 100 deuterium back');
+  check(((await stockpile(browser))['deuterium'] as num) == deut, 'a typed unload put the $deut deuterium back');
   check((await browser.tap('t.errors.length')) == 0, 'no error frame so far');
   await browser.click('overview');
   await browser.untilText('admiral');
@@ -959,11 +962,13 @@ Map<String, dynamic> option(Map<String, dynamic> homeworld, String list, String 
 
 /// The first steps of an empire on this catalogue, against the engine
 /// itself. A new empire has Metal Mine 1, Crystal Mine 1 and a Solar Plant
-/// that just powers them, 100 deuterium and nothing that makes any. So:
+/// that just powers them, its starting deuterium and nothing that makes
+/// any. So:
 ///
-/// - a Robotics Factory, which costs deuterium the stockpile lacks, queues
-///   ahead of its resources and shows its shortfall in its box, at desktop
-///   width and at a phone's;
+/// - with that deuterium loaded aboard the fleet, a Robotics Factory, which
+///   costs deuterium the stockpile then lacks, queues ahead of its
+///   resources and shows its shortfall in its box, at desktop width and at
+///   a phone's; the deuterium is unloaded again after;
 /// - the Metal Mine raised earlier needs more energy than is made: the
 ///   state says the share the mines run at, and the homeworld and the top
 ///   bar print it as a warning, until Solar Plant levels cover it;
@@ -982,6 +987,8 @@ Future<void> firstSteps(Browser browser) async {
   print('first steps: a waiting building, energy, the yard');
   await browser.click('homeworld');
   await browser.untilText('build slot a');
+  await browser.command('load deut all');
+  await browser.until('the deuterium aboard the fleet', () async => ((await stockpile(browser))['deuterium'] as num) == 0);
   await browser.command('build robotics');
   final box = await browser.until('the waiting Robotics Factory in the building box', () async {
     for (final line in (await browser.text()).split('\n')) {
@@ -994,6 +1001,8 @@ Future<void> firstSteps(Browser browser) async {
   await browser.resize(390, 844);
   await browser.shot('03d-waiting-short-390');
   await browser.resize(1440, 900);
+  await browser.command('unload');
+  await browser.until('the deuterium back in the stockpile', () async => ((await stockpile(browser))['deuterium'] as num) > 0);
 
   await browser.press('1', 'Digit1', 49, text: '1');
   final short = (await homeworld(browser))['energy'] as Map<String, dynamic>;
@@ -1439,7 +1448,7 @@ String plural(Object? n, String noun) => '$n $noun${n == 1 ? '' : 's'}';
 ///   never follows, and the hunt prefers convoys, so most runs see none.
 /// - The chart keeps the group as the two last saw it: its ships against
 ///   its muster and the tick it will be whole at, which the map's panel for
-///   its sector prints. At this pace it mends in seconds.
+///   its sector prints. At this pace it mends in minutes.
 /// - The two fly [wayHome] with their damage, and the home dock mends them.
 ///
 /// Returns the tick the group was to be whole at when the two last saw it,
@@ -1498,7 +1507,7 @@ Future<int?> flight(Browser browser,
     return null;
   }
 
-  if (!joined && await won()) return standDown();
+  if (!joined && await soon(won, ms: 4000)) return standDown();
   check(joined, 'the two are in a fight at [$prey]');
 
   final fighting = await browser.until('the engine\'s quote for leaving the fight, or the end of the fight', () async {
@@ -1695,9 +1704,9 @@ const sqrt3 = 1.7320508075688772;
 ///   passive one before another. They fly into it and out again ([flight]),
 ///   and go home.
 /// - The six fly the same way, wait a jump from the group until a scan
-///   shows it in its sector and whole (a group the two hurt keeps its losses
-///   and mends, in seconds at this pace; one that went after them comes
-///   back), and jump in. A group that does not attack is read on the map's
+///   shows it in its sector (a group the two hurt keeps its losses and
+///   mends over minutes at this pace, so the six usually go in while it is
+///   still hurt; one that went after them comes back), and jump in. A group that does not attack is read on the map's
 ///   panel for its sector and on the windshield, listed by class, before F
 ///   fires on it.
 /// - The fight is a round a tick. The lines beside the scope are read while
@@ -1875,7 +1884,7 @@ Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
     if (look > 0) await Future<void>.delayed(const Duration(seconds: 5));
     final seen = (await scanned(browser))[prey]!;
     final there = ((seen['hostiles'] as List?) ?? const []).cast<Map<String, dynamic>>();
-    if (there.length == 1 && (destroyed || there.single['id'] == mustered['id']) && there.single['errand'] == null && there.single['whole_at'] == null) {
+    if (there.length == 1 && (destroyed || there.single['id'] == mustered['id']) && there.single['errand'] == null) {
       sighted = seen;
     }
     if (look == 0 && there.length == 1 && wholeAt != null) {
@@ -1887,14 +1896,14 @@ Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
     }
   }
   final group = (sighted['hostiles'] as List).single as Map<String, dynamic>;
-  check(group['ship_count'] == group['muster'] && (group['ships'] as List).every((g) => g['hull'] == g['hull_max']),
-      'the six wait until it has mended: ${group['ship_count']} of ${group['muster']} ships, every hull whole');
+  final hurt = group['whole_at'] != null;
+  check((group['ship_count'] as int) <= (group['muster'] as int),
+      'the six go in ${hurt ? 'before it has mended: ${group['ship_count']} of ${group['muster']} ships, whole at tick ${group['whole_at']}' : 'with it whole: ${group['ship_count']} of ${group['muster']} ships'}');
   final rounds = await browser.tap('$roundsAtPrey.length') as int;
   final ends = await browser.tap('$endsAtPrey.length') as int;
   await jumpTo(browser, main, prey);
   var joined = (await fleetWith(browser, main))!['state'] == 'InCombat';
-  // A group that attacks by itself does so within a few ticks, and at this
-  // pace its lair stands again within the half minute the map would take.
+  // A group that attacks by itself does so within a few ticks.
   for (var wait = 0; wait < 12 && !joined && group['behavior'] != 'Passive'; wait++) {
     await Future<void>.delayed(const Duration(milliseconds: 500));
     joined = (await browser.tap('$roundsAtPrey.length') as int) > rounds;

@@ -9,10 +9,10 @@
 //   mining     mine_and_return     salvage_and_sites       nearest known ore that pays, strip it, haul home
 //   survey     prospect            salvage_and_sites       nearest sector not yet charted; boards
 //   recovery   salvage_and_sites   mine_and_return         derelicts and wreckage that pay
-//   strike     patrol_home         salvage_and_sites       nearest group whose wreckage pays, else home
+//   strike     salvage_and_sites   mine_and_return         nearest group whose wreckage pays, else home
 //
-// Once kills no longer raise the score the strike wing's doctrines are the
-// recovery wing's: a patrol does not weigh a fight against its fuel.
+// Kills do not raise the score, and a patrol does not weigh a fight against
+// its fuel, so the strike wing flies the recovery wing's doctrines.
 //
 // A turtle's ships and, once it has a cargo ship, a miner's warships are
 // the garrison: they are bought with what no order claimed, and stay home.
@@ -69,7 +69,6 @@ use serde::{Deserialize, Serialize};
 
 use super::home::Hull;
 use super::Personality;
-use crate::score;
 use crate::script::Order;
 
 /// Odds ratio (`SectorOdds::ratio`) at which a pilot accepts a fight: won
@@ -146,17 +145,15 @@ impl Wing {
 
     /// The doctrine a wing flies under, and the one it is tried on when the
     /// first finds nothing to do. A patrol's fights are not weighed against
-    /// its fuel as a pilot's are, and once kills no longer raise the score
-    /// the strike wing scoops and boards instead: in a season week its
-    /// patrols past the cap burned more deuterium than they brought home.
-    fn doctrines(self, points_wanted: bool) -> Option<[PolicyPreset; 2]> {
+    /// its fuel as a pilot's are, and kills do not raise the score, so the
+    /// strike wing scoops and boards: in a season week its patrols burned
+    /// more deuterium than they brought home.
+    fn doctrines(self) -> Option<[PolicyPreset; 2]> {
         match self {
             Wing::Garrison => None,
             Wing::Mining => Some([PolicyPreset::MineAndReturn, PolicyPreset::SalvageAndSites]),
             Wing::Survey => Some([PolicyPreset::Prospect, PolicyPreset::SalvageAndSites]),
-            Wing::Recovery => Some([PolicyPreset::SalvageAndSites, PolicyPreset::MineAndReturn]),
-            Wing::Strike if points_wanted => Some([PolicyPreset::PatrolHome, PolicyPreset::SalvageAndSites]),
-            Wing::Strike => Some([PolicyPreset::SalvageAndSites, PolicyPreset::MineAndReturn]),
+            Wing::Recovery | Wing::Strike => Some([PolicyPreset::SalvageAndSites, PolicyPreset::MineAndReturn]),
         }
     }
 
@@ -392,8 +389,6 @@ pub(super) struct Brief {
     pub personality: Personality,
     /// Ticks until the next look-in once this one ends; None for a player who stays.
     pub away_for: Option<u64>,
-    /// More combat or exploration points would still raise the score.
-    pub points_wanted: bool,
     /// Deuterium of the unit the shipyard wants next and cannot pay for yet.
     pub yard_deuterium: f64,
 }
@@ -465,7 +460,7 @@ impl<'a> Admiral<'a> {
     /// nothing to do under its orders and is given the wing's other doctrine.
     fn delegate(&mut self, unit: Unit, leaving: bool) {
         let fleet = unit.fleet;
-        let Some(doctrines) = unit.wing.doctrines(self.brief.points_wanted) else { return };
+        let Some(doctrines) = unit.wing.doctrines() else { return };
         if !self.can_return(unit) {
             self.dock(unit);
             return;
@@ -821,31 +816,19 @@ impl<'a> Admiral<'a> {
         if sector.location == self.home {
             return false;
         }
-        let chart = if sector.chart.is_none() { self.chart_worth(unit, sector) } else { 0.0 };
+        let chart = if sector.chart.is_none() { self.chart_worth(unit) } else { 0.0 };
         let board = sector.site.is_some_and(|site| boardable(self.odds, fleet, sector, site));
-        let boarding = if board && self.brief.points_wanted {
-            score::board_points(self.derelict(sector), sector.threat.rating)
-        } else {
-            0.0
-        };
         let lasts = sector.salvage_despawn_tick.is_some_and(|t| t > self.state.tick + 3 * u64::from(hops));
         let scoop = sector.salvage.is_some() && lasts && fleet.cargo.total() < fleet.cargo_capacity;
-        (chart > 0.0 || board || scoop) && self.pays(fleet, sector, hops, chart + boarding + self.findings(fleet, sector, board))
+        (chart > 0.0 || board || scoop) && self.pays(fleet, sector, hops, chart + self.findings(fleet, sector, board))
     }
 
-    /// What charting `sector` is worth to `unit`. Charting is the survey
+    /// What charting a sector is worth to `unit`. Charting is the survey
     /// wing's job, which finds what the other wings live on, so to it a
-    /// chart is worth any trip its tank allows; to another wing it is worth
-    /// its points while they still raise the score. This and the boarding
-    /// points above are the only parts of the score a fleet's choice reads.
-    fn chart_worth(&self, unit: Unit, sector: &SectorState) -> f32 {
-        if unit.wing == Wing::Survey {
-            f32::INFINITY
-        } else if self.brief.points_wanted {
-            score::chart_points(sector.threat.rating)
-        } else {
-            0.0
-        }
+    /// chart is worth any trip its tank allows. A chart pays resources and
+    /// scores nothing, so another wing does not detour for one.
+    fn chart_worth(&self, unit: Unit) -> f32 {
+        if unit.wing == Wing::Survey { f32::INFINITY } else { 0.0 }
     }
 
     /// A sector within scan range that the chart does not hold.
@@ -887,7 +870,7 @@ impl<'a> Admiral<'a> {
             open(s)
                 && self.in_range(fleet, s, hops)
                 && self.blind_spot(s, range)
-                && self.pays(fleet, s, hops, self.chart_worth(unit, s))
+                && self.pays(fleet, s, hops, self.chart_worth(unit))
         });
         match edge {
             Some(path) => self.set_out(unit, path, false),
@@ -924,12 +907,9 @@ impl<'a> Admiral<'a> {
         }
     }
 
-    /// No trip pays its fuel: a wing that may still earn points looks for
-    /// them as the survey wing does; any other goes home and waits.
+    /// No trip pays its fuel: go home, or wait if the fleet is already there.
     fn nothing_pays(&mut self, unit: Unit) -> u64 {
-        if self.brief.points_wanted {
-            self.survey(unit)
-        } else if unit.fleet.location != self.home {
+        if unit.fleet.location != self.home {
             self.head_home(unit)
         } else {
             WAIT
