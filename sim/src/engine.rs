@@ -2552,7 +2552,8 @@ impl GameEngine {
 
             let target = fleet.harvest_target;
             let yield_mult = self.players.get(&fleet.owner_id)
-                .map_or(1.0, |p| scaling::harvest_yield(p.research.laser_technology));
+                .map_or(1.0, |p| scaling::harvest_yield(p.research.laser_technology))
+                * self.world.pace.find_mult();
             let harvest_power = fleet_harvest_power(fleet);
             let dist = location.dist_from_origin();
             let max_cargo = fleet_cargo_capacity(fleet, &self.world.pace);
@@ -6267,7 +6268,7 @@ impl GameEngine {
         for key in charts {
             self.chart_news.push((owner, key));
             if self.charted.insert((owner, key)) {
-                value += scaling::chart_value(ring_rating(Hex::from_key(key)));
+                value += scaling::chart_value(ring_rating(Hex::from_key(key)), &self.world.pace);
                 sectors += 1;
             }
         }
@@ -6390,7 +6391,7 @@ impl GameEngine {
             tech_cache = self.pick_tech_cache(owner_id, &mut rng);
         }
         let relic = rng.random_range(0.0..1.0) < scaling::relic_chance(rating);
-        let loot_mult = self.world.pace.finds_mult()
+        let loot_mult = self.world.pace.find_mult()
             * if has_rigging { EXPLORE_RECYCLER_LOOT_MULTIPLIER } else { 1.0 }
             * if relic { scaling::RELIC_LOOT_MULT } else { 1.0 };
         let rolled = scaling::split_loot(base_value).scale(loot_mult);
@@ -7091,7 +7092,8 @@ impl GameEngine {
     /// `owner`'s fleets with `room` units free.
     fn seam_worth(&self, owner: u64, ore: &OreReserve, room: f64) -> f32 {
         let yield_mult = self.players.get(&owner)
-            .map_or(1.0, |p| scaling::harvest_yield(p.research.laser_technology));
+            .map_or(1.0, |p| scaling::harvest_yield(p.research.laser_technology))
+            * self.world.pace.find_mult();
         let load = Resources { metal: ore.metal.units, crystal: ore.crystal.units, deuterium: ore.deuterium.units }
             .scale(yield_mult);
         worth_aboard(load, room)
@@ -8145,7 +8147,7 @@ pub fn platform_units(level: u8) -> Vec<UnitCount> {
 
 /// Wreckage a destroyed NPC group leaves behind: its whole worth, not one ship's.
 fn npc_salvage(npc: &NpcFleet, pace: &Pace) -> Resources {
-    scaling::split_loot(scaling::wreck_value(npc.power)).scale(pace.finds_mult())
+    scaling::split_loot(scaling::wreck_value(npc.power)).scale(pace.find_mult())
 }
 
 /// The danger rating the ring alone gives a sector.
@@ -8375,8 +8377,7 @@ pub fn site_risk_label(site: Hex, bumps: u8) -> iac_shared::protocol::SiteRisk {
     }
 }
 
-/// The hold: each ship's base cargo times the pace's cargo factor (P^0.5,
-/// like the loot it carries).
+/// The hold: each ship's base cargo times the pace's cargo factor (P^0.5).
 pub fn fleet_cargo_capacity(fleet: &Fleet, pace: &Pace) -> f64 {
     // Folded from 0.0 for the reason given in `fleet_fuel_max`: what is left
     // in the hold of a fleet with no ships is scaled by this.

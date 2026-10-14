@@ -22,8 +22,8 @@ pub enum PaceClass {
     Economy,
     /// Attention timers and caps: P^0.75 (storage caps, raid cadence).
     Attention,
-    /// Finds: P^0.5 (loot value, derelict respawn, a pirate group's return
-    /// and mending, raid warning).
+    /// Finds: P^0.5 (derelict respawn, a pirate group's return and mending,
+    /// raid warning, and the size of holds and stores).
     Finds,
     /// Real time: never scaled (cooldowns, combat, fuel, boarding).
     RealTime,
@@ -175,13 +175,17 @@ impl Pace {
         }
     }
 
-    /// Ship holds scale like finds (P^0.5): loot per find grows with the
-    /// pace, so the hold that carries it must too.
-    pub fn cargo_mult(&self) -> f64 {
-        self.finds_mult()
+    /// What a find is worth, in units, against pace 1: loot, wreckage,
+    /// derelict and chart value follow production, so a find is worth the same
+    /// minutes of income at every pace.
+    pub fn find_mult(&self) -> f64 {
+        self.0
     }
 
-    pub fn finds_mult(&self) -> f64 {
+    /// Ship holds and outpost stores scale like finds' timers (P^0.5), not
+    /// like their value: a find can be worth more than a hold carries, and
+    /// what a hold cannot take drifts loose as salvage.
+    pub fn cargo_mult(&self) -> f64 {
         self.0.sqrt()
     }
 

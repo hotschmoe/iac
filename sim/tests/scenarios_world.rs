@@ -1561,7 +1561,7 @@ fn a_group_left_alive_keeps_its_losses_mends_a_step_at_a_time_and_pays_its_whole
     let ended = fights_ended(&e, mark);
     assert_eq!(ended.last().map(|c| c.outcome), Some(BattleOutcome::HostilesDestroyed));
     let whole = Ships::of(&[(LightFighter, 30)]).power(scaling::Arms::of_grade(1.0));
-    let pile = scaling::split_loot(scaling::wreck_value(whole)).scale(pace.finds_mult());
+    let pile = scaling::split_loot(scaling::wreck_value(whole)).scale(pace.find_mult());
     assert_eq!(ended.last().and_then(|c| c.salvage), Some(pile), "the wreckage of the thirty it was generated with");
     assert!(!e.engine.npc_fleets.contains_key(&PACK));
 }

@@ -1668,16 +1668,15 @@ pub const DERELICT_ROLL_MAX: f32 = 1.4;
 pub const RELIC_LOOT_MULT: f64 = 6.0;
 /// A sector's chart, delivered to a dock, pays
 /// `CHART_VALUE_BASE + CHART_VALUE_THREAT * T^CHART_VALUE_EXPONENT` units
-/// of loot into the stockpile, T being the threat rating its ring gives it.
-/// No pace scales it: a fleet charts as many sectors in an hour at any
-/// pace, and there are only so many. Provisional.
+/// of loot into the stockpile at pace 1, T being the threat rating its ring
+/// gives it; the pace's find factor scales it like every find. Provisional.
 pub const CHART_VALUE_BASE: f64 = 50.0;
 pub const CHART_VALUE_THREAT: f64 = 50.0;
 pub const CHART_VALUE_EXPONENT: f64 = 1.5;
 
 /// Units of loot the chart of a sector at threat `rating` pays.
-pub fn chart_value(rating: u8) -> f64 {
-    CHART_VALUE_BASE + CHART_VALUE_THREAT * maths::powf(f64::from(rating), CHART_VALUE_EXPONENT)
+pub fn chart_value(rating: u8, pace: &Pace) -> f64 {
+    (CHART_VALUE_BASE + CHART_VALUE_THREAT * maths::powf(f64::from(rating), CHART_VALUE_EXPONENT)) * pace.find_mult()
 }
 
 /// Anti-farming: every kill in a sector adds one point of heat, and the next
@@ -1701,7 +1700,7 @@ pub fn farm_heat_after(heat: f32, elapsed: u64, half_life_ticks: u64) -> f32 {
     heat * maths::exp2(-(elapsed as f32 / half_life_ticks as f32))
 }
 
-/// Units of loot (before the pace's finds factor) a destroyed group leaves:
+/// Units of loot (before the pace's find factor) a destroyed group leaves:
 /// it grows slower than the danger, so far hunting stays a gamble.
 pub fn wreck_value(group_power: f32) -> f64 {
     WRECK_VALUE_K * maths::powf(f64::from(group_power.max(0.0)), WRECK_VALUE_EXPONENT)
@@ -1712,7 +1711,7 @@ pub fn split_loot(value: f64) -> Resources {
     Resources { metal: value * LOOT_SPLIT[0], crystal: value * LOOT_SPLIT[1], deuterium: value * LOOT_SPLIT[2] }
 }
 
-/// Mean loot value (units, before the finds factor) of a derelict `dist` rings out.
+/// Mean loot value (units, before the find factor) of a derelict `dist` rings out.
 pub fn derelict_value(dist: u16) -> f64 {
     DERELICT_VALUE_BASE * maths::powi(DERELICT_VALUE_GROWTH, i32::from(dist) - i32::from(DERELICT_VALUE_RING))
 }
