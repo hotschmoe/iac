@@ -95,9 +95,6 @@ struct Profile {
     haulers: &'static [ShipClass],
     /// Structure power held, as a multiple of the next raid's expected power.
     defence_margin: f32,
-    /// What no order has claimed goes into defences before warships, until
-    /// they stand `WALL_HEIGHT` times the next raid.
-    walls: bool,
 }
 
 /// Computer Technology opens building slots, which every plan is short of.
@@ -153,12 +150,13 @@ const TOP_UP: f32 = 0.5;
 const MOST_DEFENCE: f32 = 6.0;
 /// How much a defence's worth falls as it makes up more of what stands.
 const MIX: f32 = 3.0;
-/// A wall this many times the next raid's power has nothing left to prove:
-/// the turtle's surplus goes into warships kept at home beyond it.
-const WALL_HEIGHT: f32 = 12.0;
 /// Game hours at pace 1 of deuterium a Fusion Reactor level is charged for
 /// when its energy is priced against the Solar Plant's.
 const FUSION_HORIZON_HOURS: f64 = 72.0;
+/// The Fusion Reactor stops when the stockpile has no deuterium, and the
+/// mines with it: a level is built only while its burn stays under this
+/// share of what the synthesizer makes.
+const FUSION_SHARE: f64 = 0.2;
 /// A Solar Satellite's energy is priced at this many times its cost: a
 /// raid destroys satellites first, and not all come back.
 const SATELLITE_RISK: f32 = 2.0;
@@ -190,7 +188,6 @@ const TURTLE: Profile = Profile {
     probes: 0,
     haulers: HAULERS,
     defence_margin: 1.5,
-    walls: true,
 };
 
 const MINER: Profile = Profile {
@@ -213,7 +210,6 @@ const MINER: Profile = Profile {
     probes: 0,
     haulers: MINERS,
     defence_margin: 1.15,
-    walls: false,
 };
 
 const RAIDER: Profile = Profile {
@@ -245,7 +241,6 @@ const RAIDER: Profile = Profile {
     probes: 0,
     haulers: HAULERS,
     defence_margin: 1.15,
-    walls: false,
 };
 
 const EXPLORER: Profile = Profile {
@@ -273,7 +268,6 @@ const EXPLORER: Profile = Profile {
     probes: 4,
     haulers: HAULERS,
     defence_margin: 1.15,
-    walls: false,
 };
 
 const MIXED: Profile = Profile {
@@ -304,7 +298,6 @@ const MIXED: Profile = Profile {
     probes: 2,
     haulers: HAULERS,
     defence_margin: 1.15,
-    walls: false,
 };
 
 impl Profile {
@@ -833,11 +826,9 @@ impl<'a> Planner<'a> {
     }
 
     fn surplus_item(&self, purse: Resources) -> Option<ShipyardItem> {
-        let walling = self.profile.walls && self.standing_defence() < WALL_HEIGHT * self.raid_power();
         let ship = WARSHIPS
             .iter()
             .map(|&class| ShipyardItem::Ship(class))
-            .filter(|_| !walling)
             .find(|&item| self.started.unlocked(item) && fits(item.unit_cost(), purse));
         let item = ship.or_else(|| self.answer().map(ShipyardItem::Defence))?;
         (self.started.unlocked(item) && fits(item.unit_cost(), self.cap())).then_some(item)
@@ -875,6 +866,13 @@ impl<'a> Planner<'a> {
                 || !fits(scaling::building_cost(plant, level + 1), self.cap())
             {
                 continue;
+            }
+            if plant == BuildingType::FusionReactor {
+                let burn = self.pace.rate(f64::from(scaling::fusion_burn_per_hour(level + 1)) / 3600.0);
+                let made = scaling::production_per_tick(&self.plan.buildings, 1.0, &self.pace).deuterium;
+                if burn > FUSION_SHARE * made {
+                    continue;
+                }
             }
             let cost = scaling::resource_weight(&scaling::building_cost(plant, level + 1));
             let (gain, burn) = match plant {
