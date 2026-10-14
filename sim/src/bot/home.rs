@@ -800,11 +800,14 @@ impl<'a> Planner<'a> {
     }
 
     /// What no order has claimed, less, for a player who stays, the price of
-    /// the next Metal Mine level.
+    /// the next Metal Mine level while there is one.
     fn purse(&self) -> Resources {
+        let level = self.plan.buildings.metal_mine + 1;
         match self.away_for {
-            Some(_) => self.spare,
-            None => self.spare.sub(scaling::building_cost(BuildingType::MetalMine, self.plan.buildings.metal_mine + 1)),
+            None if level <= scaling::MAX_BUILDING_LEVEL => {
+                self.spare.sub(scaling::building_cost(BuildingType::MetalMine, level))
+            }
+            _ => self.spare,
         }
     }
 
