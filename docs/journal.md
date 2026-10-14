@@ -9956,3 +9956,47 @@ again); `cargo clippy --workspace --all-targets` silent; the wasm build;
 **Not verified.** No person or agent played it. The bundle and
 `tool/solo_e2e.dart` were not run. Three seeds a configuration, and a
 style's median moves by a tenth from seed to seed.
+
+## 2026-10-14: the score rework merged with master's playtest fixes
+
+`git merge master` (3dae48e) into the score branch, a merge commit. What met:
+
+- *The bonus room.* Master's `LeaderboardReply.bonus` (`BonusRoom`) measured
+  combat and exploration points against the cap; the score has neither, so
+  it went from the protocol, the fixtures, the Dart types and the play tool
+  (`score.bonus`, `bonus_capped`, `bonus_words`). The play tool keeps
+  master's `score.leader` and gap, adds the gap by part
+  (`leader.gap_by_part`), and its `Standing:` line says "leader Other 90.0,
+  50.0 ahead of you (buildings +35.0, research +10.0, fleet +5.0)".
+  `test_play.py`'s score case was moved to it.
+- *Charts and the `Stockpile` event.* A delivered chart's pay is a
+  `Stockpile` event of a cause of its own, `Charts` ("delivered charts, paid
+  into the stockpile", in the play tool and the web client from
+  `StockpileCause::phrase`); `ChartDelivered` keeps `fleet_id` and `sectors`
+  and lost `paid`, so the pay is said once. A boarding's and a relic's loot
+  go into the hold and send none. The runner counts chart pay from the new
+  cause; `empire_arc.rs` and `outposts.rs` read it there.
+- *The home scoop.* My new raid scenario expected `SalvageCollected` at home;
+  master made that a `Stockpile` event of cause `Wreckage`, and the scenario
+  reads it there. The runner's `kind` of a fleet stayed beside master's
+  removal of `home_of`.
+- *Versions*: `ECONOMY_VERSION` 16 (15 on both sides), `SAVE_FORMAT` 14 (13 on
+  both sides; the merged snapshot has master's `last_hold` and the branch's
+  player row, `charted` and bot memory), `WORLDGEN_VERSION` 5.
+- Master's doctrines and play tool, and the branch's score, knobs, jump law,
+  pirates' clock and packs, are each kept whole. Fixtures, the Dart types
+  and `numbers.json` were rendered again.
+
+**Run on the merged tree.** `cargo build --workspace --all-targets`; `cargo
+test --workspace --no-fail-fast`: 208 passed and 1 failed (the raid scenario
+above), then 209 passed, 0 failed; `cargo clippy --workspace --all-targets`
+silent; `check_sim_constants.py` agrees on 4,386 values; the play tool's
+unittests 41 OK; `flutter analyze` clean; `flutter test` under `timeout -k 20
+300` three times: 521 passed, then one failure in `onboarding_test.dart`
+("Looking up a deactivated widget's ancestor is unsafe", inside Flutter's
+widget inspector, the machine's flake master's journal also met), then 521
+passed.
+
+**Not verified.** The bundle and `tool/solo_e2e.dart`; no sim-run was made on
+the merged tree (master's doctrines change what bots fly, so the branch's
+measurements are of the branch before the merge).

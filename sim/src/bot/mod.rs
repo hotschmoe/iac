@@ -164,7 +164,6 @@ pub struct Memory {
     routes: BTreeMap<u64, field::Route>,
 }
 
-
 /// A bot account as the world stores it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotRecord {

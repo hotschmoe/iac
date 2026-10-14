@@ -285,7 +285,6 @@ fn a_defence_that_could_never_beat_the_raid_outlasts_it_for_six_rounds() {
 fn defences_score_nothing_and_pay_in_the_wreckage_of_the_raids_they_beat() {
     let mut e = garrison(&[(SmallCargo, 2)], &[], 0);
     let pid = e.pid;
-    let home = e.engine.players[&pid].homeworld;
     let bare = e.score_row();
     fortify(&mut e.engine, pid, &[(LightLaser, 60)], 0);
     let walled = e.score_row();
@@ -302,7 +301,7 @@ fn defences_score_nothing_and_pay_in_the_wreckage_of_the_raids_they_beat() {
     assert_eq!(told.resolved.salvage_dropped, Some(pile), "which leaves its wreckage at home");
     e.run(2);
     let scooped = e.since(mark, |k| match k {
-        EventKind::SalvageCollected(c) if c.sector == home => Some(c.resources),
+        EventKind::Stockpile(s) if s.cause == StockpileCause::Wreckage => Some(s.amount),
         _ => None,
     });
     assert_eq!(scooped, [pile], "the docked fleet scoops it");
