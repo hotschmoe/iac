@@ -3517,6 +3517,11 @@ class HomeworldState {
   /// research points; the actual raid rolls 0.80 to 1.15 times this.
   final double nextRaidEstimatePower;
 
+  /// A raid can come to this empire: its Shipyard stands at
+  /// `RAID_MIN_SHIPYARD` or it has a defence. While false, `raid` is only
+  /// the raid it would get if it did, and none is on the clock.
+  final bool raidsPossible;
+
   /// The raid being fought (`rounds_left`), else the one announced
   /// (`arrival_tick`), else one of typical size were it announced now:
   /// what it flies, and how it would end against the ships, satellites
@@ -3551,6 +3556,7 @@ class HomeworldState {
     required this.satellitePower,
     required this.structurePower,
     required this.nextRaidEstimatePower,
+    required this.raidsPossible,
     required this.raid,
     required this.catalog,
   });
@@ -3582,6 +3588,7 @@ class HomeworldState {
       satellitePower: _double(m['satellite_power']),
       structurePower: _double(m['structure_power']),
       nextRaidEstimatePower: _double(m['next_raid_estimate_power']),
+      raidsPossible: _bool(m['raids_possible']),
       raid: RaidForecast.fromJson(m['raid']),
       catalog: HomeworldCatalog.fromJson(m['catalog']),
     );
@@ -3612,6 +3619,7 @@ class HomeworldState {
     'satellite_power': satellitePower,
     'structure_power': structurePower,
     'next_raid_estimate_power': nextRaidEstimatePower,
+    'raids_possible': raidsPossible,
     'raid': raid.toJson(),
     'catalog': catalog.toJson(),
   };
@@ -3935,6 +3943,10 @@ class BuildingOption {
   /// What the building does at its level and at the next.
   final List<Effect> effects;
 
+  /// The homeworld's energy once `next` has finished, everything else as
+  /// it stands now; absent at `max_level`.
+  final EnergyAfter? energyAfter;
+
   const BuildingOption({
     required this.buildingType,
     required this.level,
@@ -3942,6 +3954,7 @@ class BuildingOption {
     this.next,
     required this.requires,
     required this.effects,
+    this.energyAfter,
   });
 
   factory BuildingOption.fromJson(Object? json) {
@@ -3953,6 +3966,7 @@ class BuildingOption {
       next: _opt(m['next'], UpgradeStep.fromJson),
       requires: _list(m['requires'], Requirement.fromJson),
       effects: _list(m['effects'], Effect.fromJson),
+      energyAfter: _opt(m['energy_after'], EnergyAfter.fromJson),
     );
   }
 
@@ -3963,7 +3977,35 @@ class BuildingOption {
     'next': ?next?.toJson(),
     'requires': requires.map((e) => e.toJson()).toList(),
     'effects': effects.map((e) => e.toJson()).toList(),
+    'energy_after': ?energyAfter?.toJson(),
   };
+}
+
+/// The homeworld's energy as it would stand after one upgrade.
+class EnergyAfter {
+  final int made;
+  final int needed;
+
+  /// `made / needed`, at most 1, as `EnergyState.fraction` is.
+  final double fraction;
+
+  /// The Solar Plant stands at `MAX_BUILDING_LEVEL`: no further level of
+  /// it can close a shortfall, only satellites and the Fusion Reactor.
+  final bool plantMaxed;
+
+  const EnergyAfter({required this.made, required this.needed, required this.fraction, required this.plantMaxed});
+
+  factory EnergyAfter.fromJson(Object? json) {
+    final m = _obj(json);
+    return EnergyAfter(
+      made: _int(m['made']),
+      needed: _int(m['needed']),
+      fraction: _double(m['fraction']),
+      plantMaxed: _bool(m['plant_maxed']),
+    );
+  }
+
+  Json toJson() => {'made': made, 'needed': needed, 'fraction': fraction, 'plant_maxed': plantMaxed};
 }
 
 class ResearchOption {

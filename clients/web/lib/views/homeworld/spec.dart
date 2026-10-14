@@ -21,6 +21,9 @@ class ItemSpec {
 
   /// What a level of a building or a research does, now and at the next.
   final List<proto.Effect> effects;
+
+  /// The homeworld's energy once this building's next level is built.
+  final proto.EnergyAfter? energyAfter;
   final proto.ShipOption? ship;
   final proto.DefenceOption? defence;
 
@@ -37,6 +40,7 @@ class ItemSpec {
     required this.actionLabel,
     this.note = '',
     this.effects = const [],
+    this.energyAfter,
     this.ship,
     this.defence,
     this.neededBy = const [],
@@ -147,6 +151,7 @@ ItemSpec? specFor(GameController c, {int? index}) {
             capacity: hw == null ? 0 : hw.buildSlots + hw.queueWaitingMax),
         actionLabel: o.next == null ? 'Maxed' : 'Queue to L${o.next!.level}',
         effects: o.effects,
+        energyAfter: o.energyAfter,
         neededBy: neededBy(cat, o.buildingType.label),
       );
     case HomeworldTab.research:

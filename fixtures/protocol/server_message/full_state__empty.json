@@ -21,6 +21,12 @@
               "now": 11.0
             }
           ],
+          "energy_after": {
+            "fraction": 0.6111111111111112,
+            "made": 22,
+            "needed": 36,
+            "plant_maxed": false
+          },
           "level": 1,
           "max_level": 20,
           "next": {
@@ -48,6 +54,12 @@
               "now": 11.0
             }
           ],
+          "energy_after": {
+            "fraction": 0.6111111111111112,
+            "made": 22,
+            "needed": 36,
+            "plant_maxed": false
+          },
           "level": 1,
           "max_level": 20,
           "next": {
@@ -75,6 +87,12 @@
               "now": 0.0
             }
           ],
+          "energy_after": {
+            "fraction": 0.5,
+            "made": 22,
+            "needed": 44,
+            "plant_maxed": false
+          },
           "level": 0,
           "max_level": 20,
           "next": {
@@ -97,6 +115,12 @@
               "now": 22.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 48,
+            "needed": 22,
+            "plant_maxed": false
+          },
           "level": 1,
           "max_level": 20,
           "next": {
@@ -124,6 +148,12 @@
               "now": 0.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 22,
+            "needed": 22,
+            "plant_maxed": false
+          },
           "level": 0,
           "max_level": 20,
           "next": {
@@ -161,6 +191,12 @@
               "now": 1.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 22,
+            "needed": 22,
+            "plant_maxed": false
+          },
           "level": 0,
           "max_level": 20,
           "next": {
@@ -188,6 +224,12 @@
               "now": 1.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 22,
+            "needed": 22,
+            "plant_maxed": false
+          },
           "level": 0,
           "max_level": 20,
           "next": {
@@ -225,6 +267,12 @@
               "now": 1.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 22,
+            "needed": 22,
+            "plant_maxed": false
+          },
           "level": 0,
           "max_level": 20,
           "next": {
@@ -260,6 +308,12 @@
               "now": 0.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 22,
+            "needed": 22,
+            "plant_maxed": false
+          },
           "level": 0,
           "max_level": 20,
           "next": {
@@ -287,6 +341,12 @@
               "now": 0.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 22,
+            "needed": 22,
+            "plant_maxed": false
+          },
           "level": 0,
           "max_level": 20,
           "next": {
@@ -319,6 +379,12 @@
               "now": 1.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 22,
+            "needed": 22,
+            "plant_maxed": false
+          },
           "level": 0,
           "max_level": 20,
           "next": {
@@ -341,6 +407,12 @@
               "now": 1.0
             }
           ],
+          "energy_after": {
+            "fraction": 1.0,
+            "made": 22,
+            "needed": 22,
+            "plant_maxed": false
+          },
           "level": 0,
           "max_level": 20,
           "next": {
@@ -1704,6 +1776,7 @@
         }
       ]
     },
+    "raids_possible": false,
     "research": [],
     "research_pending": [],
     "satellite_power": 0.0,

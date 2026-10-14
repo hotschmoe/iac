@@ -541,6 +541,13 @@ impl Player {
         scaling::building_slots(&self.research) as usize
     }
 
+    /// Raids only threaten empires worth raiding: a Shipyard at
+    /// `RAID_MIN_SHIPYARD` or any defence.
+    pub fn raids_possible(&self) -> bool {
+        self.buildings.shipyard >= RAID_MIN_SHIPYARD
+            || DefenceKind::ALL.into_iter().any(|kind| self.defences.owned(kind) > 0)
+    }
+
     /// The homeworld's energy this tick. The Fusion Reactor runs while the
     /// stockpile holds any deuterium for it.
     pub fn power(&self, pace: &Pace) -> scaling::Power {
@@ -3477,9 +3484,7 @@ impl GameEngine {
             let Some(player) = self.players.get(&pid) else { continue; };
             // Raids only threaten empires worth raiding — and defenseless
             // beginners are off the menu entirely.
-            let eligible = player.buildings.shipyard >= RAID_MIN_SHIPYARD
-                || DefenceKind::ALL.into_iter().any(|kind| player.defences.owned(kind) > 0);
-            if !eligible { continue; }
+            if !player.raids_possible() { continue; }
 
             let base = scaling::raid_power_base(scaling::econ_points(&player.buildings, &player.research));
 

@@ -228,6 +228,7 @@ extension HomeworldStateEdit on HomeworldState {
         satellitePower: satellitePower ?? this.satellitePower,
         structurePower: structurePower ?? this.structurePower,
         nextRaidEstimatePower: nextRaidEstimatePower,
+        raidsPossible: raidsPossible,
         raid: raid ?? this.raid,
         catalog: catalog ?? this.catalog,
       );
