@@ -109,7 +109,7 @@ class DefenceTab extends StatelessWidget {
           border: d.pressing ? C.ember : null,
           mark: d.pressing ? C.ember : null,
           padding: const EdgeInsets.all(14),
-          child: RaidForecastReadout(d.raid, tick: st.tick, tag: 'raid'),
+          child: RaidForecastReadout(d.raid, tick: st.tick, tag: 'raid', possible: st.hw?.raidsPossible ?? true),
         ),
         if (fight != null) ...[const SizedBox(height: 10), BattlePanel(key: ValueKey(fight.sector), battle: fight)],
         RaidExits(controller: ctrl, at: st.homeworld),

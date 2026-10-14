@@ -1,7 +1,7 @@
 [
-{"canonical":{"action":"s64","fleet_id":63,"kind":"PolicyAction","preset":"manual","reason":"s65","tick":65,"type":"event"},"input":{"action":"s64","fleet_id":63,"kind":"PolicyAction","preset":"manual","reason":"s65","tick":65,"type":"event"}},
-{"canonical":{"action":"s64","fleet_id":63,"kind":"PolicyAction","preset":"prospect","reason":"s65","tick":65,"type":"event"},"input":{"action":"s64","fleet_id":63,"kind":"PolicyAction","preset":"prospect","reason":"s65","tick":65,"type":"event"}},
-{"canonical":{"action":"s64","fleet_id":63,"kind":"PolicyAction","preset":"mine_and_return","reason":"s65","tick":65,"type":"event"},"input":{"action":"s64","fleet_id":63,"kind":"PolicyAction","preset":"mine_and_return","reason":"s65","tick":65,"type":"event"}},
-{"canonical":{"action":"s64","fleet_id":63,"kind":"PolicyAction","preset":"salvage_and_sites","reason":"s65","tick":65,"type":"event"},"input":{"action":"s64","fleet_id":63,"kind":"PolicyAction","preset":"salvage_and_sites","reason":"s65","tick":65,"type":"event"}},
-{"canonical":{"action":"s64","fleet_id":63,"kind":"PolicyAction","preset":"patrol_home","reason":"s65","tick":65,"type":"event"},"input":{"action":"s64","fleet_id":63,"kind":"PolicyAction","preset":"patrol_home","reason":"s65","tick":65,"type":"event"}}
+{"canonical":{"action":"s70","fleet_id":69,"kind":"PolicyAction","preset":"manual","reason":"s71","tick":71,"type":"event"},"input":{"action":"s70","fleet_id":69,"kind":"PolicyAction","preset":"manual","reason":"s71","tick":71,"type":"event"}},
+{"canonical":{"action":"s70","fleet_id":69,"kind":"PolicyAction","preset":"prospect","reason":"s71","tick":71,"type":"event"},"input":{"action":"s70","fleet_id":69,"kind":"PolicyAction","preset":"prospect","reason":"s71","tick":71,"type":"event"}},
+{"canonical":{"action":"s70","fleet_id":69,"kind":"PolicyAction","preset":"mine_and_return","reason":"s71","tick":71,"type":"event"},"input":{"action":"s70","fleet_id":69,"kind":"PolicyAction","preset":"mine_and_return","reason":"s71","tick":71,"type":"event"}},
+{"canonical":{"action":"s70","fleet_id":69,"kind":"PolicyAction","preset":"salvage_and_sites","reason":"s71","tick":71,"type":"event"},"input":{"action":"s70","fleet_id":69,"kind":"PolicyAction","preset":"salvage_and_sites","reason":"s71","tick":71,"type":"event"}},
+{"canonical":{"action":"s70","fleet_id":69,"kind":"PolicyAction","preset":"patrol_home","reason":"s71","tick":71,"type":"event"},"input":{"action":"s70","fleet_id":69,"kind":"PolicyAction","preset":"patrol_home","reason":"s71","tick":71,"type":"event"}}
 ]
