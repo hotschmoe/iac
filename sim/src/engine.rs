@@ -46,7 +46,7 @@ use iac_shared::scaling::{
 use iac_shared::protocol::{
     AlertEvent, AlertLevel, ChartMark, Command, GameEvent, EventKind, ErrorCode, HarvestResource, PolicyPreset, PolicyParams,
     MovePreview, OreReserve, Refining, ResourceEta, SectorOdds, SectorState, ThreatBasis, ThreatInfo, TileReserve,
-    StorageFullEvent, StorageNearCapEvent, StorageState,
+    StockpileCause, StockpileEvent, StorageFullEvent, StorageNearCapEvent, StorageState,
     ExchangeMeter, ExchangeTerms, ExchangedEvent,
     OutpostCompletedEvent, OutpostSurvey, PowerRange, SectorResources, SurveySite,
     BattleGroup, BattleLosses, BattleOutcome, BattleRoundEvent, BattleSide, BattleState, BattleUnits,
@@ -898,9 +898,9 @@ pub struct FleetPolicy {
     pub work_sector: Option<Hex>,
     /// Next tick the autopilot will reconsider this fleet.
     pub next_eval_tick: u64,
-    /// The last hold reason announced and when, so a fleet that keeps
-    /// holding for the same reason does not flood the event stream.
-    pub last_hold: Option<(String, u64)>,
+    /// The hold the fleet is in, by its reason without the figures, so a
+    /// fleet that keeps holding for the same reason is not announced again.
+    pub last_hold: Option<String>,
     /// Fuel budget: deuterium the fleet could still put into its tank as of
     /// `fuel_since`, the tick of its last budgeted fill (or of its orders).
     pub fuel_credit: f64,
@@ -987,6 +987,10 @@ struct Reach<'a> {
     need: f32,
     /// Hexes from home the doctrine and the tank allow.
     range: u8,
+    /// Fuel one jump burns, and the doctrine's reserve kept on top of the
+    /// way home.
+    hop: f64,
+    reserve: f64,
     /// Score weight of the deuterium one jump burns.
     jump_weight: f32,
     /// Cargo units the hold takes when empty.
@@ -1004,6 +1008,20 @@ struct Reach<'a> {
     fights: SectorMemo<bool>,
     seams: SectorMemo<Option<f32>>,
     boardable: SectorMemo<bool>,
+}
+
+/// The way home `Reach::way_home` found: its first jump, its length and,
+/// when no lane meets the engage ratio, the band of the mildest.
+struct WayHome {
+    step: Hex,
+    hops: u32,
+    worst: Option<RatioLabel>,
+}
+
+impl WayHome {
+    fn along(path: &[Hex], worst: Option<RatioLabel>) -> WayHome {
+        WayHome { step: path[0], hops: path.len() as u32, worst }
+    }
 }
 
 /// One answer per sector for the length of an evaluation: a table over a
@@ -1074,20 +1092,40 @@ impl Reach<'_> {
         let (threat, ratio) = self.rating(coord);
         let what = if self.engine.sector_has_hostiles(coord) { "holds hostiles" } else { "is unscouted or unsafe" };
         Some(format!(
-            "{coord} {what} (T{} power {:.0}: your fleet rates {ratio:.2}x {} against it, the doctrine needs {:.1}x)",
+            "{coord} {what} that the fleet rates below the doctrine's engage ratio \
+             (T{} power {:.0}: your fleet rates {ratio:.2}x {} against it, the doctrine needs {:.1}x)",
             threat.rating, threat.est_power, scaling::ratio_label(ratio).label(), self.need,
         ))
     }
 
-    /// The lanes from `from` to the nearest sector `goal` accepts, through
-    /// sectors the doctrine may enter inside its range.
-    fn path_to(&self, from: Hex, goal: &dyn Fn(Hex) -> bool) -> Option<Vec<Hex>> {
-        self.path_worth(from, &|n, _| goal(n))
+    /// The fuel a trip of `hops` jumps to `coord` and the fewest jumps home
+    /// from it burn, with the doctrine's reserve on top.
+    fn round_trip(&self, coord: Hex, hops: u32) -> f64 {
+        f64::from(hops + self.engine.direct_hops_home(self.owner, coord)) * self.hop + self.reserve
     }
 
-    /// `path_to` with a goal that is told how many jumps out the sector
-    /// lies. A lane that meets no fight is taken before a shorter one that
-    /// does: hull is not repaired, so a fight the fleet would win still costs.
+    /// The fleet can fly to `coord`, `hops` jumps from where it stands, and
+    /// home from there on the fuel it carries, its reserve kept.
+    fn affords(&self, coord: Hex, hops: u32) -> bool {
+        self.fleet.fuel >= self.round_trip(coord, hops)
+    }
+
+    /// Why the fleet will not set out for `coord`, `hops` jumps away: the
+    /// fuel there and back.
+    fn beyond_the_tank(&self, coord: Hex, hops: u32) -> String {
+        let back = self.engine.direct_hops_home(self.owner, coord);
+        format!(
+            "{coord} is farther than the fuel the fleet carries takes it there and home ({hops} jump{} away and {back} back: \
+             {:.0} fuel with the doctrine's reserve of {:.0}, and the fleet carries {:.0} of a {:.0} tank)",
+            if hops == 1 { "" } else { "s" }, self.round_trip(coord, hops), self.reserve, self.fleet.fuel, self.fleet.fuel_max,
+        )
+    }
+
+    /// The lanes from `from` to the nearest sector `goal` accepts, through
+    /// sectors the doctrine may enter inside its range; the goal is told how
+    /// many jumps out the sector lies. A lane that meets no fight is taken
+    /// before a shorter one that does: hull is not repaired, so a fight the
+    /// fleet would win still costs.
     fn path_worth(&self, from: Hex, goal: &dyn Fn(Hex, u32) -> bool) -> Option<Vec<Hex>> {
         let calm = |n: Hex| self.open(n) && self.in_range(n) && !self.starts_fight(n);
         self.engine.bfs_path_by_hops(from, POLICY_SEARCH_HOPS, &calm, goal).or_else(|| self.path_through(from, goal))
@@ -1138,24 +1176,42 @@ impl Reach<'_> {
         self.repays(self.engine.wreck_worth(coord, room), hops)
     }
 
-    /// The first jump of the way home and, when no lane meets the engage
-    /// ratio, the band of the mildest lane there is. Err names what blocks
-    /// every lane at RISKY odds or better.
-    fn way_home(&self, from: Hex) -> Result<(Hex, Option<RatioLabel>), String> {
+    /// The way home, at the engage ratio if a lane meets it, otherwise at
+    /// the mildest band a lane does, down to RISKY. At each band a lane
+    /// without a fight goes before one with, and either only if the fuel
+    /// aboard flies it: when none of them does, the shortest of them is
+    /// taken, so the fleet strands as near home as it can. Err names what
+    /// blocks every lane at RISKY odds or better.
+    fn way_home(&self, from: Hex) -> Result<WayHome, String> {
         let (engine, home) = (self.engine, self.home);
         let is_home = |n: Hex| n == home;
         let mut bars = vec![self.need];
         bars.extend(
             [scaling::RATIO_FAVOURABLE, scaling::RATIO_EVEN, scaling::RATIO_RISKY].into_iter().filter(|bar| *bar < self.need),
         );
+        let flies = |path: &[Hex]| path.len() as f64 * self.hop <= self.fleet.fuel;
+        let mut shortest: Option<WayHome> = None;
         for (i, &bar) in bars.iter().enumerate() {
+            let worst = (i > 0).then(|| scaling::ratio_label(bar));
             let passable = |n: Hex| n == home || self.ratio(n) >= bar;
             let calm = |n: Hex| passable(n) && !self.starts_fight(n);
-            let lane = engine.bfs_path(from, POLICY_SEARCH_HOPS, &calm, &is_home)
-                .or_else(|| engine.bfs_path(from, POLICY_SEARCH_HOPS, &passable, &is_home));
-            if let Some(path) = lane {
-                return Ok((path[0], (i > 0).then(|| scaling::ratio_label(bar))));
+            let calm_lane = engine.bfs_path(from, POLICY_SEARCH_HOPS, &calm, &is_home);
+            let lanes = match calm_lane {
+                Some(path) if flies(&path) => return Ok(WayHome::along(&path, worst)),
+                Some(path) => [Some(path), engine.bfs_path(from, POLICY_SEARCH_HOPS, &passable, &is_home)],
+                None => [None, engine.bfs_path(from, POLICY_SEARCH_HOPS, &passable, &is_home)],
+            };
+            for path in lanes.into_iter().flatten() {
+                if flies(&path) {
+                    return Ok(WayHome::along(&path, worst));
+                }
+                if shortest.as_ref().is_none_or(|way| path.len() < way.hops as usize) {
+                    shortest = Some(WayHome::along(&path, worst));
+                }
             }
+        }
+        if let Some(way) = shortest {
+            return Ok(way);
         }
         let floor = bars[bars.len() - 1];
         match engine.bfs_path(from, POLICY_SEARCH_HOPS, &|_| true, &is_home) {
@@ -1167,7 +1223,7 @@ impl Reach<'_> {
             None => engine.world_gen.connected_neighbors(from).slice().iter().copied()
                 .filter(|&n| n == home || self.ratio(n) >= floor)
                 .min_by_key(|n| Hex::distance(n, &home))
-                .map(|step| (step, None))
+                .map(|step| WayHome { step, hops: engine.direct_hops_home(self.owner, from), worst: None })
                 .ok_or_else(|| format!("no lane toward {home} at {floor:.1}x or better")),
         }
     }
@@ -1176,8 +1232,8 @@ impl Reach<'_> {
     /// way home if there is one, otherwise the lane it rates best, the
     /// nearer to home of two alike.
     fn way_out(&self, from: Hex) -> Result<Hex, String> {
-        if let Ok((step, _)) = self.way_home(from) {
-            return Ok(step);
+        if let Ok(way) = self.way_home(from) {
+            return Ok(way.step);
         }
         let nearer = |n: &Hex| std::cmp::Reverse(Hex::distance(n, &self.home));
         self.engine.world_gen.connected_neighbors(from).slice().iter().copied()
@@ -2119,7 +2175,8 @@ impl GameEngine {
                 losses: fleets.into_iter().chain(hostiles).collect(),
                 owners: self.players.get(&siege.owner).map(|p| p.name.clone()).into_iter().collect(),
                 mine: false,
-                salvage: dropped.map(|(_, pile, _)| pile),
+                salvage: dropped.map(|(salvage, _, _)| salvage),
+                salvage_pile: dropped.and_then(|(salvage, pile, _)| (pile != salvage).then_some(pile)),
                 salvage_despawn_tick: dropped.map(|(_, _, despawn)| despawn),
             }),
         });
@@ -2196,7 +2253,8 @@ impl GameEngine {
                 losses: fleets.into_iter().chain(hostiles).collect(),
                 owners: owners.into_iter().collect(),
                 mine: false,
-                salvage: pile.map(|(heap, _)| heap),
+                salvage: pile.map(|_| total),
+                salvage_pile: pile.and_then(|(heap, _)| (heap != total).then_some(heap)),
                 salvage_despawn_tick: pile.map(|(_, tick)| tick),
             }),
         });
@@ -2704,15 +2762,7 @@ impl GameEngine {
                     let ov = self.sector_overrides.get_mut(&key).unwrap();
                     ov.salvage = remaining;
                     if remaining.is_none() { ov.salvage_despawn_tick = None; }
-                    self.pending_events.push(GameEvent {
-                        tick,
-                        kind: EventKind::SalvageCollected(iac_shared::protocol::SalvageCollectedEvent {
-                            fleet_id,
-                            sector: home,
-                            resources: taken,
-                            remaining,
-                        }),
-                    });
+                    self.push_stockpile(fleet_id, StockpileCause::Wreckage, taken);
                     left = rest;
                 }
             }
@@ -2968,6 +3018,18 @@ impl GameEngine {
         player.resources = player.resources.add(room);
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
         fleet.cargo = fleet.cargo.sub(room);
+        self.push_stockpile(fleet_id, StockpileCause::Unloaded, room);
+    }
+
+    /// Tell `fleet_id`'s owner that `amount` went into or out of the
+    /// stockpile for `cause`. Less than `LOAD_SLACK` is not told.
+    fn push_stockpile(&mut self, fleet_id: u64, cause: StockpileCause, amount: Resources) {
+        if amount.total() <= LOAD_SLACK { return; }
+        let Some(player_id) = self.fleets.get(&fleet_id).map(|f| f.owner_id) else { return; };
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::Stockpile(StockpileEvent { player_id, fleet_id, cause, amount }),
+        });
     }
 
     /// A fleet that has lost ships keeps what the holds it has left carry.
@@ -3011,6 +3073,11 @@ impl GameEngine {
             }
             (None, None) => None,
         };
+        if let Some((_, stored)) = docked
+            && self.players.get(&owner).is_some_and(|p| p.homeworld == sector)
+        {
+            self.push_stockpile(fleet_id, StockpileCause::Unloaded, stored);
+        }
         let message = match docked {
             Some((dock, stored)) => {
                 let lost = shed.sub(stored);
@@ -5410,6 +5477,11 @@ impl GameEngine {
         *fleet.cargo.get_mut(resource) += loaded;
         fleet.laden = dock == Dock::Home;
         let (aboard, sector) = (fleet.cargo.total(), fleet.location);
+        if dock == Dock::Home {
+            let mut amount = Resources::default();
+            *amount.get_mut(resource) = loaded;
+            self.push_stockpile(fleet_id, StockpileCause::Loaded, amount);
+        }
         let label = resource.label();
         self.push_alert(AlertLevel::Info, fleet_id, sector, match dock {
             Dock::Home => format!(
@@ -6542,7 +6614,15 @@ impl GameEngine {
         Ok(())
     }
 
+    /// Report what a doctrine did. Anything it does but hold or ping the
+    /// sectors around it from where it stands ends the hold it was in, so
+    /// the next hold is news.
     fn push_policy_event(&mut self, fleet_id: u64, preset: PolicyPreset, action: &str, reason: &str) {
+        if !matches!(action, "hold" | "scan")
+            && let Some(p) = self.policies.get_mut(&fleet_id)
+        {
+            p.last_hold = None;
+        }
         self.pending_events.push(GameEvent {
             tick: self.current_tick,
             kind: EventKind::PolicyAction(iac_shared::protocol::PolicyActionEvent {
@@ -6752,10 +6832,17 @@ impl GameEngine {
     /// "within N hops of home", noting when the tank rather than max_range
     /// is the limit.
     fn range_phrase(effective: u8, params: &PolicyParams) -> String {
+        format!("within {}", Self::reach_phrase(effective, params))
+    }
+
+    /// "N hops of home", noting when the tank rather than max_range is the
+    /// limit.
+    fn reach_phrase(effective: u8, params: &PolicyParams) -> String {
+        let hops = |n: u8| format!("{n} hop{} of home", if n == 1 { "" } else { "s" });
         if effective < params.max_range {
-            format!("within {effective} hops of home (the fuel tank limits range; max_range is {})", params.max_range)
+            format!("{} (the fuel tank limits range; max_range is {})", hops(effective), params.max_range)
         } else {
-            format!("within {} hops of home", params.max_range)
+            hops(params.max_range)
         }
     }
 
@@ -6816,15 +6903,14 @@ impl GameEngine {
         true
     }
 
-    /// Whether a hold for `reason` is news: the same reason is announced at
-    /// most once a minute.
+    /// Whether a hold for `reason` is news: a hold is announced when it
+    /// begins and again when its reason changes, not while it goes on.
     fn hold_is_news(&mut self, fleet_id: u64, reason: &str) -> bool {
-        let tick = self.current_tick;
         match self.policies.get_mut(&fleet_id) {
             Some(p) => {
                 let key = hold_key(reason);
-                let repeat = matches!(&p.last_hold, Some((k, t)) if *k == key && tick < t + 60);
-                if !repeat { p.last_hold = Some((key, tick)); }
+                let repeat = p.last_hold.as_ref() == Some(&key);
+                p.last_hold = Some(key);
                 !repeat
             }
             None => true,
@@ -6902,6 +6988,7 @@ impl GameEngine {
     fn policy_reach<'a>(&'a self, fleet: &'a Fleet, params: &PolicyParams, home: Hex) -> Reach<'a> {
         let range = self.policy_effective_range(fleet, params);
         let hold = fleet_cargo_capacity(fleet, &self.world.pace);
+        let hop = self.hop_fuel_cost(fleet);
         Reach {
             engine: self,
             fleet,
@@ -6911,8 +6998,10 @@ impl GameEngine {
             home,
             need: f32::from(params.engage_ratio_x10) / 10.0,
             range,
+            hop,
+            reserve: fleet.fuel_max * f64::from(params.min_fuel_pct) / 100.0,
             jump_weight: scaling::resource_weight(&Resources {
-                deuterium: self.hop_fuel_cost(fleet) * FUEL_DEUT_PER_UNIT,
+                deuterium: hop * FUEL_DEUT_PER_UNIT,
                 ..Resources::default()
             }),
             hold,
@@ -6946,12 +7035,21 @@ impl GameEngine {
 
         let way = self.policy_reach(&fleet, &params, home).way_home(from);
         match way {
-            Ok((step, None)) => self.policy_move(fleet_id, step, true, preset, reason),
-            Ok((step, Some(worst))) => {
-                let why = format!(
-                    "{reason}; no lane home meets the doctrine's {:.1}x, taking the mildest ({} at worst)",
-                    f32::from(params.engage_ratio_x10) / 10.0, worst.label(),
+            Ok(WayHome { step, hops, worst }) => {
+                let need = f64::from(hops) * self.hop_fuel_cost(&fleet);
+                let mut why = format!(
+                    "{reason}; home is {hops} jump{} away by {step} ({need:.0} fuel, the fleet carries {:.0})",
+                    if hops == 1 { "" } else { "s" }, fleet.fuel,
                 );
+                if need > fleet.fuel {
+                    why.push_str("; that is more than it carries, so it flies as near home as its fuel takes it");
+                }
+                if let Some(worst) = worst {
+                    why.push_str(&format!(
+                        "; no lane home meets the doctrine's {:.1}x, taking the mildest ({} at worst)",
+                        f32::from(params.engage_ratio_x10) / 10.0, worst.label(),
+                    ));
+                }
                 self.policy_move(fleet_id, step, true, preset, &why)
             }
             Err(blocker) => {
@@ -6993,7 +7091,6 @@ impl GameEngine {
 
         match self.handle_move(owner, fleet_id, step) {
             Ok(()) => {
-                if let Some(p) = self.policies.get_mut(&fleet_id) { p.last_hold = None; }
                 self.push_policy_event(fleet_id, preset, "move", reason);
                 true
             }
@@ -7021,6 +7118,16 @@ impl GameEngine {
         } else {
             self.policy_head_home(fleet_id, preset, &format!("returning: {why}"))
         }
+    }
+
+    /// `policy_stand_down`, but a fleet away from home that nothing holds
+    /// but the fuel aboard refines its hold first when its orders say so,
+    /// and is weighed again.
+    fn policy_stand_down_or_refine(&mut self, fleet_id: u64, preset: PolicyPreset, at_home: bool, fuel_bound: bool, why: &str) -> bool {
+        if fuel_bound && !at_home && self.policy_refine(fleet_id, preset, why) {
+            return true;
+        }
+        self.policy_stand_down(fleet_id, preset, at_home, why)
     }
 
     /// Raw ore units the tiles of `coord` hold right now.
@@ -7084,44 +7191,70 @@ impl GameEngine {
             let reach = self.policy_reach(&fleet, &params, home);
             let aboard = self.charts_aboard(owner);
             let uncharted = |n: Hex| n != home && self.chart_mark(owner, n.to_key(), &aboard).is_none();
-            match reach.path_to(location, &uncharted) {
+            match reach.path_worth(location, &|n, hops| uncharted(n) && reach.affords(n, hops)) {
                 Some(path) => Ok(path[0]),
-                None => Err(format!(
-                    "{}; raise max_range or pick another doctrine",
-                    self.prospect_blocker(&reach, location, &params, &uncharted),
-                )),
+                None => Err(self.prospect_blocker(&reach, location, &params, &uncharted)),
             }
         };
         Ok(match plan {
             Ok(step) => self.policy_move(fleet_id, step, false, preset, "pushing frontier"),
-            Err(why) => self.policy_stand_down(fleet_id, preset, location == home, &why),
+            Err((why, fuel_bound)) => self.policy_stand_down_or_refine(fleet_id, preset, location == home, fuel_bound, &why),
         })
     }
 
-    /// Which constraint stops prospect: the nearest uncharted sector is
-    /// either behind a hazard, beyond the range limit, or there is none.
+    /// Which limit stops prospect, named as the one that holds it: the
+    /// nearest uncharted sector inside the range lies behind odds below the
+    /// engage ratio, or beyond the fuel there and back; or it lies outside
+    /// the range; or there is none.
     fn prospect_blocker(
         &self,
         reach: &Reach,
         from: Hex,
         params: &PolicyParams,
         uncharted: &dyn Fn(Hex) -> bool,
-    ) -> String {
+    ) -> (String, bool) {
         let home = reach.home;
-        let within = Self::range_phrase(reach.range, params);
 
         if let Some(path) = self.bfs_path(from, POLICY_SEARCH_HOPS, &|n| reach.in_range(n), uncharted) {
             let near = *path.last().unwrap();
             if let Some(why) = path.iter().find_map(|&n| reach.refusal(n)) {
-                return format!("no safe way to the nearest uncharted sector {near} {within}: {why}");
+                return (
+                    format!(
+                        "no way to the nearest uncharted sector {near} that the engage ratio allows: {why}; \
+                         lower engage_ratio_x10, send a stronger fleet or pick another doctrine",
+                    ),
+                    false,
+                );
+            }
+            let hops = path.len() as u32;
+            if !reach.affords(near, hops) {
+                return (
+                    format!(
+                        "the nearest uncharted sector is out of reach on this fuel: {}; dock to refuel, \
+                         lower min_fuel_pct or pick another doctrine",
+                        reach.beyond_the_tank(near, hops),
+                    ),
+                    true,
+                );
             }
         }
         if let Some(path) = self.bfs_path(from, POLICY_SEARCH_HOPS, &|_| true, uncharted) {
             let near = *path.last().unwrap();
             let d = Hex::distance(&near, &home);
-            return format!("the nearest uncharted sector {near} is {d} hexes from home, outside {within}");
+            return (
+                format!(
+                    "the nearest uncharted sector {near} is {d} hexes from home, and the doctrine goes no farther than {}; \
+                     raise max_range or pick another doctrine",
+                    Self::reach_phrase(reach.range, params),
+                ),
+                false,
+            );
         }
-        format!("every lane within {POLICY_SEARCH_HOPS} hops of {from} is charted {within}")
+        let charted = format!(
+            "every lane within {POLICY_SEARCH_HOPS} hops of {from} is charted {}; pick another doctrine",
+            Self::range_phrase(reach.range, params),
+        );
+        (charted, false)
     }
 
     /// MineAndReturn: work a claim until the hold is full, bring it home,
@@ -7173,7 +7306,7 @@ impl GameEngine {
         let plan = {
             let reach = self.policy_reach(&fleet, &params, home);
             let ore = |n: Hex, hops: u32| n != home && reach.seam(n).is_some_and(|worth| reach.repays(worth, hops));
-            let seam = |n: Hex, hops: u32| ore(n, hops) && !reach.starts_fight(n);
+            let seam = |n: Hex, hops: u32| ore(n, hops) && !reach.starts_fight(n) && reach.affords(n, hops);
             let kept = staked
                 .filter(|&claim| !ran_dry && claim != location)
                 .and_then(|claim| reach.path_worth(location, &|n, hops| n == claim && seam(n, hops)));
@@ -7182,12 +7315,19 @@ impl GameEngine {
                 None => {
                     let within = Self::range_phrase(reach.range, &params);
                     Err(match self.bfs_path_by_hops(home, POLICY_SEARCH_HOPS, &|n| reach.in_range(n), &ore) {
-                        None => format!("no seam {within} repays the fuel to fetch it (stripped tiles refill over hours)"),
+                        None => (format!("no seam {within} repays the fuel to fetch it (stripped tiles refill over hours)"), false),
                         Some(path) => {
                             let near = *path.last().unwrap();
                             match path.iter().find_map(|&n| reach.refusal(n)) {
-                                Some(why) => format!("no way it may take to the ore at {near} {within}: {why}"),
-                                None => format!("the ore at {near} {within} {NO_FIGHT_FOR_IT}"),
+                                Some(why) => (format!("no way to the ore at {near} that the engage ratio allows: {why}"), false),
+                                None if reach.starts_fight(near) => (format!("the ore at {near} {within} {NO_FIGHT_FOR_IT}"), false),
+                                None => (
+                                    format!(
+                                        "the nearest ore is out of reach on this fuel: {}",
+                                        reach.beyond_the_tank(near, self.lane_hops(location, near)),
+                                    ),
+                                    true,
+                                ),
                             }
                         }
                     })
@@ -7206,7 +7346,7 @@ impl GameEngine {
                 let reason = if ran_dry { "claim dry, moving to new seam" } else { "heading to claim" };
                 self.policy_move(fleet_id, path[0], false, preset, reason)
             }
-            Err(why) => self.policy_stand_down(fleet_id, preset, at_home, &why),
+            Err((why, fuel_bound)) => self.policy_stand_down_or_refine(fleet_id, preset, at_home, fuel_bound, &why),
         })
     }
 
@@ -7251,24 +7391,34 @@ impl GameEngine {
             };
             let payday = |n: Hex, hops: u32| {
                 n != home && n != location && !reach.starts_fight(n)
-                    && (wreck(n, hops) || reach.boards(n))
+                    && (wreck(n, hops) || reach.boards(n)) && reach.affords(n, hops)
             };
             match reach.path_worth(location, &payday) {
                 Some(path) => Ok(path[0]),
                 None => {
                     let within = Self::range_phrase(reach.range, &params);
                     Err(match self.bfs_path_by_hops(home, POLICY_SEARCH_HOPS, &|n| reach.in_range(n), &contact) {
-                        None => format!("board is clear {within}: no derelict, no wreckage that repays the fuel"),
+                        None => (format!("board is clear {within}: no derelict, no wreckage that repays the fuel"), false),
                         Some(path) => {
                             let near = *path.last().unwrap();
                             match path.iter().find_map(|&n| reach.refusal(n)) {
-                                Some(why) => format!("no way it may take to the contact at {near} {within}: {why}"),
+                                Some(why) => (format!("no way to the contact at {near} that the engage ratio allows: {why}"), false),
                                 None if reach.starts_fight(near) => {
-                                    format!("the contact at {near} {within} {NO_FIGHT_FOR_IT}")
+                                    (format!("the contact at {near} {within} {NO_FIGHT_FOR_IT}"), false)
                                 }
-                                None => format!(
-                                    "the derelict at {near} {within} is too hot to board: its guard outrates the doctrine's {:.1}x",
-                                    reach.need,
+                                None if !reach.affords(near, self.lane_hops(location, near)) => (
+                                    format!(
+                                        "the nearest contact is out of reach on this fuel: {}",
+                                        reach.beyond_the_tank(near, self.lane_hops(location, near)),
+                                    ),
+                                    true,
+                                ),
+                                None => (
+                                    format!(
+                                        "the derelict at {near} {within} is too hot to board: its guard outrates the doctrine's {:.1}x",
+                                        reach.need,
+                                    ),
+                                    false,
                                 ),
                             }
                         }
@@ -7278,7 +7428,7 @@ impl GameEngine {
         };
         Ok(match plan {
             Ok(step) => self.policy_move(fleet_id, step, false, preset, "contact on the board"),
-            Err(why) => self.policy_stand_down(fleet_id, preset, at_home, &why),
+            Err((why, fuel_bound)) => self.policy_stand_down_or_refine(fleet_id, preset, at_home, fuel_bound, &why),
         })
     }
 

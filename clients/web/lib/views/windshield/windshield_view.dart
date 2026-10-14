@@ -258,7 +258,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         _showBanner('BOARDING COMPLETE', k.recoveredShip != null ? 'Recovered a ${k.recoveredShip!.label} hull.' : 'Hulk stripped.', false);
       case proto.SiteAmbushEvent():
         _showBanner('AMBUSH', 'Whatever killed the crew is still aboard.', true);
-      case proto.SalvageCollectedEvent():
+      case proto.SalvageCollectedEvent() || proto.StockpileEvent(cause: proto.StockpileCause.wreckage):
         sim.salvage?.fly = sim.now;
         con.play('ok');
       case proto.ExchangedEvent(:final terms):

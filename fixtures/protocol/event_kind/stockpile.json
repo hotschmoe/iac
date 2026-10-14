@@ -1,0 +1,12 @@
+{
+  "amount": {
+    "crystal": 0.0,
+    "deuterium": 120.0,
+    "metal": 4312.5
+  },
+  "cause": "unloaded",
+  "fleet_id": 1,
+  "kind": "Stockpile",
+  "player_id": 7,
+  "tick": 1234
+}

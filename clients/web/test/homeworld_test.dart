@@ -532,6 +532,8 @@ void main() {
     expect(c.state.events.map((e) => e.message),
         contains(startsWith('fleet 102 loaded ${half.round()} metal from the stockpile: it carries ${half.round()} of ${room.round()}')));
     expect((c.state.holds[102]!.metal, c.state.stock.metal), (half, metal - half));
+    expect(c.state.events.map((e) => e.message), contains('F102 loaded from the stockpile: ${groupDigits(half.round())} Fe'),
+        reason: 'what leaves the stockpile is told by the Stockpile event');
     expect(c.state.fleets.firstWhere((f) => f.id == 102).laden, isTrue);
     expect(tester.widget<Text>(find.byKey(const Key('hold-aboard'))).data, '${whole(half)} / ${whole(room)}');
     expect(cargo(tester), 'Fe ${whole(half)}   Cr 0   De 0   KEPT ABOARD UNTIL THE FLEET HAS BEEN AWAY');
@@ -550,6 +552,9 @@ void main() {
 
     await press(tester, 'hold-unload');
     expect(c.state.events.map((e) => e.message), contains('fleet 102 unloaded ${half.ceil()} metal and ${half.ceil()} crystal into the stockpile'));
+    final back = 'F102 unloaded into the stockpile: ${groupDigits(half.round())} Fe, ${groupDigits(half.round())} Cr';
+    expect(c.state.events.map((e) => e.message), contains(back), reason: 'what enters the stockpile is told by the Stockpile event');
+    expect(c.state.alerts.map((a) => a.message), contains(back), reason: 'and raised as an alert in the same words');
     expect(c.state.holds[102]!.total, 0);
     expect(c.state.stock.metal, closeTo(metal, 10), reason: 'what was loaded is back, and a tick or two of the mines');
     expect(find.text('LADEN'), findsNothing);

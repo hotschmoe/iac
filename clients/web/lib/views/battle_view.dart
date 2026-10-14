@@ -18,7 +18,6 @@ import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
 import '../scenes/battle/field.dart';
 import '../scenes/battle/field_painter.dart';
-import '../state/state_mapper.dart' show amountsOf;
 
 /// How a damaged ship and one at risk of exploding are coloured, wherever
 /// a fleet is listed.
@@ -495,8 +494,8 @@ class BattlePanel extends StatelessWidget {
           if (raidTaken(how) case final taken?) line(taken, 'battle-taken', color: atRiskColor),
           if (raidBreach(how) case final breach?) line(breach, 'battle-breach', color: atRiskColor),
         ],
-        if (e.salvage case final pile?)
-          Padding(padding: const EdgeInsets.only(top: 5), child: Text('WRECKAGE LEFT: ${amountsOf(pile).toUpperCase()}', key: const Key('battle-wreckage'), style: _small.copyWith(color: C.gold))),
+        if (wreckageLeft(e) case final left?)
+          Padding(padding: const EdgeInsets.only(top: 5), child: Text(left.toUpperCase(), key: const Key('battle-wreckage'), style: _small.copyWith(color: C.gold))),
       ];
   }
 
@@ -1060,9 +1059,10 @@ class BattleViewState extends State<BattleView> {
       for (final line in [?raidRebuilt(how), ?raidTaken(how), ?raidWreckage(how, tick: tick), ?raidBreach(how)]) {
         rows.add((_) => Padding(padding: const EdgeInsets.only(top: 4), child: Text('${line.toUpperCase()}.', style: _small.copyWith(color: C.text2))));
       }
-    } else if (ended?.salvage case final pile?) {
-      rows.add((_) => Padding(
-          padding: const EdgeInsets.only(top: 4), child: Text('WRECKAGE LEFT: ${amountsOf(pile).toUpperCase()}', style: _small.copyWith(color: C.gold))));
+    } else if (ended != null) {
+      if (wreckageLeft(ended) case final left?) {
+        rows.add((_) => Padding(padding: const EdgeInsets.only(top: 4), child: Text(left.toUpperCase(), style: _small.copyWith(color: C.gold))));
+      }
     }
     if (!wide) {
       gap(10);

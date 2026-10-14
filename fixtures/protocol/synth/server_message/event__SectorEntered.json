@@ -1,4 +1,4 @@
 [
-{"canonical":{"first_visit":true,"fleet_id":30,"kind":"SectorEntered","sector":{"q":31,"r":-32},"tick":59,"type":"event"},"input":{"first_visit":true,"fleet_id":30,"kind":"SectorEntered","sector":{"q":31,"r":-32},"tick":59,"type":"event"}},
-{"canonical":{"first_visit":false,"fleet_id":30,"kind":"SectorEntered","sector":{"q":31,"r":-32},"tick":59,"type":"event"},"input":{"first_visit":false,"fleet_id":30,"kind":"SectorEntered","sector":{"q":31,"r":-32},"tick":59,"type":"event"}}
+{"canonical":{"first_visit":true,"fleet_id":38,"kind":"SectorEntered","sector":{"q":39,"r":-40},"tick":67,"type":"event"},"input":{"first_visit":true,"fleet_id":38,"kind":"SectorEntered","sector":{"q":39,"r":-40},"tick":67,"type":"event"}},
+{"canonical":{"first_visit":false,"fleet_id":38,"kind":"SectorEntered","sector":{"q":39,"r":-40},"tick":67,"type":"event"},"input":{"first_visit":false,"fleet_id":38,"kind":"SectorEntered","sector":{"q":39,"r":-40},"tick":67,"type":"event"}}
 ]

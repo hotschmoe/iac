@@ -9613,3 +9613,217 @@ work that follows takes up.
 
 **Not verified.** Nobody played the new patrol. The bot figures are one seed a
 pace and three more at blitz.
+
+## 2026-10-14: the playtest's eight problems fixed, and the play tool's requests
+
+The playtest of the same day (`docs/playtests/2026-10-14/`) listed eight
+problems, each as a player gave it. Each was checked against the stopped
+session's logs (`tools/playtest/run/logs/*.ndjson`) and the code before it
+was changed. No balance number moved. `ECONOMY_VERSION` is 14 (the doctrines
+the bots fly choose other goals), `SAVE_FORMAT` 13 (a policy keeps its hold
+reason without a tick). What the builder chose is in
+`docs/design/decisions.md` under the same date.
+
+**1. `policy_update` refused as an unknown variant.** Haiku-2's line was
+`{"action":"policy_update",...}`; the headless client read it as an order
+and serde named every order but the one meant. The play tool now takes that
+form and sends `{"type":"policy_update",...}` (`normalize`). The headless
+client, given a line with an `action` it cannot read, tries the same object
+as a message of its own: when that reads, it says to send it with `"type"`
+in place of `"action"`; otherwise it appends the form of standing orders to
+serde's list. `server/tests/scenarios.rs` sends both through the real binary.
+
+**2. One kill's wreckage printed three ways.** Not three figures for one
+pile: at 2,-1 two earlier kills (ticks 3186 and 3219) had not been collected,
+so the pile was 95.5 + 94.2 + 89.3 metal = 279.0. `FleetDestroyed.salvage`
+(89.3) was the kill, `CombatEnded.salvage` (279) the pile, and the two
+scoops (279/152/45 and 31 deuterium) emptied the pile. Its doc comment said
+the kill's figure was "exactly what `collect_salvage` can take", which is
+true only on clear ground. Now `CombatEnded.salvage` is the sum of the
+fight's kills, as `FleetDestroyed` says them, and the new
+`CombatEnded.salvage_pile` is the whole pile when wreckage from before lay
+under it. A raid's `CombatEnded` follows the same rule (it had the stacked
+pile while `RaidResolved.salvage_dropped` had the drop). The play tool words
+`FleetDestroyed` and `SalvageCollected` (they were raw JSON) and prints the
+pile beside the fight's wreckage; the web client's log line and battle view
+do the same through `wreckageLeft`.
+
+**3. A `load` refusal worded about a Light Fighter, an `exchange` from an
+empty hold printed `ok`.** The engine's sentences were right; the tool gave
+them to the wrong orders. Its `match_errors` matched an error to the first
+order whose fleet or any string field its text mentioned: at tick 1192 a
+batch of `exchange_quote` and `exchange` for fleet 84 got one error, "fleet
+84 holds 0.0 metal", which went to the quote, so the trade printed `ok`; a
+Light Fighter's refusal names metal, so a `load` of metal took it. Fixed in
+the tool, not the protocol: every order is followed by a fence, `odds` for a
+fleet in no sector (fleet 0 when there is none, refused), and since the
+server answers one player's messages in order, what comes back between an
+order and its fence's answer is that order's. `match_errors` is gone.
+
+**4. Stock that jumped with no word.** In Haiku-1's log the jumps at ticks
+1038, 1383, 1519, 1769, 1882, 2109 to 2875 carried no event at all: a fleet
+home from the hub, its hold full of what the exchange gave, unloaded into
+the stockpile by itself (`unload_cargo`), silently. At 2778 and 3434 the
+jump was a repelled raid's wreckage scooped at home, told as a
+`SalvageCollected` that read as a fleet filling its hold. Now a `Stockpile`
+event (`player_id`, `fleet_id`, `cause`: `unloaded`, `loaded`, `wreckage`,
+`amount`) says every change of the stockpile outside production and paying:
+a hold emptied at the home dock (docked, `unload`, or the cargo of ships lost
+there), `load`, and wreckage scooped on the homeworld, which is no longer a
+`SalvageCollected`. Refuelling at the dock is not one (a choice, in the
+decisions). The web client prints it in the log and raises an alert for
+what came in, in the words of `StockpileCause::phrase` (a column of the
+generated Dart); the demo world emits it for `load` and `unload`.
+
+**5. "Returning" walked past home.** It did not: fleet 1017 reached home at
+tick 3473, by 4,1, 5,0, 5,-1 and 5,-2, the shortest way from 5,1, where the
+lane to 5,0 is missing. What it did was loop. Its target, 5,2, lies five
+hexes from home, inside the range the tank allows by hexes, but six jumps
+over the lanes; the fleet set out, its fourth jump failed the per-jump fuel
+check ("a jump to [5,2] would leave 240 fuel against 252"), it turned home,
+and at each step home the doctrine planned outward again and refused again,
+naming a different jump, and from home with a full tank it went out again:
+at least six times from tick 3455 to 3547. Now a doctrine's goal must be
+one it can fly to and home from on the fuel aboard, its reserve kept
+(`Reach::affords`, in `prospect`, `mine_and_return` and
+`salvage_and_sites`); when the fuel is all that holds it the reason says
+"out of reach on this fuel" with the jumps out, back and the fuel, and a
+fleet whose orders `refine` refines first. The way home
+(`Reach::way_home`) takes a lane only if the fuel aboard flies it, a calm
+one first, and the shortest when none does; every move home says how many
+jumps, by which sector, and the fuel against what it carries, and when that
+is more than it carries, says so.
+
+**6. A hold reason that blamed the tank and repeated.** Fleet 80's hold
+said "(the fuel tank limits range; max_range is 6)" while the engage ratio
+held it, because `range_phrase` was spliced into every reason; and a hold
+was told again every 60 ticks. Now each reason names the limit that holds:
+"no way to the nearest uncharted sector [3,-7] that the engage ratio allows:
+[3,-7] holds hostiles that the fleet rates below the doctrine's engage
+ratio (...)", the fuel, or the range ("is 2 hexes from home, and the
+doctrine goes no farther than 1 hop of home", where "outside within 1
+hops" was). A hold is told when it begins and again when its reason less
+its figures changes; any act but a hold or a scan ends it.
+
+**7. "Repelled" with losses.** The figures were right and the words were
+not: a forecast `repelled` with `kept` 0.82 printed as REPELLED. The tool
+now says "REPELLED and you LOSE about 18% of what stands there", a resolved
+raid that lost units "REPELLED, the raiders destroyed, and you LOST some of
+what stood there", and the brief status line the same; `RaidLabel::Repelled`'s
+sentence, which the web client prints, ends "what of yours falls before
+that is lost".
+
+**8. Fired on while charging a jump home.** The rule is meant and the alert
+is told once per engagement (`engage_fleet`; Grok-1's log has one for each
+of its four catches). The command table of `RULES.md` and `README.md` said it; the game
+sections, where moving and fighting are described, now say it too
+("Caught while charging").
+
+**The play tool.** `state` and `status` carry the bonus room
+(`score.bonus`: `banked`, `cap`, `room`, `core_to_count`, read from the new
+`LeaderboardReply.bonus`, which the server works out for the asker, so
+`bonus_capped` is no longer computed in Python) and the leader with the gap
+(from the board's first row), in a `Standing:` line of `status`. Every
+`next` item that is not payable has `short` by resource and `covered_in_s`.
+`do` sends one order at a time behind its fence and stops at the first
+refusal, listing what it did not send; `--keep-going` sends all at once.
+A queue with a free slot that starts nothing has a `note`: a `reserve`
+holding it with the orders behind it that wait (`waiting_on: Order`), or
+every waiting order short (or waiting for a level), with the time to cover
+the first. `state --keys a,b` prints only those keys. `RULES.md` and
+`tools/playtest/README.md` say all of it, and the overview no longer says a
+queue holds three.
+
+**Standing orders' code touched**, for the merge with the other two
+branches of the day: `FleetPolicy::last_hold` (now `Option<String>`),
+`Reach` (fields `hop`, `reserve`; `refusal`'s wording; new `round_trip`,
+`affords`, `beyond_the_tank`; `way_home` rewritten to return a `WayHome`;
+`way_out`; `path_to` folded into `path_worth`), `push_policy_event`,
+`hold_is_news`, `policy_reach`, `policy_head_home`, `policy_move` (the
+`last_hold` reset moved into `push_policy_event`), `range_phrase` and the
+new `reach_phrase` (pluralizes "hop", which `policy_patrol_home`'s reason
+also prints), the new `policy_stand_down_or_refine`, `policy_prospect`,
+`prospect_blocker` (returns whether the fuel holds), `policy_mine_and_return`
+and `policy_salvage_and_sites` (a fuel test in their goals and a tuple for
+their reasons). `policy_patrol_home` and `sim/src/bot/` were not touched.
+
+**Tests.** Added, end to end: `fleet_logistics.rs`
+`a_prospector_whose_nearest_uncharted_sector_is_beyond_its_fuel_stays_home_and_says_so`
+(a home seat near lanes that wind, found by search; it fails on the old
+planner) and `a_fleet_turning_home_on_tight_fuel_takes_the_way_its_fuel_flies_and_says_so`
+(a way home round a fight longer than the tank; it fails on the old
+`way_home`); `scenarios_world.rs`
+`every_report_of_a_kills_wreckage_says_the_same_figures_and_names_the_pile_it_joins`;
+the stockpile event of a raid's wreckage in `scenarios_raids.rs`'s raid
+destroyed at home, and of a pile scooped at home in `scenarios_world.rs`;
+the headless client's two refusals in `server/tests/scenarios.rs`; the
+widget test of the hold panel (`homeworld_test.dart`) reads the `Stockpile`
+lines in the log and the alerts. Changed: the engage-ratio test now
+requires one hold naming the ratio and not the tank; the once-a-minute hold
+test became once; the refine test's first two fleets start with 70 fuel, so
+that nothing is in reach before they refine; tests that read the reason of a
+move home read its start. `common::lane_path_through` is new. The offline
+tests of the play tool replace the `match_errors` cases with the fences,
+and add the bonus and leader, `next` shortfalls, the queue notes, `--keys`,
+the wreckage lines, the stockpile line and the raid words.
+
+**Run.** `UPDATE_FIXTURES=1 cargo test -p iac-shared` (fixtures and
+`protocol.g.dart` regenerated); `cargo build --workspace --all-targets`;
+`cargo clippy --workspace --all-targets` silent; `cargo test --workspace
+--no-fail-fast`: 200 passed, 0 failed (the first run failed 8: the two
+format numbers in `smoke.rs` and `single_player.rs`, and six tests that read
+the old reasons or the stacked figure, all changed as above);
+`tools/check_sim_constants.py` agrees on 4,410 values; the play tool's 41
+offline tests pass; `flutter analyze` clean; `flutter test` under `timeout
+-k 20 300`, four runs: the first failed one test, the count of event kinds
+(29, now 30), mine and fixed; then 520 passed, then 9 failed in
+`shell_test.dart` and others on the machine's known fault (an opacity
+outside 0 to 1, a row overflowing by 99,732 pixels), then 520 passed.
+
+**Not verified.** No live session played any of it; the fences of `do` were
+not run against a server (the session's port and its process are not this
+branch's to start), only offline against logged messages, and the read
+commands against a copy of Grok-2's log. A batch of five orders now takes
+up to five ticks. The bundle and `solo_e2e.dart` were not built or run.
+
+## 2026-10-14: the playtest's eight problems and the play tool, merged
+
+Merged into master with `--no-ff` and pushed. The branch was built from the
+master before the patrol's change; both bumped `ECONOMY_VERSION` to 14 on
+their own, so the merged game, which is neither, is 15. `SAVE_FORMAT` is 13
+(the branch's: a doctrine's last hold is now its reason). No `CLAUDE.md`
+sentence became false.
+
+**What the merge settled by hand.** In `sim/src/engine.rs` two conflicts, each
+kept both sides: `Reach` holds the patrol's `hold` and the branch's `hop`, and
+beside the branch's new `way_home` (a route the fuel aboard flies) stands the
+patrol's `wreck_repays`. Two of the patrol's new scenarios
+(`fleet_logistics.rs`: a full hold taken home, and a pile that would not fit)
+expected "returning to unload the salvage: cargo 100%", and the branch now
+says the route and the fuel on every move home ("...; home is 1 jump away by
+[3,-3] (200 fuel, the fleet carries 1000000)"); both tests were right in what
+they check, and now read the reason's head and that it names the way home.
+The fixtures were rendered again.
+
+**A test that measured the machine.** `windshield_test.dart`'s cost case (slice
+5) asserted the scope's tick and paint under 8 ms a frame. With two agents
+running bot worlds beside it (load average 11.9 on twelve cores) it measured
+15.2 ms and failed; idle it measures 1.7 to 2.4 ms. The bound is 50 ms now,
+which catches a scene grown by an order of magnitude; the case's count of
+points on the scope is what keeps it from drawing a ship each, and that is
+unchanged.
+
+**Run on the merged tree.** `cargo build --workspace --all-targets`; `cargo test
+--workspace --no-fail-fast`: 203 passed and the two scenarios above failed,
+then `fleet_logistics.rs` alone 43 of 43 after them; `cargo clippy --workspace
+--all-targets` silent; `tools/check_sim_constants.py` agrees on 4,410 values;
+`python3 -m unittest discover -s tools/playtest/tests`: OK; `flutter analyze`
+clean; `flutter test` under `timeout -k 20 300`, five runs: 520 passed in the
+first and the fourth; the second failed one case of `overview_test.dart`, the
+third the cost case above, the fifth one case of `attention_test.dart`
+("Infinity or NaN toInt"), none twice, read as the machine's flake but for
+the third; `scripts/play.sh --single-player --no-serve`; `tool/solo_e2e.dart`,
+two runs, both `SOLO E2E OK` (359 and 388 s, before the two test edits).
+
+**Not verified.** The play tool's new `do` (a fence after each order, stopping
+at the first refusal) has not met a live server; it is run next.
