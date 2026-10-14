@@ -15,11 +15,20 @@ python3 -m unittest discover -s tools/playtest/tests    # tests for the CLI's pa
 - Grok agents run with `rm`, `git`, `kill`, `pkill`, `killall` and `cargo` denied.
 - `IAC_PORT` defaults to 7777; pick another when something else holds it.
 - `IAC_PACE` sets the world pace for the new world (a number or a preset:
-  persistent, fortnight, season, sprint, dev, blitz, test). One hour of play
-  wants `blitz` (x600: the endgame in about two and a half hours of play, the
-  first Cruiser in about 54 minutes); `test` (x8000) plays the arc in 11 minutes.
-  Unset means `persistent` (x1), where nothing finishes within an hour. The
-  pace is fixed for the life of the world.
+  persistent, fortnight, season, sprint, dev, blitz, test). An hour of agents
+  wants `IAC_PACE=1200`: the hands-on bots order their first Cruiser at 32 to
+  33 minutes there (three seeds, 2026-10-14), which leaves half the hour for
+  Cruisers, flight and the outer ring; at `blitz` (x600) the first Cruiser
+  comes at 54 to 60 minutes in two seeds of three and the hour ends on Light
+  and Heavy Fighters. A person reading the rules and playing the web client
+  wants a slower world: by the planning simulation `IAC_PACE=300` puts the second Shipyard level and the
+  first Light Fighter at about 24 minutes and the first Cruiser past the hour;
+  at `blitz` a mine finishes while a person reads its price, and the web
+  account of the 2026-10-14 playtest never left its start. A table of agents
+  and people is a choice between the two; no preset is either of them.
+  `test` (x8000) plays the arc in 11 minutes. Unset means `persistent` (x1),
+  where nothing finishes within an hour. The pace is fixed for the life of the
+  world.
 - Players are declared agents (`agent: true` at login), so the leaderboard
   marks them; `./play score` shows it.
 - Kinds: `grok`, `pi` (supervised CLI agents), `manual` (you drive it, e.g. Claude subagents told to
@@ -34,7 +43,7 @@ about 0.1 s.
 
 | command | what it does |
 |---------|--------------|
-| `state [--pretty]` | One compact JSON document: `stock`, `cap`, `per_s` (income), `levels`, `queues` (`build`/`research`/`ship`, each with `slots`, `depth`, `running`, `waiting` with `short` shortfall and `covered_in_s`, `room`, `open`), `idle`, `next` (cost, seconds, `ok`/`locked` per catalog entry), `fleets` (position, state, policy, fuel, range, power, cargo, exits, hostiles), `docked`, `defence`, `score` (rank, core, combat, explore, cap flag), `score_rule`, `minutes_left`, `alerts`, `world`. |
+| `state [--pretty]` | One compact JSON document: `stock`, `cap`, `per_s` (income), `levels`, `queues` (`build`/`research`/`ship`, each with `slots`, `depth`, `running`, `waiting` with `short` shortfall and `covered_in_s`, `room`, `open`), `idle`, `next` (cost, seconds, `ok`/`locked` per catalog entry), `fleets` (position, state, policy, fuel, range, power, cargo, exits, hostiles), `docked`, `defence`, `score` (rank, buildings, research, fleet, outpost, defence), `score_rule`, `minutes_left`, `alerts`, `world`. |
 | `status [--brief]` | Headline (score, rank, minutes left, idle queues, scoring rule), then stock and queues with waiting items shown under their queue with shortfall and income cover time, fleets and sectors. `--brief` is the headline plus one line per queue and fleet. |
 | `costs [section]` | Next 3 levels per upgrade (levels past the first are extrapolated along the cost curve and marked `~`), time, what each level unlocks, and for mines the extra output per second and payback. |
 | `do '<json>' ['<json>' ...]` | Commands in order (several arguments, one JSON array, or newline-separated). One result line each: `ok ... -> started, done in 3s`, `queued [i] waiting for ...`, or `ERR ...`; then new events and a `queues:` line. Returns at the first server tick after the last command (about 0.5 s on average) or at once if the client rejects it. Orders are 0.25 s apart (`--gap S`). `--fast` returns after 0.15 s without confirmation. The server's errors carry no command id, so they are matched to commands by the fleet or item they name. |

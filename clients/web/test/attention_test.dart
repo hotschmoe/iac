@@ -182,7 +182,7 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(outpost().last.title, 'Raid on your outpost');
     expect(outpost().last.body,
-        allOf(startsWith('A raid of 7x Cruiser (power 5,000) reaches your outpost at 10, 0 in 0:0'), endsWith('Forecast ${raidVerdict(c.state.outpost!.raid!.odds)}.')));
+        allOf(startsWith('A raid of 54x Light Fighter (power 5,000) reaches your outpost at 10, 0 in 0:0'), endsWith('Forecast ${raidVerdict(c.state.outpost!.raid!.odds)}.')));
     expect(c.state.outpost!.raid!.odds.label, proto.RaidLabel.lost, reason: 'with the fleet flown home the platform of level 1 stands alone');
 
     await tester.pump(const Duration(seconds: 4));
