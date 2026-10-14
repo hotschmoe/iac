@@ -10,7 +10,7 @@
 use std::fmt::Write as _;
 use std::time::Instant;
 
-use iac_shared::constants::{DEFAULT_WORLD_SEED, RAID_ROUNDS};
+use iac_shared::constants::{ShipClass, DEFAULT_WORLD_SEED, RAID_ROUNDS};
 use iac_shared::pace::Pace;
 use iac_shared::world::home_seats;
 use iac_sim::bot::{Attention, Bot, Personality, Style, DAY, DEFAULT_SESSIONS_PER_DAY, MAX_SESSIONS_PER_DAY};
@@ -410,6 +410,29 @@ fn raid_table(players: &[PlayerSummary]) -> String {
     out
 }
 
+/// Ships each player lost, by class, in the field and in raids, with the
+/// fuel its tanks took at the dock and from holds.
+fn loss_table(players: &[PlayerSummary]) -> String {
+    let classes: Vec<ShipClass> =
+        ShipClass::ALL.into_iter().filter(|c| players.iter().any(|p| p.field.lost_by_class.contains_key(c))).collect();
+    let mut out = String::new();
+    let _ = write!(out, "{:<22} {:>9} {:>9}", "lost", "refuel", "refined");
+    for class in &classes {
+        let name: String = class.label().chars().filter(|c| *c != ' ').take(9).collect();
+        let _ = write!(out, " {name:>9}");
+    }
+    let _ = writeln!(out);
+    for p in players {
+        let f = &p.field;
+        let _ = write!(out, "{:<22} {:>9.0} {:>9.0}", p.name, f.refuel_deuterium, f.refined_deuterium);
+        for class in &classes {
+            let _ = write!(out, " {:>9}", f.lost_by_class.get(class).copied().unwrap_or(0));
+        }
+        let _ = writeln!(out);
+    }
+    out
+}
+
 /// What each player's outpost scored, made and lost to raids; None when no
 /// player has had one, which is every world bots play alone.
 fn outpost_table(players: &[PlayerSummary]) -> Option<String> {
@@ -708,6 +731,9 @@ fn main() {
         println!("  cost: the ships, satellites and defences that did not come back, at the weight of what they cost");
         println!("  taken: what lost raids took from the stockpile. wreckage: what was scooped at home. Both in the points they buy\n");
         println!("{}", raid_table(&players));
+        println!("ships lost by class, in fights and raids; refuel: deuterium paid at the dock for fuel; refined: deuterium");
+        println!("  turned into fuel from holds\n");
+        println!("{}", loss_table(&players));
         if let Some(order) = args.outpost {
             println!(
                 "--outpost: at the start of day 3 every bot was given an outpost of level {}{} in ring {}, on the free",
