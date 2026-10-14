@@ -373,6 +373,18 @@ class MapPainter extends CustomPainter {
       } else {
         c.drawPath(hex, stroke);
       }
+      final gas = sec.terrain == proto.TerrainType.nebula ? sec.resources.deuterium.index : 0;
+      if (gas >= proto.Density.rich.index && s >= .5) {
+        final glow = C.deut.withValues(alpha: math.max(.3, f) * (.05 + .05 * gas));
+        c.drawCircle(p, rn * (.3 + .14 * gas), Paint()..color = glow);
+        c.drawCircle(
+            p,
+            rn * (.3 + .14 * gas),
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1
+              ..color = C.deut.withValues(alpha: math.max(.3, f) * .5));
+      }
       if (!lowQuality && (live || th.rating >= 5)) {
         c.drawPath(
             hex,

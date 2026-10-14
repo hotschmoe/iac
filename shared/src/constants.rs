@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// new world).
 pub const ECONOMY_VERSION: u32 = 16;
 /// Bumped when sector generation changes.
-pub const WORLDGEN_VERSION: u32 = 5;
+pub const WORLDGEN_VERSION: u32 = 6;
 
 /// Server tick rate.
 pub const TICK_RATE_HZ: u64 = 1;
@@ -719,6 +719,23 @@ pub const TEMPLATE_NPC_ID_BASE: u64 = 1 << 32;
 /// tech cache), and risks waking whatever killed the crew.
 pub const DERELICT_SPAWN_PCT: u8 = 8;
 pub const DERELICT_MIN_DIST: u16 = 4;
+/// Deuterium clouds: a seeded cluster of Nebula sectors. The map is cut in
+/// cells of `CLOUD_CELL` by `CLOUD_CELL` sectors; each cell holds a cloud with
+/// `CLOUD_PCT` percent, its centre anywhere in the cell. A cloud reaches
+/// `CLOUD_RADIUS_BASE + CLOUD_RADIUS_PER_RING * ring` hundredths of a hex
+/// (ring is the centre's, at most `CLOUD_RADIUS_MAX`, which stays below
+/// `CLOUD_CELL`), and a sector in it holds the deuterium of
+/// `CLOUD_DEUT_DENSITY` for its distance from the centre. No cloud touches
+/// a sector nearer the hub than `CLOUD_MIN_DIST` or a home seat's ground.
+/// Provisional.
+pub const CLOUD_CELL: i32 = 8;
+pub const CLOUD_PCT: u64 = 40;
+pub const CLOUD_RADIUS_BASE: u32 = 20;
+pub const CLOUD_RADIUS_PER_RING: u32 = 7;
+pub const CLOUD_RADIUS_MAX: u32 = 300;
+pub const CLOUD_MIN_DIST: u16 = 2;
+pub const CLOUD_DEUT_DENSITY: [Density; 4] =
+    [Density::Pristine, Density::Rich, Density::Moderate, Density::Sparse];
 /// Ticks a boarding takes, at every pace.
 pub const EXPLORE_DURATION_TICKS: u16 = 20;
 /// An Espionage Probe aboard reads the hulk before breaching (ambush chance

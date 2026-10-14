@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use xxhash_rust::xxh3::Xxh3;
 
-use crate::constants::{Density, ShipClass, TerrainType, Zone, HOMEWORLD_MAX_DIST, HOMEWORLD_MIN_DIST};
+use crate::constants::{
+    CLOUD_CELL, CLOUD_DEUT_DENSITY, CLOUD_MIN_DIST, CLOUD_PCT, CLOUD_RADIUS_BASE, CLOUD_RADIUS_MAX,
+    CLOUD_RADIUS_PER_RING, Density, ShipClass, TerrainType, Zone, HOMEWORLD_MAX_DIST, HOMEWORLD_MIN_DIST};
 use crate::scaling::{
     npc_composition, npc_passive_share, npc_presence_pct, ore_density_odds, ore_reserve_units, ship_power,
 };
@@ -84,6 +86,9 @@ type ReachKey = (u32, u8);
 /// The two sector keys and the hop limit of a cached `lane_hops`.
 type HopsKey = (u32, u32, u8);
 
+/// Keeps a cloud's cell hash apart from every other roll of the seed.
+const CLOUD_SALT: u64 = 0x636c_6f75_6400_0001;
+
 /// Entries kept per cache before it is emptied; far above any real play area.
 const CACHE_LIMIT: usize = 1 << 21;
 
@@ -138,8 +143,12 @@ impl WorldGen {
         let dist = coord.dist_from_origin();
         let zone = Zone::from_distance(dist);
 
-        let terrain = self.roll_terrain(&mut rng, zone);
-        let resources = self.roll_resources(&mut rng, zone, terrain, dist);
+        let cloud = self.cloud_depth(coord);
+        let terrain = if cloud.is_some() { TerrainType::Nebula } else { self.roll_terrain(&mut rng, zone) };
+        let mut resources = self.roll_resources(&mut rng, zone, terrain, dist);
+        if let Some(depth) = cloud {
+            resources.deut = CLOUD_DEUT_DENSITY[depth.min(CLOUD_DEUT_DENSITY.len() - 1)];
+        }
         let npc_template = self.roll_npc_presence(&mut rng, coord);
         let has_derelict = self.roll_derelict(&mut rng, terrain, coord);
 
@@ -427,6 +436,43 @@ impl WorldGen {
             return false;
         }
         rng.range(0..=99) < crate::constants::DERELICT_SPAWN_PCT
+    }
+
+    /// How many hexes `coord` stands from the centre of the deuterium cloud
+    /// that holds it, if one does. Decided from the sector's own cell and the
+    /// eight around it, so no neighbour state is read.
+    pub fn cloud_depth(&self, coord: Hex) -> Option<usize> {
+        if coord.dist_from_origin() < CLOUD_MIN_DIST || is_home_ground(coord) {
+            return None;
+        }
+        let (cell_q, cell_r) = (i32::from(coord.q).div_euclid(CLOUD_CELL), i32::from(coord.r).div_euclid(CLOUD_CELL));
+        let mut found: Option<usize> = None;
+        for cq in cell_q - 1..=cell_q + 1 {
+            for cr in cell_r - 1..=cell_r + 1 {
+                let Some(centre) = self.cloud_centre(cq, cr) else { continue };
+                let ring = u32::from(centre.dist_from_origin());
+                let radius = (CLOUD_RADIUS_BASE + CLOUD_RADIUS_PER_RING * ring).min(CLOUD_RADIUS_MAX);
+                let depth = u32::from(Hex::distance(&centre, &coord));
+                if depth * 100 <= radius {
+                    let depth = depth as usize;
+                    found = Some(found.map_or(depth, |best| best.min(depth)));
+                }
+            }
+        }
+        found
+    }
+
+    fn cloud_centre(&self, cell_q: i32, cell_r: i32) -> Option<Hex> {
+        let cell = (u64::from(cell_q as u32) << 32) | u64::from(cell_r as u32);
+        let h = self.hash_two(cell, self.world_seed ^ CLOUD_SALT);
+        if h % 100 >= CLOUD_PCT {
+            return None;
+        }
+        let cell_size = CLOUD_CELL as u64;
+        let q = cell_q * CLOUD_CELL + ((h >> 16) % cell_size) as i32;
+        let r = cell_r * CLOUD_CELL + ((h >> 32) % cell_size) as i32;
+        let centre = Hex { q: i16::try_from(q).ok()?, r: i16::try_from(r).ok()? };
+        (centre.dist_from_origin() >= CLOUD_MIN_DIST && !is_home_ground(centre)).then_some(centre)
     }
 
     /// The seed every roll about `coord` in this world starts from.
