@@ -9114,3 +9114,349 @@ were read in its report and not run again (cost of raids to the defenders
 each). No satellite fell in a browser: the end-to-end world's raid is one
 Light Fighter destroyed in a round, so a rebuilt satellite on a page is the
 widget tests'.
+
+## 2026-10-14: the windshield as a picture of class marks, and the battle view (slice 5 of the OGame work)
+
+Slice 5 of `docs/design/ogame.md`, section 12, the last, on a branch from
+master `f0d57d2` (`worktree-agent-ac6777e5f73c1377a`): the windshield's
+scope as a picture of both sides in class marks, a round, a flight, a
+pursuit and a raid drawn on it, and the battle view. It is the web client's,
+with one addition to what a round says. `SAVE_FORMAT` is 12 (it was 11) and
+`ECONOMY_VERSION` stays 12. Nothing is merged.
+
+**Read first.** The study's sections 7.1 to 7.6, 10.1 to 10.3 and row 5 of
+its table; the decisions of 2026-10-13 and 2026-10-14; and the earlier
+stages' pictures: the scope's sixteen marks with a fleet of 512 against
+3,230 as three marks against eight, the round panel with twelve classes a
+side filling the right-hand column and a phone's whole screen, the flee
+control, the fleeing fleet, the pursuit panel, and a raid standing at home
+told as text.
+
+**Changed in Rust.**
+
+- `BattleUnits.entered` and `BattleSide.entered`: the units of a kind, and
+  of a side, that stood in a round when it began (`combat::report`,
+  `battle_side`). The battle view prints a count before and after a round
+  and adds nothing. `Combat.last_round` is a round's report and is stored,
+  so `SAVE_FORMAT` is 12; `solo/tests/single_player.rs` and
+  `server/tests/smoke.rs` name the new number in their refusals. No world
+  plays differently.
+- The fixtures written by hand carry the two fields; the fixtures and
+  `clients/web/lib/protocol/protocol.g.dart` were rendered again
+  (`UPDATE_FIXTURES=1 cargo test -p iac-shared`). No file was removed.
+- No line was added to `shared/tests/wire/mod.rs`; `numbers.json` did not
+  change. README and `tools/playtest/RULES.md` name `entered` where they
+  list a round's fields.
+
+**Built.**
+
+- *The scene* (`lib/scenes/battle/field.dart`, `field_painter.dart`, new,
+  because the windshield and the battle view draw the same thing). `Sides`
+  is what stands in a sector as the state has it: at rest the fleet's rows
+  (`fleets[].ships`) and the hostile groups' (`known_sectors[].hostiles`);
+  in a fight the fight's last round, every fleet, group and battery of it
+  (`BattleRound.fleets.groups`, `.hostiles.groups`); before a raid's first
+  round the fleets at the dock, `homeworld.satellites` and `defences` or
+  `outpost.platform`, and `battles[].raid.ships`. `BattleField` holds a
+  `Mark` a kind of unit and a formation: its figures (`count`, `damaged`,
+  `at_risk`, `hull`, `hull_max`), its shape (`MarkShape`: a glyph each up
+  to four units, then one glyph and `2 x sqrt(count)` pips) and its place.
+  Each side's marks stand in rows on its half of the scope, formation by
+  formation, both sides at one size, the largest of ten that fits; a
+  formation is named when a side has more than one, and a battery always.
+- *A round* (`BattleField.play`): each side's volleys in the order of what
+  they did, the first eight as beams (width by shots, one to three pulses,
+  fading down the order), the rest as one faint stroke each. A beam with
+  no `hull_damage` stops at the mark's shield, which flares; `bounced`
+  over `shots` sets the sparks. The marks stand as they stood until the
+  fire has landed (0.62 s), then take the round's own figures; `lost` is
+  printed over each, and a class left with none breaks up. The centre line
+  has the round (`battles[].rounds`, of `raidRounds` for a raid) and how
+  the fight stands (`fleets[].flight.label` or `battles[].raid.odds.label`).
+- *The windshield* (`lib/scenes/windshield/sim.dart`, `painter.dart`): the
+  scope draws that field. A flight: the fleet's formation turns to the
+  lane of `fleeing.to`, draws off a fifth of the way, a course to the gate
+  and `JUMP IN n` with GUNS SILENT; the round's beams leave no mark of a
+  formation the round marks `fleeing`. A pursuit: the lane to
+  `pursued_by.from` marked from its gate inward, `PURSUIT n`
+  (`arrives_in`) and `CATCHES` or `TOO LATE` (`catches`); when the group
+  lands its marks come in from that gate. A raid: the battery as defence
+  marks in crystal blue beside the docked fleets', eight new glyphs
+  (`lib/design/symbols.dart`), the raiders above. Rocks under a mark, and
+  all rocks during a fight, are drawn faint. The pointer or a tap names a
+  mark in full; under it a mark carries the three letters the gate cards
+  print for a class (`shipAbbr`), and the defences got theirs beside them
+  (`unitAbbr`).
+- *A gate key during an arrival.* The scope draws a landing for about half
+  a second, and a gate pressed in that time was dropped without a word.
+  It is taken now: the order is sent and the scope starts the new jump
+  where it stands. One pressed while a jump charges is answered with a
+  toast and sends nothing. The dock's tiles act during an arrival as well,
+  all but Stop. The check's waits after a landing are as they were.
+- *The round beside the scope* (`BattlePanel`, `lib/views/battle_view.dart`):
+  a few lines where the tables were. What stands and what the round took
+  (`standing`, the other side's `destroyed`), what each side fired
+  (`shots`, `destroyed`), the heaviest volley, a fleet that is leaving,
+  the losses so far, and the end as before. A Battle view button.
+- *The battle view* (`BattleView`, same file, hosted by the shell through
+  `Console.openBattle`): a modal over any screen. The picture of the round
+  (`BattleScope`), and each side by class with `entered`, `lost`, `count`,
+  `damaged`, `at_risk` and `hull`; each side's fire as a sentence of
+  `shots`, `power`, `absorbed`, `hull_damage` and `destroyed`; every volley
+  as a row (`shots`, `bounced`, `wasted`, `absorbed`, `hull_damage`,
+  `destroyed`), the heaviest first; the losses so far or of the fight; a
+  raid's rounds left and label, its ending, what was rebuilt, taken and
+  left. It follows a fight under way; Back, Next and the arrow keys hold
+  it on a round, Follow lets it go on, Replay plays a round again; after
+  the fight it steps through the rounds held, and the fights held are
+  buttons at its top. It opens with `I` on the windshield, the panel's
+  button (windshield, Defence tab, outpost's screen), the fight's line on
+  a phone and Watch the fight on the Overview's raid card; with no fight
+  on show, `I` and a Fights button in the fleet status open it on the
+  newest fight held; a setting under `?`, off by default, opens it on the
+  first round of a fight of the player's.
+- *The rounds held* (`Battle.history`, `StateMapper.pastFights`): the
+  client keeps the rounds it receives, 120 a fight and the last 8 fights
+  that ended, for as long as the page lives. A full state in the middle of
+  a fight gives its `last_round`; the view says which rounds it lacks.
+- *Removed*: the scope's sixteen marks and their scale (`markScale`,
+  `marksFor`, `Unit`, `marksASide`, the EACH MARK line), the brackets and
+  the trails, the round panel's tables and its last round. No file was
+  deleted, so nothing went to `.archive/`.
+- *Phones*: twelve classes a side are strips with counts; the round's line
+  opens the battle view; a round takes down the toasts that ask nothing,
+  which stand over the hostile half; the battle view pins its picture over
+  its tables.
+
+**Decided**, with what undoes each, in `docs/design/decisions.md` under
+today's date. The two the owner is most likely to want to look at: the
+battle view is opened by a control and not by the fight, and the engine
+does not keep a fight's rounds.
+
+**Measured.**
+
+- *What rounds weigh*, to decide whether the engine should keep them: a
+  scratch program outside the repository played worlds of fifteen bots
+  with `host::step` and weighed every `BattleRound` as JSON. A season,
+  three days: 1,534 rounds, 1,296 bytes each on average (3,316 at the
+  most), two rounds a fight (five at the most), a stored document of
+  1,556,361 bytes; the last four fights of every empire would be 243,905
+  bytes more. A blitz day: 35,631 rounds, 1,552 bytes on average (5,926 at
+  the most), one fight of 185 rounds and 182,879 bytes, a document of
+  2,917,671 bytes and 201,194 for the fights. The written round of twelve
+  classes a side is 39,531 bytes. In the browser a round of six Light
+  Fighters against two was 996 to 1,004 bytes.
+- *What a frame costs*, in `windshield_test.dart`, a debug build under
+  `flutter_tester`, twelve classes a side at 4,992 and at 60,000 ships a
+  side with a round of 288 volleys every sixty frames: the scope's tick
+  and paint 1.1 to 1.9 ms a frame (8 to 18 ms at the worst); the frame
+  that takes a tick's state 37 to 44 ms at 1440 and 21 to 23 ms at 390
+  with the battle view shut, 52 to 60 ms and 31 to 33 ms with it open.
+  The same test written into a copy of master's client outside the
+  repository: 1.0 to 1.9 ms for its scope, 55 to 71 ms and 25 to 32 ms for
+  the frame that takes a tick, with its round panel.
+- *In the browser* (headless Chromium, software drawing, a shared
+  machine), the gaps between the page's animation frames, in the
+  end-to-end check, over the runs that reached it: with the scope at rest
+  for three seconds, 17.0 to 20.6 ms on average and 33 to 83 ms at the
+  worst; from the two Light Fighters' jump into a fight until their flee
+  control had been read, the scope drawing two ships against two and their
+  rounds, 18.7 to 23.8 ms on average, 83 to 100 ms at the worst, and 4 to
+  15 frames in 181 to 245 more than 34 ms apart. The check asks the page
+  for its text every 150 ms in that stretch and not in the first, so the
+  two are not like for like. No fleet larger than eight ships was seen in
+  a browser.
+
+**Tests.** No file was added. In `windshield_test.dart`: the test of a
+round was rewritten for the picture, the lines beside it and the battle
+view (a beam a volley in order, the marks holding until the fire lands,
+the round's own figures after it, each table of the view, Esc); the test
+of twelve classes a side now holds the scope to eight beams a side and a
+haze, a class wiped out leaving it, and the view listing every volley; the
+test of a fleet of hundreds became the test of a mark (two ships two
+glyphs, two hundred a block, five thousand a larger one and no more); the
+flight test holds the scope to the lane, the heading and the silent guns,
+and to the pursuit's lane and the pack coming in from it; the scripted
+fight follows the battle view round by round through the real mapper and
+steps back through it; the test of a jump still being played holds a gate
+key pressed during the arrival to being sent and one pressed while a jump
+charges to being answered. New cases: a raid at home on the scope with its
+battery, at 1440 and 390, and the measurement of a frame. `outpost_test.dart`
+holds the scope to the platform as a battery; `homeworld_test.dart` to the
+lines of a raid's round and the button. The scripted world sends `entered`.
+
+**The end-to-end check** reads the lines beside the scope during the six's
+fight, opens the battle view with `I` while it lasts where that is caught,
+and after the fight opens it from the report: the last round, the rounds
+held, each round's `entered` figures on the page, Back to the round before
+(where the fight had two), and that the page behind the view is not read
+out with it. The raid's rounds are read in the battle view the Defence tab
+opens. It prints what a round weighed and the frame gaps above. Each of
+these stands down with a line where a fight was over too soon.
+
+One correction to the check as master had it. Its flight step stood down,
+when the two destroyed their group before they could be ordered out,
+without flying the two home, and the fight step later waits for the dock
+to refit "the wing that is home": the first run that met that branch
+failed there (run 8 below; master's journal says the branch had not been
+run). The step now flies the two home when it stands down.
+
+**Looked at**, at 1440 and at 390. From the widget tests' written states
+(`IAC_SHOTS`): the scope at rest with a fleet of 2 Small Cargo, 200 Light
+Fighters with damage and 5,000 Battleships against 3,200 and 30; a small
+fight mid-beat; twelve classes a side mid-beat and with a class wiped out;
+a flight under fire; a pursuit; a raid at home arrived and under fire with
+its battery; a raid at an outpost (1440 only); the battle view during a
+fight, on a raid, on twelve classes and stepped through after a fight.
+From the browser against the engine: six Light Fighters against two with
+a beam in the air, the battle view opened during that fight and stepped
+back after it, at 390 on its last round, the two leaving a fight, and the
+battle view on the raid at home with a Solar Satellite and a Rocket
+Launcher as its battery. Changed for what was seen: the marks were small
+in a large scope and are scaled to it, and a handful is drawn at up to
+twice its size; a plate under each mark showed as a box and went, the
+rocks under a mark are faint instead; the two sides had a size each and
+have one; a fleeing fleet was drawn off the far side of the scope and the
+stars streaked while it charged; the caption of a fleet stood on the row
+under it; a pursuit's label stood on the fleet; what a round took stayed
+printed into the next; the battle view's scope drew no fire when opened;
+on a phone its picture scrolled away and the raid's toasts covered the
+raiders; the banner raised when a fight begins stood on the hostile half.
+
+**Run.**
+
+- `cargo build --workspace --all-targets`: no warning. `cargo test
+  --workspace --no-fail-fast -j 4` with the new fields and format: 196
+  passed, 0 failed, and again on the finished tree: 196 and 0. `cargo clippy
+  --workspace --all-targets`: silent. `tools/check_sim_constants.py`:
+  4,410 values agree. No test was added to Rust and none removed.
+- `flutter analyze`: no issues.
+- `flutter test` under `timeout -k 20 300`, eleven full runs. The first, with
+  the homeworld's raid test not yet moved: 514 passed, 1 failed, that test,
+  reading the old round panel. The second: 517 passed. The third was killed
+  by the timeout (exit 124) with three failures: "Rect argument contained a
+  NaN value" in the Overview's radar painter (`overview_scenes.dart`, which
+  this slice did not touch), "A RenderFlex overflowed by 990 pixels" in the
+  windshield's harvest test, and `homeworld_test.dart` not completing. None
+  of the three came again; it is read as the machine's flake
+  (`docs/design/flutter_test_flake.md`). The fourth and fifth: 517 passed.
+  The sixth: 516 passed, 1 failed, a new assertion of this slice's own that
+  looked for a toast by its title where the toast prints it in capitals;
+  the assertion was wrong and was put right. The seventh to the tenth are
+  on the finished client: 517 passed in the seventh and the eighth; in the
+  ninth 516 passed and 1 failed, the Overview's "idle research card queues
+  a ResearchCommand", on "A RenderFlex overflowed by 2004 pixels on the
+  right" in a row 254 px wide of a fleet's card, which this slice did not
+  touch; the tenth: 517 passed. That one is read as the flake too. An
+  eleventh, after a helper nothing called any more was taken out
+  (`fireFigures`): 517 passed.
+- `scripts/play.sh --single-player --no-serve`: built four times, the
+  third on the finished client and the fourth after `fireFigures` went.
+- `tool/solo_e2e.dart`, thirteen runs, each a new world. Run 1 on the first
+  bundle: passed, 301 s. Runs 2 to 5 on the second: passed, 340, 322, 299
+  and 322 s. Runs 6 to 9 on the finished client: 6 and 7 passed (340 and
+  341 s); 8 failed after 285 s, "timed out waiting for the dock to refit
+  the wing that is home", in the check's own stand-down branch (above),
+  the two having destroyed a patrol of two Light Fighters in the round it
+  attacked them; 9 passed (302 s). Runs 10 to 12 with that branch
+  corrected: passed, 319, 321 and 359 s; run 13 on the fourth bundle:
+  passed, 380 s. None of the four met the branch, so the correction has
+  not been run. The prey was two Light Fighters in twelve runs and one in
+  the thirteenth. The two's flight ended `fled` after two rounds in eleven
+  runs; in run 5 they destroyed the group in the round before their order
+  to leave was taken, and in run 8 before they could be ordered out. The
+  six's fight was two rounds in six runs and one in seven, and the raid at
+  home was one Light Fighter destroyed in one round in the twelve runs
+  that reached it. The battle view was opened during the six's fight in
+  the six runs whose fight had two rounds, and Back was stepped in those;
+  it was opened after the fight in all thirteen, and on the raid in the
+  twelve.
+
+**Not verified.**
+
+- No person played. Whether the picture is one a player wants to watch is
+  the judgement of the agent that drew it, from still pictures.
+- In a browser against the engine the largest fleet on the scope was
+  eight Light Fighters and the largest fight six against two. Hundreds and
+  thousands of ships, twelve classes, a block of pips losing ships over
+  several rounds, a class wiped out, the haze, a shield taking a volley,
+  a pursuit's lane and a pack landing from it, a raid with a battery under
+  fire on the windshield, an outpost's raid, the dense marks of a phone
+  and the battle view on any of them are widget tests on written states
+  and on a scripted world that plays without dice.
+- Motion was not watched. The check takes still pictures, and the widget
+  tests step a frame at a time: that the fire, the landing and the
+  break-up read well at speed is not something this session saw.
+- What a frame costs in the released page with a large fleet: the browser
+  figures above are for eight ships. The widget test's are a debug build.
+- The setting that opens the battle view by itself was not tried in a
+  browser, nor was a gate key pressed during an arrival there: both are
+  widget tests.
+- A reload in the middle of a fight, with the view saying which rounds it
+  lacks, is a widget test on a written state (a fight handed its second
+  round and no first); it was not done in a browser.
+- The stand-down branch of the check's flight step, as corrected.
+- `tools/playtest` was not run; `play.py` reads a round by key and the new
+  key is one it does not read.
+- Worlds of bots were not played again for balance: nothing a world plays
+  changed.
+
+**For the merge with master.** Master is moving past `f0d57d2` (Solar
+Satellites rebuilt after a raid, `ECONOMY_VERSION` 13); it was not merged
+here. This branch bumped `SAVE_FORMAT` to 12 for `entered`, which covers a
+change to the stored header's host part made there without a bump. The
+files both sides touch: `lib/views/battle_view.dart` (the forecast's
+sentence about what is rebuilt is where it was, in `RaidForecastReadout`,
+untouched here), `test/support/demo_world.dart` (two lines here, for
+`entered`), `tool/solo_e2e.dart` (the flight step: the frame watch before
+the jump in, and `standDown`), `README.md`, this journal and the
+decisions. No sentence written here says a fallen satellite is not
+rebuilt.
+
+**Unsure of** is in `docs/design/decisions.md` under today's date, with
+the decisions and what undoes each.
+
+## 2026-10-14: the windshield as a picture and the battle view, merged; the OGame work's five slices are on master
+
+Slice 5 of `docs/design/ogame.md`, merged into master with `--no-ff` and
+pushed. `SAVE_FORMAT` is 12 (the branch bumped it for `Combat.last_round`,
+which also settles the bump owed for the away `Tally`, above) and
+`ECONOMY_VERSION` 13. The branch was built from the master before the
+satellites' rebuild; at the merge only this journal and the decisions
+conflicted, and both entries are kept. `CLAUDE.md`: three of the four hunks
+of the branch's patch applied; the fourth, the Key Files line on the OGame
+study, was written by hand to say both that all five slices are built and
+that the rebuild takes Solar Satellites; and one sentence the branch's copy
+had missed ("Not built yet: slice 5", in the Catalogue bullet) was put
+right.
+
+**Read before the merge.** The branch's report, and its pictures: twelve
+classes a side under fire on the scope, the battle view of the same round, a
+raid at home with its battery, all from widget tests; and from this merge's
+own browser run a fight's ending at 1440, the fleet as one mark with its
+count.
+
+**Run on the merged tree.** `cargo build --workspace --all-targets`; `cargo test
+--workspace --no-fail-fast`: 197 passed, 0 failed; `cargo clippy --workspace
+--all-targets` silent; `tools/check_sim_constants.py` agrees on 4,410 values;
+`flutter analyze` clean; `flutter test` under `timeout -k 20 300`, three
+runs: 517 passed each time; `scripts/play.sh --single-player --no-serve`
+(`iac_solo.wasm` 2,864,781 bytes); `tool/solo_e2e.dart`, four runs: four
+`SOLO E2E OK` (338 to 341 s). None of the four met the flight step's
+stand-down, which the branch rewrote (`standDown`, which now flies the two
+home) after its one failing run; that rewrite has still not been run.
+
+**Seen and not looked into.** In the browser's picture of a fight's ending,
+two gate cards of the fleet that had just won still print odds ("5.8X SAFE")
+beside the way home. Whether that is the last tick of the fight's flight
+previews or a preview that outlives its fight was not looked into.
+
+**Not verified.** No person or agent played any of the five slices. Motion
+was judged from stills. In a browser no fight had more than eight ships a
+side: hundreds and thousands of ships, twelve classes, a class wiped out, a
+pursuit, a raid's battery under fire and an outpost's raid are widget tests
+on written states. Frame cost in a released page with a large fleet was not
+measured. No knob of the five slices was fitted against play: pirate
+strength, raid size and what raiders fly, the heal rate, how far a group
+chases, the tanks, the harvest powers, the level ceiling of 20, the bots'
+rule that a wing without a warship picks no fight.

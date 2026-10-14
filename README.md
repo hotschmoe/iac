@@ -342,25 +342,60 @@ map's sector panel, and under its ships: how many of its muster stand when it
 has losses, when it will be whole again (a time from now; for a sector out of
 sensor range, as it was last seen), how far it follows a fleet that leaves
 it and how long its jump takes beside the fleet's own, and, when it is out of
-its sector, whom it is after or that it is on its way back. The scope beside the list never draws a ship each: a
-side is at most sixteen marks, a class with a ship in it always has one, a
-mark stands for 1, 2, 5, 10 and so on ships on both sides alike, and the
-scope says what a mark stands for when that is more than one. Manage fleet
+its sector, whom it is after or that it is on its way back. Manage fleet
 opens the split picker: a count for each class, moved by steps of 1, 10 or
 100 or set to all, whole ships first or the damaged first, and a Merge
 button for each fleet in the sector; `split lf 100 cr 20` and
-`split lf 3 damaged` do the same from the command bar. While a fleet
-fights, the Battle panel tells the round as text: for each side what stands
-after it and what it lost, by class, with the damaged and those at risk;
-what each side fired with its totals, the three volleys that decided most
-first and the rest behind a button; and the fight's losses so far. When the
-fight ends the panel says how, after how many rounds and at what cost to
-each side, with the last round behind a button, and stays for a minute and
-a half. The scope draws the round's volleys as strokes of fire between the
-marks and takes away the marks the round's losses leave nothing for. On a
-phone the fight is a line over the fleets that opens the panel in the
-status sheet. The log keeps one line for a fight's rounds, the last round's,
-and a line for its end.
+`split lf 3 damaged` do the same from the command bar.
+
+The scope beside the lists is a picture of both sides in marks, a mark a
+class, the fleet below the centre line and what it faces above. Up to four
+ships of a class are drawn a glyph each. More are one glyph leading a block
+of pips that grows with the square root of the count, so two, two hundred
+and two thousand are told apart at a glance and five thousand is still a
+block. Under a mark stand its three letters and its count (`LFT 2,000`) and a
+bar in three parts, whole, damaged and at risk, which the block's pips are
+tinted by as well; every figure is the state's. Both sides are drawn at one
+size, the largest that fits them. The pointer, or a tap, names a mark in
+full. `?` has the legend.
+
+A round a tick is fire between the marks, from the round's own report: of a
+side's volleys the eight that did the most (units destroyed, then hull
+damage, then shots) are beams, in that order, heavier for more shots, and
+the rest a faint haze, so twelve classes firing at twelve stay readable. A
+beam that reached no hull stops at its mark's shield, which flares; bounced
+shots spark off it. When the fire has landed each mark takes the round's own
+count, what the round destroyed is printed over it, and a class wiped out
+breaks up and leaves the scope. The scope prints the round on its centre
+line and how the fight stands (the label of the fleet's own quote for
+leaving, or a raid's forecast). Beside it the Battle panel has the round in
+a few lines: what stands on each side and what the round took, what each
+fired and the volley that did the most, and the losses so far; when the
+fight ends, how, after how many rounds and at what cost, for a minute and a
+half. On a phone the fight is a line over the fleets, and a round takes
+down the toasts that ask nothing, which stand over the hostile half of the
+scope. The log keeps one line for a fight's rounds, the last round's, and a
+line for its end.
+
+The battle view is the fight as a report, and opens over any screen: `I` on
+the windshield, the Battle view button of the panel, the fight's line on a
+phone, and Watch the fight on the Overview's raid card; with no fight on
+show, `I` and the Fights button of the fleet status open it on the newest
+fight held. It has the picture
+of the round and, beside or under it, each side by class with what entered
+the round, what it destroyed and what stands after it, the damaged, those at
+risk and the hull; each side's fire as a sentence of its totals (shots,
+power, what the other side's shields took, what reached hulls, units
+destroyed) and every volley of the round as a row of who fired at whom with
+what result; and the losses so far. Opened during a fight it follows the
+rounds as they come; Back, Next and the arrow keys hold it on a round, and
+Follow lets it go on. After a fight it steps through the rounds, and the
+last eight fights that ended stay in a row at its top. The rounds are the
+ones the page received: the server keeps a fight's last round and nothing of
+one that is over, so a page loaded in the middle of a fight has the rounds
+from then on, a reload forgets the fights before it, and the view says
+which rounds it does not hold. A setting under `?` opens it by itself on the
+first round of a fight of yours; it is off unless turned on.
 
 A fleet in a fight has a way out, and the windshield shows it from the
 server's quote (`fleets[].flight`): a Leave the fight panel with the odds of
@@ -372,11 +407,20 @@ the same ordinary `move`. When the server would refuse it the control is
 greyed with its sentence. While the fleet charges its jump the panel is
 Leaving the fight: where to, the count to the jump, the rounds still to
 take, and Stop, with what Stop costs (the fleet fights on and the fuel is
-forfeit); its side of the round is marked as fired on and not firing. The
+forfeit); its side of the round is marked as fired on and not firing. On
+the scope its marks turn to the lane it is leaving by and draw off toward
+it, a course is drawn to the gate with `JUMP IN 2` beside the fleet, its
+guns are silent and the fire it takes goes on. The
 fight's end is told where the fleet lands (`FLED UNDER FIRE`). A group on a
 fleet's trail (`fleets[].pursued_by`) stands in a Pursuit panel pinned over
 the others: what follows, when it lands and from where, whether it lands
-before the fleet can be gone, and how much further it follows; the fleet's
+before the fleet can be gone, and how much further it follows; the scope
+marks the lane it comes down, from the gate inward, with the ticks to its
+landing and `CATCHES` or `TOO LATE`, and when it lands its marks come onto
+the scope from that gate. A gate pressed while the scope is still drawing
+the fleet's arrival is taken at once, which is when a pursued fleet presses
+it; one pressed while a jump is charging is answered with a line and sends
+nothing. The fleet's
 cards on the windshield, the Overview and the map say it too, the Overview
 lists it among its alerts, and the map draws the lane the group is jumping
 down and a ring round the fleet. The log has a line for a pursuit begun,
@@ -405,11 +449,16 @@ server's label for how it would end against what stands at home with the
 sentence for it, the three shares of the fights the server played
 (destroyed, outlasted, lost) as a bar, and what each side keeps. No two
 powers are compared anywhere in the client. While a raid is fought the tab
-has the fight under the forecast, round by round as any fight is told: the
-defenders, each docked fleet and the home defences as a group of their own
-that is no fleet, against the raiders, with the rounds left of six and the
-odds as the fight stands; and for each fleet in it the way out of the fight
+has the fight under the forecast, in the few lines every fight has: the
+defenders against the raiders, the rounds left of six and the odds as the
+fight stands, with the battle view a press away, where the docked fleets
+and the home defences, a group of their own that is no fleet, are listed
+by kind and drawn as marks; and for each fleet in it the way out of the fight
 (a lane, the price, that nothing follows, Stop while the jump charges). The
+windshield of a fleet docked there draws the same raid: the defences as a
+battery of marks beside the fleets', eight glyphs of their own and the Solar
+Satellite's, the raiders above, the round of six and the forecast's label
+on the centre line; so it does at the outpost, with the platform. The
 ending is worded as a raid's: `RAID DESTROYED` with its wreckage, `RAID
 OUTLASTED`, the raiders gone with nothing, or `RAID LOST` with what was
 taken, and under the losses what was rebuilt at once. When the report is
@@ -1023,11 +1072,13 @@ worldgen rolls inside `shared/src/world.rs`.
   One `BattleRound` event a round takes the place of a message a shot:
   `round`, and for `fleets` and `hostiles` the `groups` as they stand after
   it (`fleet_id`, `owner`, `label`, `mine`, `fleeing` for a fleet that is
-  leaving and did not fire, and by class `count`, `damaged`,
+  leaving and did not fire, and by class `entered`, how many stood in the
+  round when it began, `count`, how many stand after it, `damaged`,
   `at_risk`, `hull`, `hull_max` and `lost` this round), the `volleys` they
   fired by class of firing ship and of target (`shots`, `bounced`, `wasted`
   on a ship already destroyed, `absorbed` by shields, `hull_damage`,
-  `destroyed`), and their sums with `power`, the attack of every shot, and
+  `destroyed`), and their sums with `power`, the attack of every shot,
+  `entered`, the units the side stood in the round with, and
   `standing`, the units the side has left. It
   is the same size for five ships as for five thousand. `CombatEnded` says
   how it ended (`outcome`: `hostiles_destroyed`, `fleets_destroyed`,

@@ -38,8 +38,9 @@
 // into a group and out of it again: the flee control with the engine's
 // quote, the leaving panel, the parting rounds, the fled ending, the group
 // on their trail if it follows, the group's losses and when it mends; then
-// the rest flown at the same group, which they outweigh, the round panel
-// during the fight and at its end, the damage and the home dock's quote for
+// the rest flown at the same group, which they outweigh, the round beside
+// the scope during the fight and the battle view stepping through its
+// rounds after it, the damage and the home dock's quote for
 // it, a refit waiting, and the mending and the refit at home), a raid on the
 // homeworld (the forecast on the Defence tab with none on its way, the first
 // defence ordered by typed command, the raid announced and counted down,
@@ -343,6 +344,31 @@ class Browser {
   }
 
   Future<String> text() async => (await screen()).map((n) => n['text']).join('\n');
+
+  /// Start measuring the gaps between the page's animation frames.
+  Future<void> watchFrames() => eval('''(() => {
+      const f = window.__frames = { n: 0, sum: 0, worst: 0, slow: 0, last: performance.now(), on: true };
+      const step = (now) => {
+        if (!f.on) return;
+        const gap = now - f.last;
+        f.last = now;
+        f.n++;
+        f.sum += gap;
+        if (gap > f.worst) f.worst = gap;
+        if (gap > 34) f.slow++;
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    })()''');
+
+  /// What the gaps came to since [watchFrames], which this ends.
+  Future<String> framesWatched() async {
+    final f = jsonDecode(await eval('(() => { const f = window.__frames; f.on = false; return JSON.stringify(f); })()') as String) as Map<String, dynamic>;
+    final n = f['n'] as int;
+    if (n == 0) return 'no frame';
+    return '$n frames, ${((f['sum'] as num) / n).toStringAsFixed(1)} ms between two on average, ${(f['worst'] as num).toStringAsFixed(1)} ms at the worst, '
+        '${f['slow']} of them more than 34 ms apart';
+  }
 
   /// The command, completion and refusal toasts on screen: text and width.
   Future<List<Map<String, dynamic>>> toasts() async => ((await eval(_toasts)) as List).cast<Map<String, dynamic>>();
@@ -1437,6 +1463,15 @@ Future<int?> flight(Browser browser,
     return gates.entries.firstWhere((g) => g.value == (b.$1 - a.$1, b.$2 - a.$2)).key;
   }
 
+  // The gaps between the page's frames, first with the scope at rest and
+  // then from the jump into the fight until the flee control has been
+  // read: the jump, the group's marks, and the rounds drawn as they come.
+  // No picture is taken and the window is not resized meanwhile, which
+  // would each hold a frame up.
+  await browser.watchFrames();
+  await Future<void>.delayed(const Duration(seconds: 3));
+  print('  frames, the windshield at rest for three seconds: ${await browser.framesWatched()}');
+  await browser.watchFrames();
   await jumpTo(browser, wing, prey);
   var joined = (await two('on arrival'))['state'] == 'InCombat';
   for (var wait = 0; wait < 12 && !joined && group['behavior'] != 'Passive'; wait++) {
@@ -1451,21 +1486,26 @@ Future<int?> flight(Browser browser,
   // Two Light Fighters destroy a single ship in the round they attack it,
   // sooner than a fight can be read and left.
   Future<bool> won() async => await browser.tap('$endsAtPrey.slice($ends).some((e) => e.outcome === "hostiles_destroyed")') == true;
-  const unshown = '  the two destroyed the group before they could be ordered out of the fight: no flight is shown in this run, and it is the widget tests\'';
-  if (!joined && await won()) {
-    print(unshown);
+  // With no flight to show the two still go home, where the rest of the
+  // check expects them: the dock refits them there and the six take them
+  // back in.
+  Future<int?> standDown() async {
+    print('  the two destroyed the group before they could be ordered out of the fight: no flight is shown in this run, and it is the widget tests\'');
+    await browser.framesWatched();
+    for (final hop in [door, ...wayHome]) {
+      await jumpTo(browser, wing, hop);
+    }
     return null;
   }
+
+  if (!joined && await won()) return standDown();
   check(joined, 'the two are in a fight at [$prey]');
 
   final fighting = await browser.until('the engine\'s quote for leaving the fight, or the end of the fight', () async {
     final f = await two('before they could leave');
     return f['flight'] != null || await won() ? f : null;
   });
-  if (fighting['flight'] == null) {
-    print(unshown);
-    return null;
-  }
+  if (fighting['flight'] == null) return standDown();
   final quote = fighting['flight'] as Map<String, dynamic>;
   final chase = quote['chase'] as Map<String, dynamic>?;
   check(
@@ -1479,16 +1519,14 @@ Future<int?> flight(Browser browser,
   }
   final offered = await browser.until('the flee control, or the end of the fight',
       () async => (await browser.text()).toLowerCase().contains('leave the fight') ? 'offered' : (await won() ? 'won' : null));
-  if (offered == 'won') {
-    print(unshown);
-    return null;
-  }
+  if (offered == 'won') return standDown();
   final price ='${fuelWords(quote['fuel'] as num)} FUEL, GONE IN ${plural(quote['ticks'], 'TICK').toUpperCase()}, ${plural(quote['rounds'], 'ROUND').toUpperCase()} UNDER FIRE';
   final control = (await browser.text()).toUpperCase();
   check(
       control.contains('A JUMP OUT COSTS') && control.contains(price) && control.contains('AS IT STANDS') && (control.contains('NOTHING FOLLOWS.') || control.contains(' FOLLOWS ')),
       'the flee control prints the quote, the odds as they stand and who follows: $price');
   check(control.contains('LEAVE THE FIGHT BY '), 'and a gate of a fleet in a fight is a way out of it');
+  print('  frames, from the jump into the fight until here, the scope drawing its rounds: ${await browser.framesWatched()}');
   await browser.shot('35-flee-control-1440');
   await soon(() async => (await browser.tap('$roundsAtPrey.length') as int) > rounds, ms: 1500);
 
@@ -1633,6 +1671,10 @@ Future<int?> flight(Browser browser,
   return wholeAt;
 }
 
+/// The battle view is open: its Replay control is on the page, which no
+/// other screen has.
+Future<bool> battleViewOpen(Browser browser) async => (await browser.text()).toLowerCase().contains('play the round again');
+
 /// The side of a hex on the map at its closest zoom, which F brings up
 /// around the fleet: `mapU` of the client, times the zoom of `centerOn`.
 const mapHex = 26 * 1.5;
@@ -1658,9 +1700,12 @@ const sqrt3 = 1.7320508075688772;
 ///   back), and jump in. A group that does not attack is read on the map's
 ///   panel for its sector and on the windshield, listed by class, before F
 ///   fires on it.
-/// - The fight is a round a tick. The round panel is read while it lasts
-///   and when it has ended: the outcome, the rounds and the losses are the
-///   engine's `CombatEnded`.
+/// - The fight is a round a tick. The lines beside the scope are read while
+///   it lasts and when it has ended: the outcome, the rounds and the losses
+///   are the engine's `CombatEnded`. The battle view is opened with I while
+///   it lasts, where that is caught, and from the report after it, where it
+///   steps back through the rounds the page was sent and prints each
+///   round's own figures.
 /// - The fleet carries its damage: the state quotes what the home dock
 ///   would mend, and the page prints it. Armour Technology is researched
 ///   while it is away, so a refit waits for it at home, and the page says
@@ -1670,7 +1715,7 @@ const sqrt3 = 1.7320508075688772;
 ///
 /// So small a fight lasts two or three seconds, so the round under way is
 /// pictured as it stands on a desktop only; a phone's picture is of the
-/// last round, opened after the end.
+/// battle view on the last round, opened after the end.
 Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
   print('a fight');
   final home = spot(homeHex);
@@ -1765,7 +1810,7 @@ Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
           : a.$3 != b.$3
               ? a.$3.compareTo(b.$3)
               : a.$1!.length.compareTo(b.$1!.length));
-    // A single ship falls in one round, before the round panel can be read:
+    // A single ship falls in one round, before the round can be read:
     // the first three scans look for a group of two or more, further out.
     // Of two groups alike in that, the one that outweighs the two is taken,
     // so that their flight is from a fight they could not win.
@@ -1882,16 +1927,27 @@ Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
   }
 
   await browser.until('the first round', () async => (await browser.tap('$roundsAtPrey.length') as int) > rounds);
-  final live = await browser.until('the round panel', () async {
+  final live = await browser.until('the round beside the scope', () async {
     final page = (await browser.text()).toUpperCase();
     return page.contains('LOST SO FAR') || page.contains('ENDED - ') ? page : null;
   });
   await browser.shot('30-fight-round-1440');
   if (live.contains('LOST SO FAR')) {
-    check(live.contains('BATTLE') && live.contains('STANDING') && live.contains('FLEETS FIRED') && live.contains('LIGHT FIGHTER > '),
-        'while the fight lasts the round panel says what stands on each side and who fired at what');
+    check(live.contains('BATTLE') && live.contains('STANDING') && live.contains('FIRED ') && live.contains('LIGHT FIGHTER > '),
+        'while the fight lasts the lines beside the scope say what stands on each side, what each fired and the volley that did the most');
+    await browser.type('i');
+    if (await soon(() => battleViewOpen(browser), ms: 1200)) {
+      final view = (await browser.text()).toUpperCase();
+      check(view.contains('WHO AT WHOM') && view.contains(' ENTERED'), 'I opens the battle view over the windshield: each side by class and the round\'s volleys');
+      print('  the battle view was opened ${view.contains('BEING FOUGHT') ? 'while the fight was being fought, and follows it' : 'as the fight ended'}');
+      await browser.shot('30b-battle-view-live-1440');
+      await browser.press('Escape', 'Escape', 27);
+      await browser.until('the battle view shut', () async => !await battleViewOpen(browser));
+    } else {
+      print('  the battle view did not open in the fight\'s last second: it is opened after the end');
+    }
   } else {
-    print('  the fight was over before its panel was read: the round under way is not pictured');
+    print('  the fight was over before its lines were read: the round under way is not pictured');
   }
   final ended = jsonDecode(await browser.until('the end of the fight',
       () => browser.tap('JSON.stringify($endsAtPrey[$ends] ?? null)').then((found) => found == 'null' ? null : found),
@@ -1911,17 +1967,53 @@ Future<void> fight(Browser browser, Map<String, dynamic> homeHex) async {
   check(told.contains('ENDED - ${ended['rounds']} ROUND') && told.contains(' LOST ${group['ship_count']}X '),
       'the panel says how it ended, after how many rounds, and that the group lost all ${group['ship_count']} of its ships');
   await browser.shot('31-fight-end-1440');
-  await browser.click('show last round');
-  await browser.untilText('hostiles fired');
-  await browser.shot('31b-fight-last-round-1440');
+  final sizes = [for (final r in fought) jsonEncode(r).length];
+  print('  a round of this fight is ${sizes.reduce((a, b) => a < b ? a : b)} to ${sizes.reduce((a, b) => a > b ? a : b)} bytes of JSON on the wire, '
+      '${sizes.reduce((a, b) => a + b)} for its ${fought.length}');
+
+  // After the fight the battle view steps through the rounds the page was
+  // sent: the engine keeps none of them.
+  await browser.click('open the battle view');
+  await browser.until('the battle view', () => battleViewOpen(browser));
+  final last = fought.last as Map<String, dynamic>;
+  final held = '${fought.length} OF ${plural(fought.length, 'ROUND').toUpperCase()} HELD';
+  final view = (await browser.text()).toUpperCase();
+  check(
+      view.contains('HOSTILES DESTROYED') &&
+          view.contains('ROUND ${last['round']}') &&
+          view.contains(held) &&
+          view.contains('${last['fleets']['entered']} ENTERED') &&
+          view.contains('${last['hostiles']['entered']} ENTERED') &&
+          view.contains('HOSTILES FIRED') &&
+          view.contains('LIGHT FIGHTER > '),
+      'after the fight the battle view opens on its last round, holds all ${fought.length} the page was sent ($held), '
+      'and prints the round\'s own figures: ${last['fleets']['entered']} of ours entered it and ${last['hostiles']['entered']} of theirs');
+  check(!view.contains('FLEET STATUS'), 'and what stands behind the view is not read out with it');
+  await browser.shot('31b-battle-view-last-round-1440');
+  if (fought.length > 1) {
+    final before = fought[fought.length - 2] as Map<String, dynamic>;
+    await browser.click('round before');
+    await browser.until('the round before', () async {
+      final page = (await browser.text()).toUpperCase();
+      return page.contains('${fought.length - 1} OF ${plural(fought.length, 'ROUND').toUpperCase()} HELD') &&
+          page.contains('${before['hostiles']['entered']} ENTERED');
+    });
+    check(true, 'Back steps to round ${before['round']}, whose tables are that round\'s (${before['hostiles']['entered']} hostiles entered it)');
+    await browser.shot('31c-battle-view-stepped-1440');
+    await browser.click('last round');
+    await browser.until('the last round again', () async => (await browser.text()).toUpperCase().contains(held));
+  } else {
+    print('  the fight was one round: stepping back and forth through a fight is the widget tests\'');
+  }
   await browser.resize(390, 844);
+  await browser.until('the battle view at a phone\'s width', () => battleViewOpen(browser));
+  await browser.shot('31b-battle-view-last-round-390');
+  await browser.click('close');
+  await browser.until('the battle view shut', () async => !await battleViewOpen(browser));
   await sheet(browser, open: false);
   await browser.shot('31-fight-end-strip-390');
   await sheet(browser, open: true);
   await browser.shot('31-fight-end-390');
-  if (!(await browser.text()).toLowerCase().contains('hostiles fired')) await browser.click('show last round');
-  await browser.untilText('hostiles fired');
-  await browser.shot('31b-fight-last-round-390');
   await browser.resize(1440, 900);
   await browser.click('dismiss');
   await browser.until('the report put away', () async => !(await browser.text()).toUpperCase().contains('ENDED - '));
@@ -2046,8 +2138,8 @@ Future<Map<String, dynamic>> forecastOnPage(Browser browser, String stands) =>
 /// A raid on so small an empire is a ship or two and its fight a round or
 /// two, a second or two of the page: the raid standing at home before its
 /// first round is pictured when it is caught and said to have been missed
-/// when it is not, and the rounds are read after the end, from the report's
-/// last round.
+/// when it is not, and the rounds are read after the end, in the battle
+/// view the tab's report opens.
 Future<void> raid(Browser browser) async {
   print('a raid');
   await browser.type('gh');
@@ -2197,12 +2289,25 @@ Future<void> raid(Browser browser) async {
       'afterwards the forecast is of the next raid again, and what stands at home is what stood less what fell plus what was rebuilt');
   await browser.shot('37-raid-ended-1440');
   if (rounds.isNotEmpty) {
-    await browser.click('show last round');
+    await browser.click('open the battle view');
+    await browser.until('the battle view on the raid', () => battleViewOpen(browser));
     await browser.untilText('raiders fired');
     final last = (await browser.text()).toUpperCase();
-    check(last.contains('DEFENDERS') && last.contains('HOME DEFENCES') && last.contains('RAIDERS'),
-        'the last round is the raid\'s: defenders with the home defences named apart from the fleet, against the raiders');
-    await browser.shot('37b-raid-last-round-1440');
+    check(
+        last.contains('RAID AT ') &&
+            last.contains(ending) &&
+            last.contains('DEFENDERS') &&
+            last.contains('HOME DEFENCES') &&
+            last.contains('NO FLEET: THEY STAND WHERE THEY ARE') &&
+            last.contains('RAIDERS FIRED'),
+        'the Defence tab opens the battle view on the raid: its last round, the defenders with the home defences named apart from the fleet, against the raiders');
+    await browser.shot('37b-raid-battle-view-1440');
+    await browser.resize(390, 844);
+    await browser.until('the battle view at a phone\'s width', () => battleViewOpen(browser));
+    await browser.shot('37b-raid-battle-view-390');
+    await browser.resize(1440, 900);
+    await browser.click('close');
+    await browser.until('the battle view shut', () async => !await battleViewOpen(browser));
   }
   // A phone's page is a column: the report is wheeled into the window, and
   // pictured once the alerts raised over it have left.
@@ -2212,13 +2317,6 @@ Future<void> raid(Browser browser) async {
   await browser.wheel(((report['y'] as num) - 260).round(), x: 195);
   await Future<void>.delayed(const Duration(milliseconds: 500));
   await browser.shot('37-raid-ended-390');
-  if (rounds.isNotEmpty) {
-    if (!(await browser.text()).toLowerCase().contains('raiders fired')) await browser.click('show last round');
-    await browser.untilText('raiders fired');
-    await browser.wheel(260, x: 195);
-    await Future<void>.delayed(const Duration(milliseconds: 500));
-    await browser.shot('37b-raid-last-round-390');
-  }
   await browser.wheel(-4000, x: 195);
   await browser.resize(1440, 900);
   if (((await browser.last('tick_update'))!['fleets'] as List).isEmpty) fail('the raid left the empire no fleet: the rest of this check needs one');

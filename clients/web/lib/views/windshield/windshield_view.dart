@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
-import '../../console/battle.dart' show RaidEnding, fleeingLine, flightPrice, outcomeTitle, roundsOf, stopFlightRule, ticksOf;
+import '../../console/battle.dart' show RaidEnding, fleeingLine, flightPrice, outcomeTitle, raidRoundOf, roundsOf, stopFlightRule, ticksOf;
 import '../../console/intel.dart';
 import '../../console/outpost.dart' show inOutpostRings;
 import '../../console/route_planner.dart';
@@ -19,12 +19,14 @@ import '../../design/lens.dart';
 import '../../design/panel.dart';
 import '../../design/tokens.dart';
 import '../../models/fleet.dart' as ui;
+import '../../models/game_state.dart' show Battle;
 import '../../protocol/protocol.dart' as proto;
+import '../../scenes/battle/field.dart' show Sides;
 import '../../scenes/windshield/geometry.dart';
 import '../../scenes/windshield/painter.dart';
 import '../../scenes/windshield/sim.dart';
 import '../../state/game_controller.dart' show HomeworldTab;
-import '../battle_view.dart' show BattlePanel, BattleStrip;
+import '../battle_view.dart' show BattlePanel, BattleStrip, raidLabelColor;
 import '../homeworld/economy_tabs.dart' show HoldDock, HoldPanel;
 import '../onboarding.dart';
 import '../outpost_view.dart' show FoundingPanel, OutpostPanel;
@@ -163,8 +165,15 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
 
   void _syncSim() {
     final f = _fleet;
+    final st = con.state;
     final before = sim.loc;
-    sim.sync(f: f, s: f == null ? null : _sec(f.sector), homeHex: con.state.homeworld);
+    sim.sync(
+        f: f,
+        s: f == null ? null : _sec(f.sector),
+        homeHex: st.homeworld,
+        sides: f == null ? Sides.none : Sides.at(st, f.sector, fleet: f),
+        tick: st.tick);
+    sim.stamp = f == null ? null : _stamp(st.battleAt(f.sector), f);
     sim.atExchange = f != null && con.state.exchangeAt(f.sector);
     sim.outpost = f == null ? null : _sec(f.sector)?.outpost;
     if (f != null && before != null && before != sim.loc && sim.warp != null) {
@@ -188,6 +197,21 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     }
   }
 
+  /// What the scope prints between the two sides of the fight where the
+  /// fleet stands: the round, a raid's against the most it is fought for,
+  /// and how the fight stands, from the fleet's own quote for leaving it or
+  /// from the raid's forecast.
+  static FightStamp? _stamp(Battle? fight, ui.FleetState f) {
+    if (fight == null || fight.over) return null;
+    final round = fight.isRaid ? raidRoundOf(fight.rounds) : 'ROUND ${fight.rounds}';
+    if (fight.raid case final raid?) return FightStamp(round, verdict: raid.odds.label.label, color: raidLabelColor(raid.odds.label));
+    if (f.flight case final quote?) {
+      final odds = RatioInfo.ofLabel(quote.ratio, quote.label);
+      return FightStamp(round, verdict: odds.label, color: odds.color);
+    }
+    return FightStamp(round);
+  }
+
   /// A pursuit in the few words a banner has room for on a phone; the
   /// panel has the rest.
   static String _landing(proto.Pursuit hunter) => 'Lands in ${ticksOf(hunter.arrivesIn)}, from ${hunter.from.q}, ${hunter.from.r}.';
@@ -203,6 +227,9 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     if (k is proto.SectorEnteredEvent && k.firstVisit) _firstVisits.add(k.sector);
     sim.onEvent(e);
     if (!mounted) return;
+    if (k case proto.BattleRoundKind(:final battleRound) when battleRound.sector == _fleet?.sector && con.screen == Screen.windshield) {
+      _clearForScope();
+    }
     switch (k) {
       case proto.CombatStartedEvent():
         if (k.mine) {
@@ -268,15 +295,20 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
 
   void jump(Dir d) {
     final f = _fleet;
-    if (f == null || sim.warp != null) return;
+    if (f == null) return;
+    final leaving = f.fleeing;
     final here = _sec(f.sector);
     final target = f.sector + d.v;
     if (here == null || !here.connections.contains(target)) {
       _toast('No lane', 'No lane ${d.name} from ${f.sector.q}, ${f.sector.r}.', tone: ToastTone.red);
       return;
     }
-    if (f.fleeing case final leaving?) {
+    if (leaving != null) {
       _toast('Leaving already', '${fleeingLine(leaving)}. $stopFlightRule');
+      return;
+    }
+    if (sim.warp?.waiting ?? false) {
+      _toast('Jump under way', '${f.name} is charging a jump already. Stop (X) calls it off.');
       return;
     }
     if (f.flight case final quote?) {
@@ -329,7 +361,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     final f = _fleet;
     if (f == null) return;
     final jumping = sim.warp;
-    if (jumping != null && !(id == 'stop' && jumping.waiting)) return;
+    if (jumping != null && f.fleeing == null && (jumping.waiting ? id != 'stop' : id == 'stop')) return;
     final s = _sec(f.sector);
     final th = SectorThreat.of(s);
     final why = _reason(id, f, th, s);
@@ -404,6 +436,11 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     if (id != 'harvest') setState(() => _hsub = false);
   }
 
+  /// On a phone the toasts stand over the upper half of the scope, where
+  /// the hostile side is drawn: while a fight is fought there, each round
+  /// takes down the ones that ask nothing. What they said is in the log.
+  void _clearForScope() => _clearForSheet();
+
   /// The phone layout opens its panels in a sheet whose top lies under the
   /// toasts, so the toasts that ask nothing make way for it. The desktop
   /// layout has its panels in the right-hand column, which no toast reaches.
@@ -444,6 +481,18 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     });
     if (_outpost) _clearForSheet();
     con.play('click');
+  }
+
+  /// Open the battle view on the fight the selected fleet is in or has just
+  /// left, or else on the newest of the fights the console holds.
+  void _openBattleView() {
+    final f = _fleet;
+    final fight = (f == null ? null : con.state.battleOf(f)) ?? con.state.fights.firstOrNull;
+    if (fight == null) {
+      _toast('No fight to show', 'The battle view shows a fight round by round. None has been fought since this page was opened.');
+    } else {
+      con.openBattle(fight.id);
+    }
   }
 
   void _fire(ui.FleetState f, SectorThreat th) {
@@ -496,6 +545,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     }
     if (ch == 'o') {
       _toggleOutpost();
+      return true;
+    }
+    if (ch == 'i') {
+      _openBattleView();
       return true;
     }
     const m = {'v': 'scan', 'h': 'harvest', 'f': 'fire', 'c': 'collect', 'b': 'board', 'r': 'recall', 'x': 'stop', 't': 'trade', 'l': 'load'};
@@ -639,7 +692,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         if (leaving != null) ...[LeavingPanel(fleet: f, leaving: leaving, onStop: () => act('stop')), const SizedBox(height: 8)],
         if (quote != null) ...[FlightPanel(fleet: f, quote: quote, ways: ways, onLeave: jump), const SizedBox(height: 8)],
         if (battle != null) ...[
-          BattlePanel(key: ValueKey(battle.sector), battle: battle, onDismiss: () => setState(() => _dismissed = battle.endedTick)),
+          BattlePanel(key: ValueKey(battle.sector), battle: battle, keyHint: 'I', onDismiss: () => setState(() => _dismissed = battle.endedTick)),
           const SizedBox(height: 8),
         ],
         if (_orders) ...[OrdersPanel(controller: con.game), const SizedBox(height: 8)],
@@ -659,6 +712,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           footer: Wrap(spacing: 6, runSpacing: 6, children: [
             GuideTarget('orders', child: ConsoleButton(_orders ? 'Hide orders' : 'Orders', key: const ValueKey('orders-toggle'), small: true, keyHint: 'P', active: _orders, onPressed: _toggleOrders)),
             ConsoleButton(_manage ? 'Hide fleet' : 'Manage fleet', key: const ValueKey('manage-toggle'), small: true, active: _manage, onPressed: () => setState(() => _manage = !_manage)),
+            if (battle == null && st.fights.isNotEmpty)
+              ConsoleButton('Fights', key: const ValueKey('fights-open'), small: true, keyHint: 'I', semanticsLabel: 'Open the battle view on the last fight', onPressed: _openBattleView),
           ]),
         ),
         if (_manage) ...[const SizedBox(height: 8), FleetManagePanel(controller: con.game)],
@@ -711,9 +766,11 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
             child: MouseRegion(
               cursor: sim.hoverT != null ? SystemMouseCursors.click : SystemMouseCursors.basic,
               onHover: (e) => _pick(e.localPosition, g),
+              onExit: (_) => sim.hoverMark = null,
               child: GestureDetector(
                 key: const ValueKey('arena'),
                 behavior: HitTestBehavior.opaque,
+                onTapDown: (d) => _pick(d.localPosition, g),
                 onTap: () {
                   setState(() {
                     if (sim.hoverT != null) {
@@ -774,7 +831,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
                       text: quote.refusal == null ? flightPrice(quote).toUpperCase() : 'TAP FOR WHY',
                       color: quote.refusal == null ? C.a300 : C.ember,
                       onTap: openSheet),
-                if (battle != null) BattleStrip(battle: battle, onTap: openSheet),
+                if (battle != null) BattleStrip(battle: battle, onTap: () => con.openBattle(battle.id)),
               ])),
         if (narrow)
           Positioned(
@@ -796,7 +853,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
             key: const ValueKey('banner'),
             left: 0,
             right: narrow && _sheet && size.width > _sheetWidth + 16 ? _sheetWidth + 8 : 0,
-            top: narrow ? 90 : size.height * .21,
+            top: narrow ? 90 : underFire ? math.max(8.0, g.cy - g.rh * .866 - 104) : size.height * .21,
             child: IgnorePointer(child: Center(child: _BannerBox(c: _banner, h: _bannerH, p: _bannerP, red: _bannerRed)))),
         if (narrow && _sheet)
           Positioned(
@@ -852,8 +909,12 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   void _pick(Offset p, Geo g) {
     String? h;
     bool near(Offset o, double r) => (p - o).distance < r;
-    if (sim.hostiles.any((u) => !u.dead && near(g.wp(u.x, u.y), sim.markPx(u) * g.sc * 2))) {
+    final mark = sim.field.markAt(p - Offset(g.cx, g.cy));
+    sim.hoverMark = mark;
+    if (mark != null && mark.hostile) {
       h = 'h';
+    } else if (mark != null) {
+      h = null;
     } else if (sim.salvage != null && near(g.wp(sim.salvage!.x, sim.salvage!.y), g.rh * .08)) {
       h = 's';
     } else if (sim.derelict != null && near(g.wp(sim.derelict!.x, sim.derelict!.y), g.rh * .3)) {

@@ -236,6 +236,7 @@ class _NextCard extends StatelessWidget {
     }
 
     final raid = n.urgent && n.action == NextAction.openDefence && d != null;
+    final fought = raid ? [s.raidAtHome, s.raidAtOutpost].nonNulls.where((fight) => !fight.over).firstOrNull : null;
     return GuideTarget(n.action == NextAction.queueBuild ? 'build' : 'next-up', child: OvPanel(
       key: Key(raid ? 'raid-card' : 'next-card'),
       title: n.kicker,
@@ -243,7 +244,12 @@ class _NextCard extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
       footer: Align(
         alignment: Alignment.centerLeft,
-        child: ConsoleButton(n.button, primary: true, keyHint: n.action == NextAction.queueResearch || n.action == NextAction.queueBuild ? 'Ret' : null, onPressed: run),
+        child: Wrap(spacing: 8, runSpacing: 6, children: [
+          ConsoleButton(n.button, primary: true, keyHint: n.action == NextAction.queueResearch || n.action == NextAction.queueBuild ? 'Ret' : null, onPressed: run),
+          if (fought != null)
+            ConsoleButton('Watch the fight',
+                key: const ValueKey('raid-card-watch'), semanticsLabel: 'Open the battle view', onPressed: () => con.openBattle(fought.id)),
+        ]),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(n.title.toUpperCase(), style: T.cond(size: 20, color: C.a100, spacing: 1.2, height: 1.2)),

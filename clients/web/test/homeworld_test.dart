@@ -333,17 +333,16 @@ void main() {
     final round = c.state.raidAtHome!.round!;
     expect((round.raid, round.round), (true, 1));
     expect(round.fleets.groups.map((g) => (g.fleetId, g.battery)), [(docked.id, false), (0, true)]);
-    expect(said(tester, 'battle-fleets-battery'), 'HOME DEFENCES  NO FLEET: THEY STAND WHERE THEY ARE');
-    expect(find.byKey(Key('battle-fleets-group-${docked.id}')), findsOneWidget);
-    expect(textUnder(tester, find.byKey(const Key('battle-fleets'))),
-        allOf(contains('DEFENDERS'), contains('SMALL CARGO'), contains('SOLAR SATELLITE'), contains('ROCKET LAUNCHER')));
-    expect(textUnder(tester, find.byKey(const Key('battle-hostiles'))), allOf(contains('RAIDERS'), contains('LIGHT FIGHTER')));
-    expect(textUnder(tester, panel), allOf(contains('ROUND 1 OF ${proto.raidRounds}'), contains('DEFENDERS FIRED'), contains('RAIDERS FIRED')));
+    expect(textUnder(tester, find.byKey(const Key('battle-fleets'))), startsWith('DEFENDERS\n${round.fleets.standing} STANDING'));
+    expect(textUnder(tester, find.byKey(const Key('battle-hostiles'))), startsWith('RAIDERS\n${round.hostiles.standing} STANDING'));
+    expect(textUnder(tester, panel), contains('ROUND 1 OF ${proto.raidRounds}'));
     final standing = c.state.raidAtHome!.raid!;
     expect(said(tester, 'battle-raid'), startsWith('${roundsLeftOf(standing.roundsLeft).toUpperCase()}.  AS IT STANDS  ${standing.odds.label.label}'));
     expect(said(tester, 'raid-note'), roundsLeftOf(c.state.hw!.raid.roundsLeft!).toUpperCase());
     expect(tester.takeException(), isNull);
     await snap(tester, 'homeworld/raid-fought-1440');
+
+    expect(find.byKey(const ValueKey('battle-open')), findsOneWidget, reason: 'the raid as a picture, and its rounds in full, are a press away: the battle view');
 
     final resolved = await fought(tester, c);
     expect((RaidEnding.of(resolved), resolved.defended, resolved.outcome), (RaidEnding.destroyed, true, proto.BattleOutcome.hostilesDestroyed));

@@ -295,6 +295,7 @@ fn report(side: &Side, troops: usize, target: &Side, fired: &[Fire], power: u64)
         let whole = u64::from(left) - damaged.len() as u64;
         out.standing[line.troop].push(BattleUnits {
             unit,
+            entered: line.len as u32,
             count: left,
             damaged: damaged.len() as u32,
             at_risk: at_risk as u32,

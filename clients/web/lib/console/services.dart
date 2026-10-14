@@ -28,6 +28,10 @@ class Console {
   /// Switch screens (set by the shell).
   void Function(Screen) go = (_) {};
 
+  /// Open the battle view on the fight with this [Battle.id], over whatever
+  /// screen is showing (set by the shell).
+  void Function(String fight) openBattle = (_) {};
+
   Console({required this.game, required this.prefs, required this.toasts, required this.sfx, required Notifier notifier})
       : onboarding = Onboarding(game, prefs),
         attention = Attention(game: game, prefs: prefs, toasts: toasts, notifier: notifier) {

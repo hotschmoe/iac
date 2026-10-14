@@ -13,6 +13,7 @@ class ConsolePrefs extends ChangeNotifier {
     reduceMotion = _kv.read('iac.reduce') == '1';
     notify = _kv.read('iac.notify') == '1';
     notifyAsked = _kv.read('iac.notify.asked') == '1';
+    battleView = _kv.read('iac.battleview') == '1';
     final q = _kv.read('iac.quality');
     if (q != null && q != 'auto') {
       pinned = Quality.values.where((e) => e.name == q).firstOrNull;
@@ -33,6 +34,10 @@ class ConsolePrefs extends ChangeNotifier {
 
   /// The in-context offer to turn [notify] on is made once per browser.
   bool notifyAsked = false;
+
+  /// The battle view opens by itself when a fight of the player's begins.
+  /// Off, a fight is watched where it is fought and the view is a press away.
+  bool battleView = false;
   Quality? pinned;
   Quality governed = Quality.high;
 
@@ -66,6 +71,11 @@ class ConsolePrefs extends ChangeNotifier {
   void setNotify(bool v) {
     notify = v;
     _set('iac.notify', v ? '1' : '0');
+  }
+
+  void setBattleView(bool v) {
+    battleView = v;
+    _set('iac.battleview', v ? '1' : '0');
   }
 
   void setNotifyAsked() {

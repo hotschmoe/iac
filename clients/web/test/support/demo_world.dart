@@ -2747,6 +2747,7 @@ class DemoWorld {
             final unit = was.arms!;
             return BattleUnits(
               unit: was.unit,
+              entered: was.count,
               count: now.count,
               damaged: now.wounds.length,
               atRisk: now.wounds.where((hull) => _atRisk(hull, unit.hull)).length,
@@ -2761,6 +2762,7 @@ class DemoWorld {
   /// stand after the round, all of them [standing], and what it [fired].
   static BattleSide _side(List<BattleGroup> groups, List<_Squad> standing, _Fire fired) => BattleSide(
         groups: groups,
+        entered: groups.fold(0, (n, g) => n + g.units.fold(0, (m, u) => m + u.entered)),
         standing: _shipsIn(standing),
         volleys: fired.volleys,
         shots: fired.volleys.fold(0, (n, v) => n + v.shots),

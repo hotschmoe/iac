@@ -12,6 +12,7 @@ import '../design/lens.dart';
 import '../design/panel.dart';
 import '../design/tokens.dart';
 import '../models/game_state.dart';
+import '../scenes/battle/field_painter.dart' show marksRule;
 
 Color _toneColor(ToastTone t) => switch (t) {
       ToastTone.amber => C.a500,
@@ -167,6 +168,8 @@ class HelpOverlay extends StatelessWidget {
                           ConsoleButton('Scanlines ${p.scanlines ? 'on' : 'off'}', small: true, active: p.scanlines, onPressed: () => p.setScanlines(!p.scanlines)),
                           ConsoleButton('Reduce motion ${p.reduceMotion ? 'on' : 'off'}', small: true, active: p.reduceMotion, onPressed: () => p.setReduceMotion(!p.reduceMotion)),
                           ConsoleButton('Guide ${guide.active ? 'on' : 'off'}', key: const Key('set-guide'), small: true, active: guide.active, onPressed: () => guide.setActive(!guide.active)),
+                          ConsoleButton('Battle view opens with a fight ${p.battleView ? 'on' : 'off'}',
+                              key: const Key('set-battle-view'), small: true, active: p.battleView, onPressed: () => p.setBattleView(!p.battleView)),
                           ConsoleButton('Notifications ${notes.enabled ? 'on' : 'off'}',
                               key: const Key('set-notify'),
                               small: true,
@@ -204,6 +207,7 @@ class HelpOverlay extends StatelessWidget {
                         _row('R X', 'Recall home, stop (a flight called off fights on)'),
                         _row('T', 'Exchange: quote and trade cargo'),
                         _row('L', 'At home: load a hold from the stockpile'),
+                        _row('I', 'Battle view: the fight here round by round, each side by class and every volley'),
                         _row('P', 'Standing orders: give the fleet a doctrine, read why it holds'),
                         _row('O', 'Outpost: survey this sector and found one; with one, its store, levels and dock'),
                         _rule(),
@@ -212,6 +216,12 @@ class HelpOverlay extends StatelessWidget {
                         _row('Enter', 'Map: engage route'),
                         _row('Esc', 'Cancel or close'),
                         _row('M', 'Sound on or off'),
+                        _rule(),
+                        const Lbl('The scope'),
+                        const SizedBox(height: 4),
+                        Text(marksRule, key: const Key('help-marks'), style: T.mono(size: 10, color: C.text3, height: 1.4)),
+                        const WhyText('A round a tick is fire between the marks: the volleys that did the most as beams, the rest a haze. A beam that stops short of '
+                            'its mark was taken by the shield. A count falls when the fire has landed, by what the round destroyed.'),
                       ]);
                     },
                   ),

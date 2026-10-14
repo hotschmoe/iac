@@ -16,6 +16,8 @@ import 'package:iac_client/console/services.dart';
 import 'package:iac_client/design/panel.dart';
 import 'package:iac_client/models/fleet.dart' show FleetStatus;
 import 'package:iac_client/protocol/protocol.dart' as proto;
+import 'package:iac_client/scenes/battle/field.dart' show Formation;
+import 'package:iac_client/scenes/windshield/painter.dart' show ArenaPainter;
 import 'package:iac_client/views/overlays.dart' show ToastLayer;
 import 'package:iac_client/views/rail.dart';
 import 'package:iac_client/views/windshield/parts.dart' show FleetRail, GateCard;
@@ -495,6 +497,11 @@ void main() {
     final quote = c.state.fleets.first.flight!;
     expect((c.state.fleets.first.status, quote.chase, find.byKey(const Key('flight-panel')).evaluate().length), (FleetStatus.combat, null, 1),
         reason: 'the fleet standing there is in the fight, and may leave it');
+    final scope = tester.widgetList<CustomPaint>(find.byType(CustomPaint)).map((p) => p.painter).whereType<ArenaPainter>().single.sim.field;
+    expect({for (final m in scope.marks.where((m) => m.battery)) m.unit.label: m.shown.count}, {'Rocket Launcher': 8, 'Light Laser': 4},
+        reason: 'the scope draws the platform as a battery of defence marks beside the fleet');
+    expect(scope.captions[Formation.batteryId], 'OUTPOST PLATFORM');
+    expect(scope.theirs.map((m) => m.formation).toSet(), {Formation.raidId}, reason: 'and the raiders as the hostile side');
     await shot(tester, 'outpost-raid-arrived-1440');
 
     c.place(101, _demoHome, const proto.Resources());

@@ -2655,7 +2655,9 @@ pub struct BattleSide {
     /// Every fleet or group of the side that entered the round, by id, as
     /// it stands after it.
     pub groups: Vec<BattleGroup>,
-    /// Units of the side still standing after the round, in all its groups.
+    /// Units the side stood in the round with, in all its groups, and how
+    /// many of them still stand after it.
+    pub entered: u32,
     pub standing: u32,
     /// The side's fire, one line for each pair of firing and target unit
     /// that exchanged a shot, in catalogue order.
@@ -2702,6 +2704,9 @@ pub struct BattleGroup {
 pub struct BattleUnits {
     /// A ship class or a defence: the wire carries just its name.
     pub unit: ShipyardItem,
+    /// How many stood in the round when it began, and how many stand after
+    /// it. The rest of the row is of those that stand.
+    pub entered: u32,
     pub count: u32,
     pub damaged: u32,
     pub at_risk: u32,
