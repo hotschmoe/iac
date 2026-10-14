@@ -353,23 +353,13 @@ fn fuel_money(state: &GameState, brief: Brief) -> f64 {
     state.player.resources.deuterium - building - research - brief.yard_deuterium
 }
 
-/// The survey wing flies for chart points and has nothing to gain once the
-/// score cap is reached. The others bring resources home, the strike wing
-/// as wreckage, and work while a trip pays its fuel.
-fn has_work(brief: Brief, wing: Wing) -> bool {
-    brief.points_wanted || wing != Wing::Survey
-}
-
 /// How long a fleet docked at home stays there whatever the map looks like:
-/// no work, a tank still filling, no fleet slot away, no fuel to spare. A
-/// wing flown for charts wants a tank to spare beyond the next orders; the
-/// others are held to what each trip burns when they choose it.
+/// a tank still filling, no fleet slot away, no fuel to spare. A wing flown
+/// for charts wants a tank to spare beyond the next orders; the others are
+/// held to what each trip burns when they choose it.
 fn held_at_home(state: &GameState, brief: Brief, unit: Unit) -> Option<u64> {
     let fleet = unit.fleet;
     let home = state.player.homeworld;
-    if !has_work(brief, unit.wing) {
-        return Some(WAIT);
-    }
     let tank_filling = state.player.resources.deuterium >= 1.0;
     if fleet.fuel < READY_FUEL * fleet.fuel_max && tank_filling {
         return Some(5);
@@ -459,7 +449,7 @@ impl<'a> Admiral<'a> {
     fn delegate(&mut self, unit: Unit, leaving: bool) {
         let fleet = unit.fleet;
         let Some(doctrines) = unit.wing.doctrines() else { return };
-        if !(has_work(self.brief, unit.wing) && self.can_return(unit)) {
+        if !self.can_return(unit) {
             self.dock(unit);
             return;
         }
@@ -606,7 +596,7 @@ impl<'a> Admiral<'a> {
             if !self.can_return(unit) {
                 return WAIT;
             }
-        } else if !has_work(self.brief, unit.wing) || unit.mauled() || fleet.pursued_by.is_some() {
+        } else if unit.mauled() || fleet.pursued_by.is_some() {
             return self.head_home(unit);
         } else {
             let hold_full = fleet.cargo_capacity > 0.0 && load >= RETURN_LOAD * fleet.cargo_capacity;
@@ -814,14 +804,31 @@ impl<'a> Admiral<'a> {
         if sector.location == self.home {
             return false;
         }
-        let wanted = self.brief.points_wanted;
-        let rating = sector.threat.rating;
-        let chart = if sector.chart.is_none() && wanted { score::chart_points(rating) } else { 0.0 };
+        let chart = if sector.chart.is_none() { self.chart_worth(unit, sector) } else { 0.0 };
         let board = sector.site.is_some_and(|site| boardable(self.odds, fleet, sector, site));
-        let boarding = if board && wanted { score::board_points(self.derelict(sector), rating) } else { 0.0 };
+        let boarding = if board && self.brief.points_wanted {
+            score::board_points(self.derelict(sector), sector.threat.rating)
+        } else {
+            0.0
+        };
         let lasts = sector.salvage_despawn_tick.is_some_and(|t| t > self.state.tick + 3 * u64::from(hops));
         let scoop = sector.salvage.is_some() && lasts && fleet.cargo.total() < fleet.cargo_capacity;
         (chart > 0.0 || board || scoop) && self.pays(fleet, sector, hops, chart + boarding + self.findings(fleet, sector, board))
+    }
+
+    /// What charting `sector` is worth to `unit`. Charting is the survey
+    /// wing's job, which finds what the other wings live on, so to it a
+    /// chart is worth any trip its tank allows; to another wing it is worth
+    /// its points while they still raise the score. This and the boarding
+    /// points above are the only parts of the score a fleet's choice reads.
+    fn chart_worth(&self, unit: Unit, sector: &SectorState) -> f32 {
+        if unit.wing == Wing::Survey {
+            f32::INFINITY
+        } else if self.brief.points_wanted {
+            score::chart_points(sector.threat.rating)
+        } else {
+            0.0
+        }
     }
 
     /// A sector within scan range that the chart does not hold.
@@ -859,15 +866,13 @@ impl<'a> Admiral<'a> {
         if self.blind_spot(here, range) {
             return self.scan(fleet);
         }
-        let edge = self.brief.points_wanted.then(|| {
-            self.chart.nearest(fleet.location, open, |s, hops| {
-                open(s)
-                    && self.in_range(fleet, s, hops)
-                    && self.blind_spot(s, range)
-                    && self.pays(fleet, s, hops, score::chart_points(s.threat.rating))
-            })
+        let edge = self.chart.nearest(fleet.location, open, |s, hops| {
+            open(s)
+                && self.in_range(fleet, s, hops)
+                && self.blind_spot(s, range)
+                && self.pays(fleet, s, hops, self.chart_worth(unit, s))
         });
-        match edge.flatten() {
+        match edge {
             Some(path) => self.set_out(unit, path, false),
             None if fleet.location != self.home => self.head_home(unit),
             None => WAIT,

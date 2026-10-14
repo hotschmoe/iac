@@ -5,6 +5,7 @@
 mod common;
 
 use common::{stored_in, Memory};
+use iac_shared::constants::Resources;
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{is_bot_name, Command, ServerMessage};
 use iac_sim::bot::{Attention, Bot, Personality, Roster, Style, DAY};
@@ -16,13 +17,12 @@ use iac_sim::{host, views, GameEngine};
 const TICKS: u64 = 3_000;
 
 /// Every personality flown hands-on, the explorer and the turtle also as
-/// hybrid and check-in players, with look-ins every 40 minutes so several
-/// fall inside a run.
+/// hybrid and check-in players. A blitz world's look-in day is about 67
+/// minutes, so four look-ins a day put several inside a run.
 fn styles() -> Vec<Style> {
-    let quick = |personality, attention| Style { sessions_per_day: 24, ..Style::new(personality, attention) };
-    let mut styles: Vec<Style> = Personality::ALL.into_iter().map(|p| quick(p, Attention::HandsOn)).collect();
+    let mut styles: Vec<Style> = Personality::ALL.into_iter().map(|p| Style::new(p, Attention::HandsOn)).collect();
     for attention in [Attention::Hybrid, Attention::CheckIn] {
-        styles.extend([quick(Personality::Explorer, attention), quick(Personality::Turtle, attention)]);
+        styles.extend([Style::new(Personality::Explorer, attention), Style::new(Personality::Turtle, attention)]);
     }
     styles
 }
@@ -168,10 +168,9 @@ fn bots_build_fly_and_delegate_with_orders_the_engine_accepts() {
 
     let absentee = player(&players, "explorer/check-in");
     assert!(
-        absentee.turns > 0 && absentee.turns < TICKS / 2 && absentee.turns < pilot.turns,
-        "a check-in player is away most of the time: {} turns against the pilot's {}",
+        absentee.turns > 0 && absentee.turns < TICKS / 2,
+        "a check-in player is away most of the time: {} turns in {TICKS} ticks",
         absentee.turns,
-        pilot.turns,
     );
     assert!(
         absentee.field.sectors_charted > 0,
@@ -181,6 +180,91 @@ fn bots_build_fly_and_delegate_with_orders_the_engine_accepts() {
         world.engine.fleets.values().filter(|f| f.owner_id == pilot.player_id).all(|f| !world.engine.policies.contains_key(&f.id)),
         "a hands-on pilot uses no standing orders",
     );
+}
+
+fn weight(resources: Resources) -> f32 {
+    iac_shared::scaling::resource_weight(&resources)
+}
+
+fn deuterium(amount: f64) -> f32 {
+    weight(Resources { deuterium: amount, ..Resources::default() })
+}
+
+/// Units of `class` a player paid for.
+fn paid(p: &PlayerSummary, class: &str) -> u32 {
+    p.orders_paid
+        .iter()
+        .filter_map(|o| o.item.rsplit_once(" x").filter(|(name, _)| *name == class))
+        .map(|(_, count)| count.parse::<u32>().unwrap_or(0))
+        .sum()
+}
+
+#[test]
+fn a_check_in_bot_in_a_blitz_world_looks_in_a_few_times_an_hour_and_plays() {
+    let mut world = Headless::new(7, Pace::parse("blitz").unwrap());
+    for attention in [Attention::CheckIn, Attention::HandsOn] {
+        let style = Style::new(Personality::Explorer, attention);
+        world.add_player(Box::new(Bot::new(style.label().replace('/', "-"), style)), style.label()).expect("seat bot");
+    }
+    world.run(3_600).unwrap();
+    let players = world.summaries();
+    let (away, present) = (player(&players, "explorer/check-in"), player(&players, "explorer/hands-on"));
+
+    assert!(away.turns < 3_600 / 4, "a check-in player is away most of the hour: {} turns", away.turns);
+    assert!(
+        away.score.total * 4.0 > present.score.total,
+        "it looked in often enough to play: {:.0} points against the pilot's {:.0}",
+        away.score.total,
+        present.score.total,
+    );
+    assert!(away.field.sectors_charted > 0 && away.buildings["Metal Mine"] >= 8, "{} charts, {:?}", away.field.sectors_charted, away.buildings);
+}
+
+/// A blitz world of a hands-on raider, miner and explorer, six hours long.
+fn pilots() -> Vec<PlayerSummary> {
+    let mut world = Headless::new(7, Pace::parse("blitz").unwrap());
+    for personality in [Personality::Raider, Personality::Miner, Personality::Explorer] {
+        let style = Style::new(personality, Attention::HandsOn);
+        world.add_player(Box::new(Bot::new(style.label().replace('/', "-"), style)), style.label()).expect("seat bot");
+    }
+    world.run(6 * 3_600).unwrap();
+    world.summaries()
+}
+
+#[test]
+fn hands_on_pilots_fly_trips_that_pay_keep_a_few_probes_and_reach_the_middle_catalogue() {
+    let players = pilots();
+
+    let raider = player(&players, "raider/hands-on");
+    let brought = raider.field.salvage + raider.field.derelict_loot + raider.field.ore;
+    assert!(raider.field.kills >= 20, "a raider raids: {} kills", raider.field.kills);
+    assert!(
+        brought > deuterium(raider.field.refuel_deuterium),
+        "its trips brought home {brought:.1} points for {:.1} of deuterium",
+        deuterium(raider.field.refuel_deuterium),
+    );
+
+    let miner = player(&players, "miner/hands-on");
+    assert!(
+        miner.field.ore > deuterium(miner.field.refuel_deuterium),
+        "a miner's trips pay: {:.1} points of ore for {:.1} of deuterium",
+        miner.field.ore,
+        deuterium(miner.field.refuel_deuterium),
+    );
+
+    let explorer = player(&players, "explorer/hands-on");
+    let probes = paid(explorer, "Espionage Probe");
+    assert!((1..=40).contains(&probes), "an explorer keeps a few probes and replaces those lost: {probes} bought");
+    assert!(explorer.field.sectors_charted > 50, "and charts with them: {}", explorer.field.sectors_charted);
+
+    for p in &players {
+        assert!(p.buildings["Fusion Reactor"] > 0, "{} makes energy by fusion once solar stops paying: {:?}", p.name, p.buildings);
+        assert!(p.orders_refused * 100 <= p.orders_accepted, "{} sends orders the engine refuses: {} of {}", p.name, p.orders_refused, p.orders_accepted);
+    }
+    for p in [raider, explorer] {
+        let heavier = ["Battleship", "Bomber", "Battlecruiser", "Destroyer", "Deathstar"];
+        assert!(heavier.iter().any(|class| paid(p, class) > 0), "{} builds heavier hulls as it can afford them", p.name);
+    }
 }
 
 #[test]

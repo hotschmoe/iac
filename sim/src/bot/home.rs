@@ -427,8 +427,9 @@ struct Planner<'a> {
     /// a batch whose yard, building or tech still waits for resources would
     /// hold its price for nothing, and take it from the order it waits on.
     started: Projection,
-    /// The stockpile less the batches ordered this turn: what a batch can
-    /// be paid from.
+    /// The stockpile less the batches and the research ordered this turn,
+    /// which a free lab starts and pays for at once: what a batch can be
+    /// paid from.
     stock: Resources,
     /// `stock` less every building and research order already waiting or
     /// queued this turn: what no order has claimed.
@@ -574,7 +575,9 @@ impl<'a> Planner<'a> {
             let Some(tech) = self.next_tech() else { break };
             let level = self.plan.research.get(tech) + 1;
             self.plan.research.set(tech, level);
-            self.spare = self.spare.sub(scaling::research_cost(tech, level));
+            let cost = scaling::research_cost(tech, level);
+            self.spare = self.spare.sub(cost);
+            self.stock = self.stock.sub(cost);
             orders.push(Order::Command(Command::Research { tech, reserve: true }));
         }
     }
