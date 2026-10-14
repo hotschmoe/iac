@@ -5015,7 +5015,9 @@ class BattleSide {
   /// it stands after it.
   final List<BattleGroup> groups;
 
-  /// Units of the side still standing after the round, in all its groups.
+  /// Units the side stood in the round with, in all its groups, and how
+  /// many of them still stand after it.
+  final int entered;
   final int standing;
 
   /// The side's fire, one line for each pair of firing and target unit
@@ -5033,6 +5035,7 @@ class BattleSide {
 
   const BattleSide({
     required this.groups,
+    required this.entered,
     required this.standing,
     required this.volleys,
     required this.shots,
@@ -5046,6 +5049,7 @@ class BattleSide {
     final m = _obj(json);
     return BattleSide(
       groups: _list(m['groups'], BattleGroup.fromJson),
+      entered: _int(m['entered']),
       standing: _int(m['standing']),
       volleys: _list(m['volleys'], Volley.fromJson),
       shots: _int(m['shots']),
@@ -5058,6 +5062,7 @@ class BattleSide {
 
   Json toJson() => {
     'groups': groups.map((e) => e.toJson()).toList(),
+    'entered': entered,
     'standing': standing,
     'volleys': volleys.map((e) => e.toJson()).toList(),
     'shots': shots,
@@ -5132,6 +5137,10 @@ class BattleGroup {
 class BattleUnits {
   /// A ship class or a defence: the wire carries just its name.
   final ShipyardItem unit;
+
+  /// How many stood in the round when it began, and how many stand after
+  /// it. The rest of the row is of those that stand.
+  final int entered;
   final int count;
   final int damaged;
   final int atRisk;
@@ -5143,6 +5152,7 @@ class BattleUnits {
 
   const BattleUnits({
     required this.unit,
+    required this.entered,
     required this.count,
     required this.damaged,
     required this.atRisk,
@@ -5155,6 +5165,7 @@ class BattleUnits {
     final m = _obj(json);
     return BattleUnits(
       unit: ShipyardItem.fromJson(m['unit']),
+      entered: _int(m['entered']),
       count: _int(m['count']),
       damaged: _int(m['damaged']),
       atRisk: _int(m['at_risk']),
@@ -5166,6 +5177,7 @@ class BattleUnits {
 
   Json toJson() => {
     'unit': unit.toJson(),
+    'entered': entered,
     'count': count,
     'damaged': damaged,
     'at_risk': atRisk,

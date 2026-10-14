@@ -163,6 +163,7 @@ fn battle_units(unit: ShipClass, count: u32, damaged: u32, at_risk: u32, hull_lo
     let standing = ships(unit, count, damaged, at_risk, hull_lost);
     BattleUnits {
         unit: ShipyardItem::Ship(unit),
+        entered: count + lost,
         count,
         damaged,
         at_risk,
@@ -188,6 +189,7 @@ fn sample_round() -> BattleRoundEvent {
                 battery: false,
                 units: vec![battle_units(ShipClass::Cruiser, 57, 21, 4, 9_480, 2)],
             }],
+            entered: 59,
             standing: 57,
             volleys: vec![Volley {
                 from: cruiser,
@@ -226,6 +228,7 @@ fn sample_round() -> BattleRoundEvent {
                     units: vec![battle_units(ShipClass::EspionageProbe, 0, 0, 0, 0, 2)],
                 },
             ],
+            entered: 314,
             standing: 83,
             volleys: vec![Volley {
                 from: fighter,
@@ -273,7 +276,16 @@ fn sample_losses() -> Vec<BattleLosses> {
 
 fn defence_units(kind: DefenceKind, count: u32, damaged: u32, hull_lost: u64, lost: u32) -> BattleUnits {
     let hull_max = u64::from(count) * u64::from(unit_figures(ShipyardItem::Defence(kind), Arms::BASE).hull);
-    BattleUnits { unit: ShipyardItem::Defence(kind), count, damaged, at_risk: 0, hull: hull_max - hull_lost, hull_max, lost }
+    BattleUnits {
+        unit: ShipyardItem::Defence(kind),
+        entered: count + lost,
+        count,
+        damaged,
+        at_risk: 0,
+        hull: hull_max - hull_lost,
+        hull_max,
+        lost,
+    }
 }
 
 /// The second round of a raid on a homeworld: Cruisers and Light Fighters
@@ -321,6 +333,7 @@ fn raid_round() -> BattleRoundEvent {
                     ],
                 },
             ],
+            entered: 43,
             standing: 27,
             volleys: vec![
                 volley(fighter, fighter, 4, 40, 160, 0),
@@ -349,6 +362,7 @@ fn raid_round() -> BattleRoundEvent {
                     battle_units(ShipClass::Cruiser, 2, 1, 0, 330, 0),
                 ],
             }],
+            entered: 13,
             standing: 9,
             volleys: vec![
                 volley(fighter, fighter, 2, 20, 80, 1),

@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
-import '../../console/battle.dart' show RaidEnding, fleeingLine, flightPrice, outcomeTitle, roundsOf, stopFlightRule, ticksOf;
+import '../../console/battle.dart' show RaidEnding, fleeingLine, flightPrice, outcomeTitle, raidRoundOf, roundsOf, stopFlightRule, ticksOf;
 import '../../console/intel.dart';
 import '../../console/outpost.dart' show inOutpostRings;
 import '../../console/route_planner.dart';
@@ -19,12 +19,14 @@ import '../../design/lens.dart';
 import '../../design/panel.dart';
 import '../../design/tokens.dart';
 import '../../models/fleet.dart' as ui;
+import '../../models/game_state.dart' show Battle;
 import '../../protocol/protocol.dart' as proto;
+import '../../scenes/battle/field.dart' show Sides;
 import '../../scenes/windshield/geometry.dart';
 import '../../scenes/windshield/painter.dart';
 import '../../scenes/windshield/sim.dart';
 import '../../state/game_controller.dart' show HomeworldTab;
-import '../battle_view.dart' show BattlePanel, BattleStrip;
+import '../battle_view.dart' show BattlePanel, BattleStrip, raidLabelColor;
 import '../homeworld/economy_tabs.dart' show HoldDock, HoldPanel;
 import '../onboarding.dart';
 import '../outpost_view.dart' show FoundingPanel, OutpostPanel;
@@ -163,8 +165,15 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
 
   void _syncSim() {
     final f = _fleet;
+    final st = con.state;
     final before = sim.loc;
-    sim.sync(f: f, s: f == null ? null : _sec(f.sector), homeHex: con.state.homeworld);
+    sim.sync(
+        f: f,
+        s: f == null ? null : _sec(f.sector),
+        homeHex: st.homeworld,
+        sides: f == null ? Sides.none : Sides.at(st, f.sector, fleet: f),
+        tick: st.tick);
+    sim.stamp = f == null ? null : _stamp(st.battleAt(f.sector), f);
     sim.atExchange = f != null && con.state.exchangeAt(f.sector);
     sim.outpost = f == null ? null : _sec(f.sector)?.outpost;
     if (f != null && before != null && before != sim.loc && sim.warp != null) {
@@ -186,6 +195,21 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
             first ? 'First visit. ${voice[s?.terrain ?? proto.TerrainType.empty]}' : '${s?.terrain.label ?? ''} / ${f.sector.zone.label}', th.rating >= 5);
       }
     }
+  }
+
+  /// What the scope prints between the two sides of the fight where the
+  /// fleet stands: the round, a raid's against the most it is fought for,
+  /// and how the fight stands, from the fleet's own quote for leaving it or
+  /// from the raid's forecast.
+  static FightStamp? _stamp(Battle? fight, ui.FleetState f) {
+    if (fight == null || fight.over) return null;
+    final round = fight.isRaid ? raidRoundOf(fight.rounds) : 'ROUND ${fight.rounds}';
+    if (fight.raid case final raid?) return FightStamp(round, verdict: raid.odds.label.label, color: raidLabelColor(raid.odds.label));
+    if (f.flight case final quote?) {
+      final odds = RatioInfo.ofLabel(quote.ratio, quote.label);
+      return FightStamp(round, verdict: odds.label, color: odds.color);
+    }
+    return FightStamp(round);
   }
 
   /// A pursuit in the few words a banner has room for on a phone; the
@@ -268,14 +292,16 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
 
   void jump(Dir d) {
     final f = _fleet;
-    if (f == null || sim.warp != null) return;
+    if (f == null) return;
+    final leaving = f.fleeing;
+    if (sim.warp != null && leaving == null) return;
     final here = _sec(f.sector);
     final target = f.sector + d.v;
     if (here == null || !here.connections.contains(target)) {
       _toast('No lane', 'No lane ${d.name} from ${f.sector.q}, ${f.sector.r}.', tone: ToastTone.red);
       return;
     }
-    if (f.fleeing case final leaving?) {
+    if (leaving != null) {
       _toast('Leaving already', '${fleeingLine(leaving)}. $stopFlightRule');
       return;
     }
@@ -329,7 +355,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     final f = _fleet;
     if (f == null) return;
     final jumping = sim.warp;
-    if (jumping != null && !(id == 'stop' && jumping.waiting)) return;
+    if (jumping != null && f.fleeing == null && !(id == 'stop' && jumping.waiting)) return;
     final s = _sec(f.sector);
     final th = SectorThreat.of(s);
     final why = _reason(id, f, th, s);
@@ -498,6 +524,16 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       _toggleOutpost();
       return true;
     }
+    if (ch == 'i') {
+      final f = _fleet;
+      final fight = f == null ? null : con.state.battleOf(f);
+      if (fight == null) {
+        _toast('No fight here', 'The battle view shows a fight round by round. This fleet is in none, and none has just ended here.');
+      } else {
+        con.openBattle(fight.id);
+      }
+      return true;
+    }
     const m = {'v': 'scan', 'h': 'harvest', 'f': 'fire', 'c': 'collect', 'b': 'board', 'r': 'recall', 'x': 'stop', 't': 'trade', 'l': 'load'};
     final a = m[ch];
     if (a != null) {
@@ -639,7 +675,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         if (leaving != null) ...[LeavingPanel(fleet: f, leaving: leaving, onStop: () => act('stop')), const SizedBox(height: 8)],
         if (quote != null) ...[FlightPanel(fleet: f, quote: quote, ways: ways, onLeave: jump), const SizedBox(height: 8)],
         if (battle != null) ...[
-          BattlePanel(key: ValueKey(battle.sector), battle: battle, onDismiss: () => setState(() => _dismissed = battle.endedTick)),
+          BattlePanel(key: ValueKey(battle.sector), battle: battle, keyHint: 'I', onDismiss: () => setState(() => _dismissed = battle.endedTick)),
           const SizedBox(height: 8),
         ],
         if (_orders) ...[OrdersPanel(controller: con.game), const SizedBox(height: 8)],
@@ -714,6 +750,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
               child: GestureDetector(
                 key: const ValueKey('arena'),
                 behavior: HitTestBehavior.opaque,
+                onTapDown: (d) => _pick(d.localPosition, g),
                 onTap: () {
                   setState(() {
                     if (sim.hoverT != null) {
@@ -774,7 +811,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
                       text: quote.refusal == null ? flightPrice(quote).toUpperCase() : 'TAP FOR WHY',
                       color: quote.refusal == null ? C.a300 : C.ember,
                       onTap: openSheet),
-                if (battle != null) BattleStrip(battle: battle, onTap: openSheet),
+                if (battle != null) BattleStrip(battle: battle, onTap: () => con.openBattle(battle.id)),
               ])),
         if (narrow)
           Positioned(
@@ -852,8 +889,12 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   void _pick(Offset p, Geo g) {
     String? h;
     bool near(Offset o, double r) => (p - o).distance < r;
-    if (sim.hostiles.any((u) => !u.dead && near(g.wp(u.x, u.y), sim.markPx(u) * g.sc * 2))) {
+    final mark = sim.field.markAt(p - Offset(g.cx, g.cy));
+    sim.hoverMark = mark;
+    if (mark != null && mark.hostile) {
       h = 'h';
+    } else if (mark != null) {
+      h = null;
     } else if (sim.salvage != null && near(g.wp(sim.salvage!.x, sim.salvage!.y), g.rh * .08)) {
       h = 's';
     } else if (sim.derelict != null && near(g.wp(sim.derelict!.x, sim.derelict!.y), g.rh * .3)) {

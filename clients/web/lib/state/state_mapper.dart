@@ -153,6 +153,11 @@ class StateMapper {
   /// at is the last `BattleRound` event, or a full state's `last_round`.
   final Map<int, Battle> battles = {};
 
+  /// The last fights that ended, newest first, each with the rounds this
+  /// console was sent of it: what the battle view steps through after a
+  /// fight. The server keeps none of it, so a console opened anew has none.
+  final List<Battle> pastFights = [];
+
   /// The log's line for the last round of each fight under way, by sector
   /// key: a fight keeps one such line, which each round replaces.
   final Map<int, LogEntry> _roundLines = {};
@@ -181,6 +186,7 @@ class StateMapper {
     signalBands.clear();
     policyActs.clear();
     battles.clear();
+    pastFights.clear();
     _roundLines.clear();
     _foughtAt.clear();
     previews.clear();
@@ -237,12 +243,13 @@ class StateMapper {
     }
     signals.removeWhere((k, _) => sectors.containsKey(k));
     signalBands.removeWhere((k, _) => sectors.containsKey(k));
+    final followed = {
+      for (final MapEntry(:key, value: b) in battles.entries)
+        if (!b.over) key: b,
+    };
     battles
       ..removeWhere((_, b) => !b.over)
-      ..addAll({
-        for (final b in s.battles)
-          b.sector.toKey(): Battle(sector: b.sector, rounds: b.rounds, round: b.lastRound, losses: b.losses, raid: b.raid),
-      });
+      ..addAll({for (final b in s.battles) b.sector.toKey(): _resumed(followed[b.sector.toKey()], b, s.tick)});
     previews.clear();
     odds.clear();
     quotes.clear();
@@ -271,11 +278,29 @@ class StateMapper {
     battles.removeWhere((key, b) => b.over ? tick - b.endedTick > battleReportTicks : !live.contains(key));
     for (final b in u.battles) {
       final known = battles[b.sector.toKey()];
-      battles[b.sector.toKey()] = Battle(
-          sector: b.sector, rounds: b.rounds, round: known == null || known.over ? null : known.round, losses: b.losses, raid: b.raid);
+      battles[b.sector.toKey()] =
+          known == null || known.over ? Battle(sector: b.sector, since: tick, rounds: b.rounds, losses: b.losses, raid: b.raid) : known.listed(b);
     }
     policyActs.removeWhere((id, _) => fleets.every((f) => f.id != id));
     _noteFights();
+  }
+
+  /// A fight a full state lists. The console goes on with the rounds it
+  /// holds of it when the state's last round is the last of them; else it
+  /// starts from the one round the state carries, the only one the server
+  /// has.
+  Battle _resumed(Battle? known, proto.BattleState b, int at) {
+    if (known != null && known.round?.round == b.lastRound?.round) return known.listed(b);
+    return Battle(
+        sector: b.sector, since: at, rounds: b.rounds, round: b.lastRound, history: [?b.lastRound], losses: b.losses, raid: b.raid);
+  }
+
+  /// Hold a fight that has ended among the last [Battle.fightsKept].
+  void _keep(Battle ended) {
+    pastFights
+      ..removeWhere((b) => b.id == ended.id)
+      ..insert(0, ended);
+    if (pastFights.length > Battle.fightsKept) pastFights.removeRange(Battle.fightsKept, pastFights.length);
   }
 
   void _noteFights() {
@@ -331,9 +356,7 @@ class StateMapper {
       case proto.BattleRoundKind(battleRound: final round):
         final key = round.sector.toKey();
         final known = battles[key];
-        battles[key] = known == null || known.over
-            ? Battle(sector: round.sector, rounds: round.round, round: round)
-            : Battle(sector: round.sector, rounds: round.round, round: round, losses: known.losses, raid: known.raid);
+        battles[key] = (known == null || known.over ? Battle(sector: round.sector, since: e.tick, rounds: 0) : known).fought(round);
         if (!round.mine) return;
         log.remove(_roundLines.remove(key));
         final line = LogEntry(tick: e.tick, message: roundLine(round), level: EventLevel.dim);
@@ -366,8 +389,9 @@ class StateMapper {
         final key = k.sector.toKey();
         _roundLines.remove(key);
         final fought = battles[key];
-        battles[key] = Battle(
-            sector: k.sector, rounds: k.rounds, round: fought?.round, losses: k.losses, ended: k, endedTick: e.tick, raid: fought?.raid);
+        final ended = (fought == null || fought.over ? Battle(sector: k.sector, since: e.tick, rounds: k.rounds) : fought).endedAs(k, e.tick);
+        battles[key] = ended;
+        _keep(ended);
         if (k.raid && k.mine) return;
         msg = '${k.mine ? '! ' : ''}${endedLine(k)}';
         level = k.mine ? EventLevel.bright : EventLevel.dim;
@@ -446,7 +470,10 @@ class StateMapper {
           lastOutpostRaid = report;
         }
         final key = (k.outpost ?? player?.homeworld)?.toKey();
-        if (battles[key] case final fought? when fought.over && fought.endedTick == e.tick) battles[key!] = fought.resolvedAs(k);
+        if (battles[key] case final fought? when fought.over && fought.endedTick == e.tick) {
+          battles[key!] = fought.resolvedAs(k);
+          _keep(battles[key]!);
+        }
         _log(LogEntry(tick: e.tick, message: '${raidSummary(k, tick: e.tick).join('. ')}.', level: EventLevel.normal));
         msg = '! ${raidHeadline(k)}';
         level = EventLevel.bright;
@@ -593,6 +620,7 @@ class StateMapper {
       surveys: {for (final e in surveys.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
       policyActs: {for (final f in fleets) f.id: ?policyActs[f.id]?.toList()},
       battles: {for (final b in battles.values) b.sector: b},
+      pastFights: List.of(pastFights),
     );
   }
 

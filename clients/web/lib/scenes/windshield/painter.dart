@@ -7,6 +7,8 @@ import '../../design/draw.dart';
 import '../../design/symbols.dart';
 import '../../design/tokens.dart';
 import '../../protocol/protocol.dart' as proto;
+import '../battle/field.dart';
+import '../battle/field_painter.dart';
 import 'geometry.dart';
 import 'sim.dart';
 
@@ -21,7 +23,6 @@ const _ember = Color(0xFFFF5A3C);
 const _own = Color(0xFF5EE0CF);
 const _gold = Color(0xFFFFCC66);
 const _violet = Color(0xFFB793FF);
-const _cyan = Color(0xFF7FD4FF);
 
 /// Draws the whole sector scope. Repaints every frame off [repaint]; all
 /// state lives in [WindshieldSim].
@@ -46,7 +47,8 @@ class ArenaPainter extends CustomPainter {
     final t = sim.time;
     canvas.save();
     canvas.clipRect(Offset.zero & size);
-    if (sim.shake > 0) canvas.translate((sim.rng.nextDouble() - .5) * sim.shake, (sim.rng.nextDouble() - .5) * sim.shake);
+    final shake = sim.field.shake;
+    if (shake > 0) canvas.translate((sim.rng.nextDouble() - .5) * shake, (sim.rng.nextDouble() - .5) * shake);
     _stars(size, t);
     if (sim.loc == null) {
       canvas.restore();
@@ -62,13 +64,13 @@ class ArenaPainter extends CustomPainter {
     if (sim.outpost != null) _outpost(sim.outpost!);
     _salvage(t);
     _derelict(t);
-    _hostiles(t);
-    _ownShips(t);
-    _scale();
+    _pursuit(t);
+    _flight(t);
     _beams(t);
-    _shots(t);
+    FieldPainter(canvas, sim.field, Offset(g.cx, g.cy), t: t, bloom: bloom, hover: sim.hoverMark).paint();
+    _hostileReticle();
+    _stamp(t);
     _scan(t);
-    _fx(t);
     canvas.restore();
   }
 
@@ -97,7 +99,7 @@ class ArenaPainter extends CustomPainter {
 
   void _arena(double t) {
     final rh = g.rh, cx = g.cx, cy = g.cy;
-    final danger = sim.hostiles.isNotEmpty && _rating() >= 3;
+    final danger = sim.field.theirs.isNotEmpty && _rating() >= 3;
     final hair = Draw.line(_amber, 1, .16);
     for (final f in [.33, .66]) {
       Draw.dashedPath(c, _hex(rh * f), hair, 2, 5);
@@ -281,6 +283,7 @@ class ArenaPainter extends CustomPainter {
   void _asteroid(Asteroid a, double t) {
     final o = wp(a.x, a.y), r = a.r * g.rh;
     final glowOn = sim.target == 'o' || sim.hoverT == 'o' || (sim.harvesting && a.ore != null);
+    final back = sim.combat || _underAMark(o, r) ? .3 : 1.0;
     c.save();
     c.translate(o.dx, o.dy);
     c.rotate(a.rot);
@@ -290,8 +293,8 @@ class ArenaPainter extends CustomPainter {
       pts.add(Offset(math.cos(an) * rr, math.sin(an) * rr));
     }
     final p = Path()..addPolygon(pts, true);
-    c.drawPath(p, Draw.line(glowOn ? const Color(0xFFFFE2A3) : _amber, glowOn ? 1.6 : 1.2, glowOn ? .95 : .62));
-    if (bloom) {
+    c.drawPath(p, Draw.line(glowOn ? const Color(0xFFFFE2A3) : _amber, glowOn ? 1.6 : 1.2, (glowOn ? .95 : .62) * back));
+    if (bloom && back == 1) {
       c.drawPath(
           p,
           Paint()
@@ -306,13 +309,25 @@ class ArenaPainter extends CustomPainter {
       f.moveTo(q.dx, q.dy);
       f.lineTo(r * .12 * math.cos(a.seed * 9 + i), r * .12 * math.sin(a.seed * 9 + i));
     }
-    c.drawPath(f, Draw.line(_amber, 1, .3));
+    c.drawPath(f, Draw.line(_amber, 1, .3 * back));
     c.restore();
     if (a.ore != null) {
       final oc = _oreCol(a.ore!), pu = .55 + .45 * math.sin(t * 2 + a.seed * 9);
-      c.drawRect(Rect.fromCenter(center: o, width: 5, height: 5), Draw.line(oc, 1.2, .5 + .4 * pu));
-      Draw.text(c, _oreName(a.ore!), o.dx + r * .9 + 3, o.dy + r * .5 + 8, T.mono(size: 9, color: oc.withValues(alpha: .85), weight: FontWeight.w500));
+      c.drawRect(Rect.fromCenter(center: o, width: 5, height: 5), Draw.line(oc, 1.2, (.5 + .4 * pu) * back));
+      Draw.text(c, _oreName(a.ore!), o.dx + r * .9 + 3, o.dy + r * .5 + 8, T.mono(size: 9, color: oc.withValues(alpha: .85 * back), weight: FontWeight.w500));
     }
+  }
+
+  /// A rock of radius [r] at [o] lies under a mark. Such a rock is drawn
+  /// faint, as every rock is while a fight is on: the scope is for the
+  /// marks first.
+  bool _underAMark(Offset o, double r) {
+    for (final m in sim.field.marks) {
+      if (!m.placed) continue;
+      final at = _centre + m.at + (sim.field.offsets[m.formation] ?? Offset.zero);
+      if (Rect.fromCenter(center: at, width: m.shape.size.width + r * 2, height: m.shape.size.height + r * 2).contains(o)) return true;
+    }
+    return false;
   }
 
   Color _oreCol(String k) => C.ore(k);
@@ -324,9 +339,9 @@ class ArenaPainter extends CustomPainter {
     var o = wp(sv.x, sv.y);
     if (sv.fly >= 0) {
       final p = math.min(1.0, (sim.now - sv.fly) / .6);
-      final u = sim.own.where((u) => !u.dead).firstOrNull;
+      final u = _flagship;
       if (u != null) {
-        final to = wp(u.x, u.y);
+        final to = _centre + u.lead;
         o = o + (to - o) * (p * p);
       }
     }
@@ -404,99 +419,137 @@ class ArenaPainter extends CustomPainter {
     if (hl) Draw.reticle(c, o.dx, o.dy, s * 3.7, _violet, label: 'DERELICT T${d.tier}');
   }
 
-  void _ship(Unit u, bool enemy, double t, {double alphaMul = 1, Offset? at}) {
-    final o = at ?? wp(u.x, u.y);
-    final s = sim.markPx(u) * g.sc * 1.95, rot = u.ang;
-    final col = enemy ? _ember : _own;
-    final fl = u.flash;
-    final warp = sim.warp != null;
-    if (!u.dead && alphaMul == 1) {
-      final f = (.55 + .45 * math.sin(t * 22 + u.id)) * (warp ? 2.4 : 1);
-      final ca = math.cos(rot), sa = math.sin(rot);
-      Offset l(double lx, double ly) => Offset(o.dx + lx * ca - ly * sa, o.dy + lx * sa + ly * ca);
-      for (final k in const [-.28, 0.0, .28]) {
-        c.drawLine(l(k * s, s * .9), l(k * s, s * (.9 + .5 * f * (k == 0 ? 1.5 : 1))), Draw.line(enemy ? const Color(0xFFFF965A) : const Color(0xFFA0FFF0), 1.1, .6));
-      }
-    }
-    final def = enemy ? Sym.hostile(u.cls) : Sym.own(u.cls);
-    final cc = fl > .3 ? const Color(0xFFFFF0DC) : col;
-    Draw.symbol(c, def, o.dx, o.dy, s, rot: rot, color: cc, lw: 1.3 + fl * .9, alpha: math.min(1.0, .92 + fl) * alphaMul, bloom: bloom && alphaMul == 1);
-    if (alphaMul != 1) return;
-    if (u.screen > .05) {
-      Draw.dashedPath(c, Path()..addOval(Rect.fromCircle(center: o, radius: s * 1.35)), Draw.line(_cyan, 1, .8 * u.screen), 3, 4);
-    }
+  Offset get _centre => Offset(g.cx, g.cy);
+
+  /// The first mark of the fleet the scope is watched from: where a beam
+  /// or a scooped pile is drawn to.
+  Mark? get _flagship {
+    final id = sim.fleetId;
+    if (id == null) return null;
+    return sim.field.marks.where((m) => m.placed && m.formation == Formation.fleetId(id)).firstOrNull;
   }
 
-  /// What a mark stands for, said once under the fleet while it is more
-  /// than a ship: the list beside the scope has the counts.
-  void _scale() {
-    if (sim.scale <= 1 || sim.warp != null) return;
-    final o = wp(0, .1);
-    Draw.text(c, 'EACH MARK: UP TO ${sim.scale} SHIPS', o.dx, o.dy, T.mono(size: 9.5, color: const Color(0xB3BFA370), spacing: .6), anchor: .5);
+  /// The hostile groups under the pointer or picked as the target, in one
+  /// bracket with the sector's rating.
+  void _hostileReticle() {
+    if (sim.combat || !(sim.target == 'h' || sim.hoverT == 'h')) return;
+    Rect? box;
+    for (final m in sim.field.theirs) {
+      if (!m.placed) continue;
+      final r = Rect.fromCenter(center: _centre + m.at, width: m.shape.size.width, height: m.shape.size.height);
+      box = box?.expandToInclude(r) ?? r;
+    }
+    if (box == null) return;
+    Draw.reticle(c, box.center.dx, box.center.dy, math.max(box.width, box.height) / 2 + 8, _ember, label: 'HOSTILE T${_rating()}');
   }
 
-  void _hostiles(double t) {
-    final tg = sim.target == 'h' || sim.hoverT == 'h' || sim.combat;
-    var i = 0;
-    for (final h in sim.hostiles) {
-      if (h.dead) continue;
-      _ship(h, true, t);
-      if (tg) {
-        final o = wp(h.x, h.y), r = sim.markPx(h) * g.sc * 2.1;
-        c.save();
-        c.translate(o.dx, o.dy);
-        c.rotate(math.pi / 4);
-        c.drawRect(Rect.fromLTWH(-r * .8, -r * .8, r * 1.6, r * 1.6), Draw.line(_ember, 1.1, sim.combat ? .55 + .35 * math.sin(t * 8 + i) : .8));
-        c.restore();
-        if (i == 0 && !sim.combat) Draw.reticle(c, o.dx, o.dy, r * 1.15, _ember, label: 'HOSTILE T${_rating()}');
-      }
-      i++;
-    }
+  /// The round the fight stands at and how it stands, on the centre line
+  /// between the two sides.
+  void _stamp(double t) {
+    final stamp = sim.stamp;
+    if (stamp == null || sim.warp != null) return;
+    final beat = reduced ? 0.0 : math.max(0.0, 1 - (sim.now - sim.field.hazeFrom) / .5);
+    final left = Offset(g.cx - g.rh * .9, g.cy);
+    final round = T.cond(size: g.compact ? 10 : 12, color: stamp.color.withValues(alpha: .75 + .25 * beat), weight: FontWeight.w700, spacing: 2);
+    final plate = Paint()..color = const Color(0xD007050A);
+    final wide = Draw.tp(stamp.round, round).width;
+    c.drawRect(Rect.fromLTWH(left.dx - 4, left.dy - 9, wide + 8, 18), plate);
+    Draw.text(c, stamp.round, left.dx, left.dy, round);
+    final verdict = stamp.verdict;
+    if (verdict == null) return;
+    final style = T.cond(size: g.compact ? 10 : 12, color: stamp.color, weight: FontWeight.w700, spacing: 2);
+    final w = Draw.tp(verdict, style).width;
+    final right = g.cx + g.rh * .9;
+    c.drawRect(Rect.fromLTWH(right - w - 4, g.cy - 9, w + 8, 18), plate);
+    Draw.text(c, verdict, right, g.cy, style, anchor: 1);
   }
 
-  void _ownShips(double t) {
-    if (quality == Quality.high) {
-      for (var gi = 0; gi < sim.ghosts.length; gi++) {
-        final gh = sim.ghosts[gi];
-        final a = .12 * (gi + 1) / sim.ghosts.length;
-        for (var i = 0; i < gh.length && i < sim.own.length; i++) {
-          if (sim.own[i].dead) continue;
-          _ship(sim.own[i], false, t, alphaMul: a, at: wp(gh[i].dx, gh[i].dy));
-        }
+  /// A fleet charging its jump out of a fight: its course to the lane it
+  /// leaves by, and the count of the state's `fleeing` beside it.
+  void _flight(double t) {
+    final leaving = sim.fleet?.fleeing;
+    final lane = sim.exitLane;
+    final id = sim.fleetId;
+    if (leaving == null || lane == null || id == null) return;
+    final box = sim.field.boundsOf(Formation.fleetId(id));
+    if (box == null) return;
+    final from = _centre + box.center + (sim.field.offsets[Formation.fleetId(id)] ?? Offset.zero);
+    final gate = g.gatePoint(lane);
+    const col = Color(0xFFFFCC66);
+    Draw.dashedLine(c, from, gate, Draw.line(col, 1.3, .7), 6, 5, reduced ? 0 : -t * 34);
+    final along = gate - from;
+    final len = along.distance;
+    if (len > 1) {
+      final n = along / len, side = Offset(-n.dy, n.dx);
+      for (var k = 0; k < 3; k++) {
+        final ph = reduced ? (k + 1) / 4 : (t * .7 + k / 3) % 1;
+        final at = from + n * (len * (.25 + .7 * ph));
+        final p = Path()
+          ..moveTo(at.dx - n.dx * 5 + side.dx * 5, at.dy - n.dy * 5 + side.dy * 5)
+          ..lineTo(at.dx, at.dy)
+          ..lineTo(at.dx - n.dx * 5 - side.dx * 5, at.dy - n.dy * 5 - side.dy * 5);
+        c.drawPath(p, Draw.line(col, 1.4, (1 - (ph - .5).abs() * 2).clamp(0.0, 1.0)));
       }
     }
-    for (final u in sim.own) {
-      if (u.dead) continue;
-      final bob = sim.warp == null ? math.sin(t * 1.2 + u.id) * .004 : 0.0;
-      final y0 = u.y;
-      u.y += bob;
-      _ship(u, false, t);
-      u.y = y0;
+    final label = 'JUMP IN ${leaving.ticks}';
+    final style = T.cond(size: g.compact ? 11 : 13, color: C.a100, weight: FontWeight.w700, spacing: 2);
+    final note = T.mono(size: g.compact ? 8.5 : 9.5, color: col.withValues(alpha: .9));
+    final at = Offset(from.dx, from.dy + box.height / 2 + 14);
+    final wide = math.max(Draw.tp(label, style).width, Draw.tp('GUNS SILENT', note).width);
+    c.drawRect(Rect.fromCenter(center: at + const Offset(0, 6), width: wide + 12, height: 30), Paint()..color = const Color(0xD007050A));
+    Draw.text(c, label, at.dx, at.dy, style, anchor: .5);
+    Draw.text(c, 'GUNS SILENT', at.dx, at.dy + 13, note, anchor: .5);
+  }
+
+  /// A group on the fleet's trail: the lane it comes down, marked from the
+  /// gate inward, with the ticks until it lands and whether it lands before
+  /// the fleet can be gone. All of it is the state's `pursued_by`.
+  void _pursuit(double t) {
+    final f = sim.fleet;
+    final hunter = f?.pursuedBy;
+    if (f == null || hunter == null) return;
+    final lane = dirs.where((d) => d.v == proto.Hex(hunter.from.q - f.sector.q, hunter.from.r - f.sector.r)).firstOrNull;
+    if (lane == null) return;
+    final a = lane.angle, n = Offset(math.cos(a), math.sin(a)), side = Offset(-n.dy, n.dx);
+    final gate = g.gatePoint(lane);
+    final inner = _centre + n * g.rh * .34;
+    final pulse = reduced ? 1.0 : .6 + .4 * math.sin(t * 6);
+    Draw.seg(c, gate - side * g.rh * .2, gate + side * g.rh * .2, _ember, pulse, 3, bloom: bloom);
+    Draw.dashedLine(c, gate, inner, Draw.line(_ember, 1.2, .55), 4, 6, reduced ? 0 : t * 40);
+    for (var k = 0; k < 4; k++) {
+      final ph = reduced ? (k + 1) / 5 : (t * .9 + k / 4) % 1;
+      final at = Offset.lerp(gate, inner, ph)!;
+      final w = g.rh * .05;
+      final p = Path()
+        ..moveTo(at.dx + n.dx * w + side.dx * w, at.dy + n.dy * w + side.dy * w)
+        ..lineTo(at.dx, at.dy)
+        ..lineTo(at.dx + n.dx * w - side.dx * w, at.dy + n.dy * w - side.dy * w);
+      c.drawPath(p, Draw.line(_ember, 1.6, (1 - ph) * .95));
     }
+    final at = _centre + n * g.rh * .56;
+    final head = 'PURSUIT ${hunter.arrivesIn}';
+    final verdict = hunter.catches ? 'CATCHES' : 'TOO LATE';
+    final style = T.cond(size: g.compact ? 11 : 13, color: const Color(0xFFFFD6CC), weight: FontWeight.w700, spacing: 2);
+    final note = T.mono(size: g.compact ? 8.5 : 9.5, color: hunter.catches ? _ember : C.ok, weight: FontWeight.w600);
+    final wide = math.max(Draw.tp(head, style).width, Draw.tp(verdict, note).width);
+    c.drawRect(Rect.fromCenter(center: at + const Offset(0, 6), width: wide + 12, height: 30), Paint()..color = const Color(0xE007050A));
+    c.drawRect(Rect.fromCenter(center: at + const Offset(0, 6), width: wide + 12, height: 30), Draw.line(_ember, 1, .8 * pulse));
+    Draw.text(c, head, at.dx, at.dy, style, anchor: .5);
+    Draw.text(c, verdict, at.dx, at.dy + 13, note, anchor: .5);
   }
 
   void _beams(double t) {
     if (!sim.harvesting || sim.warp != null) return;
-    final us = sim.own.where((u) => !u.dead).toList();
+    final id = sim.fleetId;
+    final us = [
+      for (final m in sim.field.marks)
+        if (m.placed && id != null && m.formation == Formation.fleetId(id)) m,
+    ];
     final as = sim.ast.where((a) => a.ore != null).toList();
     if (as.isEmpty) return;
     for (var i = 0; i < us.length; i++) {
       final a = as[i % as.length];
-      final p1 = wp(us[i].x, us[i].y), p2 = wp(a.x, a.y);
-      Draw.dashedLine(c, p1 + const Offset(0, -8), p2, Draw.line(_oreCol(a.ore!), 1.2, .8), 3, 4, reduced ? 0 : t * 40);
-    }
-  }
-
-  void _shots(double t) {
-    for (final s in sim.shots) {
-      final p = (sim.now - s.t0) / s.dur;
-      if (p < 0) continue;
-      final a = wp(s.a.x, s.a.y), b = wp(s.t.x, s.t.y);
-      final q = p.clamp(0.0, 1.0), q0 = math.max(0.0, p - .22);
-      final col = s.side ? const Color(0xFF9FFFF0) : const Color(0xFFFF7A5C);
-      Draw.seg(c, Offset.lerp(a, b, q0)!, Offset.lerp(a, b, q)!, col, 1, 1.6, bloom: bloom);
-      final head = Offset.lerp(a, b, q)!;
-      c.drawRect(Rect.fromCenter(center: head, width: 3, height: 3), Paint()..color = col);
+      Draw.dashedLine(c, _centre + us[i].lead, wp(a.x, a.y), Draw.line(_oreCol(a.ore!), 1.2, .8), 3, 4, reduced ? 0 : t * 40);
     }
   }
 
@@ -521,35 +574,6 @@ class ArenaPainter extends CustomPainter {
     }
     ring.close();
     c.drawPath(ring, Draw.line(_own, 1.4, (1 - p) * .9));
-  }
-
-  void _fx(double t) {
-    for (final p in sim.sparks) {
-      final o = wp(p.x, p.y), k = math.max(.001, math.sqrt(p.vx * p.vx + p.vy * p.vy)), l = p.len * g.rh;
-      c.drawLine(o, Offset(o.dx - p.vx / k * l, o.dy - p.vy / k * l), Draw.line(p.c, 1.2, math.max(0, p.l / p.m)));
-    }
-    for (final f in sim.frags) {
-      final o = wp(f.x, f.y), l = f.len * g.rh;
-      c.drawLine(Offset(o.dx - math.cos(f.rot) * l, o.dy - math.sin(f.rot) * l), Offset(o.dx + math.cos(f.rot) * l, o.dy + math.sin(f.rot) * l), Draw.line(f.col, 1.3, math.max(0, f.l / f.m)));
-    }
-    for (final r in sim.rings) {
-      final p = (sim.now - r.t0) / .7;
-      final o = wp(r.x, r.y), rr = r.r * g.rh * .6 * (1 + p * 5);
-      final path = Path();
-      for (var k = 0; k < 8; k++) {
-        final a = k * tau / 8 + .4;
-        final pt = Offset(o.dx + math.cos(a) * rr, o.dy + math.sin(a) * rr);
-        k == 0 ? path.moveTo(pt.dx, pt.dy) : path.lineTo(pt.dx, pt.dy);
-      }
-      path.close();
-      c.drawPath(path, Draw.line(_gold, 1.4, math.max(0, (1 - p) * .9)));
-    }
-    for (final f in sim.floats) {
-      final p = (sim.now - f.t0) / 1.1;
-      if (p < 0) continue;
-      final o = wp(f.x, f.y);
-      Draw.text(c, f.text, o.dx, o.dy - p * 30, T.mono(size: 12, color: f.color.withValues(alpha: math.max(0, 1 - p)), weight: FontWeight.w500), anchor: .5);
-    }
   }
 
   @override

@@ -8112,6 +8112,7 @@ pub fn fleet_broadside(fleet: &Fleet) -> (u64, u64) {
 fn battle_side(side: &combat::SideReport) -> BattleSide {
     BattleSide {
         groups: Vec::new(),
+        entered: side.standing.iter().flatten().map(|units| units.entered).sum(),
         standing: side.units(),
         volleys: side.volleys.clone(),
         shots: side.shots,

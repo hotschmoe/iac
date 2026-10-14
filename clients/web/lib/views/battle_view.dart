@@ -1,7 +1,13 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../console/battle.dart';
 import '../console/intel.dart' show clockFmt, groupDigits;
+import '../console/prefs.dart' show Quality;
+import '../console/services.dart';
+import '../design/beat.dart';
 import '../design/draw.dart';
 import '../design/gauges.dart';
 import '../design/panel.dart';
@@ -10,6 +16,8 @@ import '../design/tokens.dart';
 import '../models/fleet.dart' as ui;
 import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
+import '../scenes/battle/field.dart';
+import '../scenes/battle/field_painter.dart';
 import '../state/state_mapper.dart' show amountsOf;
 
 /// How a damaged ship and one at risk of exploding are coloured, wherever
@@ -385,29 +393,34 @@ class GroupBrief extends StatelessWidget {
   }
 }
 
-/// How many volleys of a side the round panel shows before the rest are
-/// asked for.
-const volleysShown = 3;
+/// How a fight ended, as a heading, its colour and a sentence: in a raid's
+/// own words when the server has said what the raid came to.
+(String, Color, String) battleVerdict(Battle b, proto.CombatEndedEvent e) => switch (b.resolved) {
+      final how? => (RaidEnding.of(how).title, _endingColor(RaidEnding.of(how)), RaidEnding.of(how).sentence),
+      null => (outcomeTitle(e.outcome), _outcomeColor(e.outcome), outcomeSentence(e.outcome)),
+    };
 
-/// A fight as text: for the round it stands at, what each side has left by
-/// class and lost in it, what each side fired, and the fight's losses so
-/// far; once it has ended, how it ended, after how many rounds and at what
-/// cost to each side. Every figure is the round's or the state's.
-class BattlePanel extends StatefulWidget {
+/// The names of a round's two sides: who defends a place raided and the
+/// raiders, or the fleets and the hostiles.
+(String, String) sideNames({required bool raid}) => raid ? ('Defenders', 'Raiders') : ('Fleets', 'Hostiles');
+
+/// A fight in a few lines, beside the scene that draws it: the round it
+/// stands at, what stands on each side and what the round took, the volley
+/// that did the most on each side, and the fight's losses so far; once it
+/// has ended, how it ended, after how many rounds and at what cost. Every
+/// figure is the round's or the state's. The rounds in full, each side by
+/// class and every volley, are the battle view's, which its button opens.
+class BattlePanel extends StatelessWidget {
   final Battle battle;
 
   /// Puts the report of a fight that has ended away.
   final VoidCallback? onDismiss;
-  const BattlePanel({super.key, required this.battle, this.onDismiss});
 
-  @override
-  State<BattlePanel> createState() => _BattlePanelState();
-}
+  /// The key that opens the battle view where the panel stands, if one does.
+  final String? keyHint;
+  const BattlePanel({super.key, required this.battle, this.onDismiss, this.keyHint});
 
-class _BattlePanelState extends State<BattlePanel> {
-  bool _allFleets = false, _allHostiles = false, _lastRound = false;
-
-  Battle get b => widget.battle;
+  Battle get b => battle;
 
   @override
   Widget build(BuildContext context) {
@@ -443,25 +456,30 @@ class _BattlePanelState extends State<BattlePanel> {
         ],
         if (ended == null && round == null)
           Text(raid ? 'THE RAID STANDS HERE. THE FIRST ROUND IS FOUGHT ON THE NEXT TICK.' : 'THE FIRST ROUND IS NOT FOUGHT YET.', style: _small),
-        if (round != null && (ended == null || _lastRound)) ..._round(round),
+        if (round != null && ended == null) ..._round(round),
         if (ended == null) ...[
           const SizedBox(height: 9),
           const Lbl('Lost so far'),
           ..._losses(b.losses, key: 'battle-losses'),
         ],
+        Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Wrap(spacing: 6, runSpacing: 6, children: [
+              ConsoleButton('Battle view',
+                  key: const ValueKey('battle-open'),
+                  small: true,
+                  keyHint: keyHint,
+                  semanticsLabel: 'Open the battle view',
+                  onPressed: () => Console.of(context).openBattle(b.id)),
+              if (ended != null && onDismiss != null)
+                ConsoleButton('Dismiss', key: const ValueKey('battle-dismiss'), small: true, onPressed: onDismiss),
+            ])),
       ]),
     );
   }
 
-  /// How the fight ended, in a raid's own words when the server has said
-  /// what the raid came to.
-  (String, Color, String) _verdict(proto.CombatEndedEvent e) => switch (b.resolved) {
-        final how? => (RaidEnding.of(how).title, _endingColor(RaidEnding.of(how)), RaidEnding.of(how).sentence),
-        null => (outcomeTitle(e.outcome), _outcomeColor(e.outcome), outcomeSentence(e.outcome)),
-      };
-
   List<Widget> _end(proto.CombatEndedEvent e) {
-    final (title, color, sentence) = _verdict(e);
+    final (title, color, sentence) = battleVerdict(b, e);
     final how = b.resolved;
     Widget line(String text, String key, {Color? color}) => Padding(
         padding: const EdgeInsets.only(top: 5),
@@ -479,16 +497,6 @@ class _BattlePanelState extends State<BattlePanel> {
         ],
         if (e.salvage case final pile?)
           Padding(padding: const EdgeInsets.only(top: 5), child: Text('WRECKAGE LEFT: ${amountsOf(pile).toUpperCase()}', key: const Key('battle-wreckage'), style: _small.copyWith(color: C.gold))),
-        Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Wrap(spacing: 6, runSpacing: 6, children: [
-              if (b.round != null)
-                ConsoleButton(_lastRound ? 'Hide last round' : 'Show last round',
-                    key: const ValueKey('battle-last-round'), small: true, active: _lastRound, onPressed: () => setState(() => _lastRound = !_lastRound)),
-              if (widget.onDismiss != null)
-                ConsoleButton('Dismiss', key: const ValueKey('battle-dismiss'), small: true, onPressed: widget.onDismiss),
-            ])),
-        if (_lastRound) const SizedBox(height: 8),
       ];
   }
 
@@ -503,115 +511,56 @@ class _BattlePanelState extends State<BattlePanel> {
           ]),
       ];
 
-  /// A round's two sides, named as a raid's when it is one: who defends the
-  /// place, and the raiders.
+  /// The round in two lines a side: what stands and what the round took,
+  /// and the volley that did the most. A fleet that is leaving is named.
   List<Widget> _round(proto.BattleRoundEvent r) {
-    final (ours, theirs) = r.raid ? ('Defenders', 'Raiders') : ('Fleets', 'Hostiles');
+    final (ours, theirs) = sideNames(raid: r.raid);
     return [
-      _standing(ours, r.fleets, lost: r.hostiles.destroyed, color: C.own, tag: 'battle-fleets'),
-      const SizedBox(height: 8),
-      _standing(theirs, r.hostiles, lost: r.fleets.destroyed, color: C.ember, tag: 'battle-hostiles'),
-      const SizedBox(height: 9),
-      _fire('$ours fired', r.fleets, all: _allFleets, color: C.own, tag: 'battle-fire-fleets', toggle: () => setState(() => _allFleets = !_allFleets)),
-      const SizedBox(height: 8),
-      _fire('$theirs fired', r.hostiles, all: _allHostiles, color: C.ember, tag: 'battle-fire-hostiles', toggle: () => setState(() => _allHostiles = !_allHostiles)),
+      _side(ours, r.fleets, lost: r.hostiles.destroyed, color: C.own, tag: 'battle-fleets'),
+      const SizedBox(height: 7),
+      _side(theirs, r.hostiles, lost: r.fleets.destroyed, color: C.ember, tag: 'battle-hostiles'),
     ];
   }
 
-  /// What a side has standing after the round, group by group and class by
-  /// class, with what the round took from it.
-  Widget _standing(String title, proto.BattleSide side, {required int lost, required Color color, required String tag}) => Column(
-        key: Key(tag),
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(children: [
-            Expanded(child: Lbl(title, color: color)),
-            Text.rich(
-              TextSpan(children: [
-                TextSpan(text: '${shortCount(side.standing)} STANDING'),
-                if (lost > 0) TextSpan(text: '  -${shortCount(lost)} THIS ROUND', style: const TextStyle(color: atRiskColor)),
-              ]),
-              style: _small.copyWith(color: C.text2),
-            ),
-          ]),
-          _cells('', 'LEFT', 'LOST', 'DMG', 'RISK', head: true),
-          for (final g in side.groups) ...[
-            if (side.groups.length > 1 || !g.mine || g.fleeing || g.battery)
-              Padding(
-                  padding: const EdgeInsets.only(top: 3),
-                  child: Text.rich(
-                    key: Key(g.battery ? '$tag-battery' : '$tag-group-${g.fleetId}'),
-                    TextSpan(children: [
-                      TextSpan(text: groupName(g).toUpperCase(), style: g.battery ? const TextStyle(color: C.crystal) : null),
-                      if (g.battery) const TextSpan(text: '  NO FLEET: THEY STAND WHERE THEY ARE'),
-                      if (g.fleeing) const TextSpan(text: '  LEAVING: FIRED ON, NOT FIRING', style: TextStyle(color: damagedColor)),
-                    ]),
-                    overflow: TextOverflow.ellipsis,
-                    style: _small,
-                  )),
-            for (final u in g.units)
-              _cells(u.unit.label.toUpperCase(), shortCount(u.count), u.lost > 0 ? '-${shortCount(u.lost)}' : '',
-                  u.damaged > 0 ? shortCount(u.damaged) : '', u.atRisk > 0 ? shortCount(u.atRisk) : '',
-                  gone: u.count == 0, tint: g.battery ? C.a(C.crystal, .85) : C.text2),
-          ],
-        ],
-      );
-
-  /// A row of the standing table: a kind of unit, how many are left, how
-  /// many the round destroyed, and of those left how many are damaged and
-  /// how many at risk.
-  Widget _cells(String name, String left, String lost, String damaged, String atRisk,
-      {bool head = false, bool gone = false, Color tint = C.text2}) {
-    final label = T.cond(size: 9, color: C.text3, weight: FontWeight.w500, spacing: 1.2);
-    Widget cell(String text, Color color) =>
-        SizedBox(width: 40, child: Text(text, textAlign: TextAlign.right, style: head ? label : _figure.copyWith(color: color)));
-    return Padding(
-      padding: const EdgeInsets.only(top: 2),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
-        Expanded(child: Text(name, overflow: TextOverflow.ellipsis, style: _name.copyWith(color: gone ? C.text4 : tint))),
-        cell(left, gone ? C.text3 : C.text),
-        cell(lost, atRiskColor),
-        cell(damaged, damagedColor),
-        cell(atRisk, atRiskColor),
-      ]),
-    );
-  }
-
-  /// What a side fired: its own totals, then its volleys with the ones that
-  /// decided the round first and the rest behind a button.
-  Widget _fire(String title, proto.BattleSide side, {required bool all, required Color color, required String tag, required VoidCallback toggle}) {
-    final volleys = volleysByWeight(side.volleys);
-    final hidden = volleys.length - volleysShown;
+  Widget _side(String title, proto.BattleSide side, {required int lost, required Color color, required String tag}) {
+    final heaviest = volleysByWeight(side.volleys).firstOrNull;
     return Column(key: Key(tag), crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-      Lbl(title, color: color),
-      _figures(fireFigures(side), _small.copyWith(color: C.text2)),
-      for (final v in all ? volleys : volleys.take(volleysShown)) _volley(v, color),
-      if (hidden > 0)
-        Padding(
-            padding: const EdgeInsets.only(top: 5),
-            child: Align(
-                alignment: Alignment.centerLeft,
-                child: ConsoleButton(all ? 'Fewer volleys' : '$hidden more volley${hidden == 1 ? '' : 's'}',
-                    key: ValueKey('$tag-more'), small: true, active: all, onPressed: toggle))),
+      Row(children: [
+        Expanded(child: Lbl(title, color: color)),
+        Text.rich(
+          TextSpan(children: [
+            TextSpan(text: '${shortCount(side.standing)} STANDING'),
+            if (lost > 0) TextSpan(text: '  -${shortCount(lost)} THIS ROUND', style: const TextStyle(color: atRiskColor)),
+          ]),
+          style: _small.copyWith(color: C.text2),
+        ),
+      ]),
+      for (final g in side.groups)
+        if (g.fleeing)
+          Text.rich(
+            key: Key('$tag-group-${g.fleetId}'),
+            TextSpan(children: [
+              TextSpan(text: groupName(g).toUpperCase()),
+              const TextSpan(text: '  LEAVING: FIRED ON, NOT FIRING', style: TextStyle(color: damagedColor)),
+            ]),
+            overflow: TextOverflow.ellipsis,
+            style: _small,
+          ),
+      Text(
+          side.shots == 0
+              ? 'FIRED NOTHING'
+              : 'FIRED ${shortCount(side.shots)} SHOT${side.shots == 1 ? '' : 'S'}, DESTROYED ${shortCount(side.destroyed)}',
+          key: Key('$tag-fired'),
+          style: _small),
+      if (heaviest != null)
+        Text(
+            '${heaviest.from.label} > ${heaviest.at.label}'.toUpperCase() +
+                (heaviest.destroyed > 0 ? '  ${shortCount(heaviest.destroyed)} DESTROYED' : '  HULL ${shortCount(heaviest.hullDamage)}'),
+            key: Key('$tag-heaviest'),
+            overflow: TextOverflow.ellipsis,
+            style: T.cond(size: 10.5, color: C.text2, spacing: .9)),
     ]);
   }
-
-  Widget _volley(proto.Volley v, Color color) => Padding(
-        padding: const EdgeInsets.only(top: 4),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-          Row(children: [
-            Expanded(
-                child: Text('${v.from.label} > ${v.at.label}'.toUpperCase(),
-                    overflow: TextOverflow.ellipsis, style: T.cond(size: 10.5, color: C.text2, spacing: .9))),
-            if (v.destroyed > 0) Text('${shortCount(v.destroyed)} DESTROYED', style: T.mono(size: 10, color: color, weight: FontWeight.w600)),
-          ]),
-          _figures(volleyFigures(v), _small),
-        ]),
-      );
-
-  Widget _figures(List<String> parts, TextStyle style) =>
-      Wrap(spacing: 10, children: [for (final part in parts) Text(part, style: style)]);
 }
 
 /// A fight in one line, for the layout that keeps its panels in a sheet:
@@ -662,5 +611,566 @@ class BattleStrip extends StatelessWidget {
         child: line,
       ),
     );
+  }
+}
+
+/// The picture of a fight on a ground of its own, where no windshield
+/// stands: both sides as marks, a mark a kind of unit, and a round's fire
+/// between them. It draws the round [index] of the rounds held of
+/// [battle]: each time that changes the round is played once, from what
+/// the round before it left standing where that is held. Before a first
+/// round it draws [idle], what the state says will stand in the fight.
+class BattleScope extends StatefulWidget {
+  final Battle battle;
+  final int? index;
+  final Sides idle;
+
+  /// The fight is under way and [index] is its newest round: units a
+  /// round wipes out leave the ground. Otherwise they stay, dimmed.
+  final bool live;
+
+  /// Raised to play the round again.
+  final int replay;
+  final bool still;
+  final bool bloom;
+  const BattleScope(
+      {super.key, required this.battle, required this.index, required this.idle, required this.live, this.replay = 0, this.still = false, this.bloom = true});
+
+  @override
+  State<BattleScope> createState() => BattleScopeState();
+}
+
+class BattleScopeState extends State<BattleScope> with SingleTickerProviderStateMixin {
+  final BattleField field = BattleField();
+  final ValueNotifier<int> _frame = ValueNotifier(0);
+  late final Ticker _ticker;
+  Duration _last = Duration.zero;
+  Mark? _hover;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = createTicker((d) {
+      final dt = math.min(.05, (d - _last).inMicroseconds / 1e6);
+      _last = d;
+      field.tick(dt, d.inMicroseconds / 1e6);
+      _frame.value++;
+    })
+      ..start();
+    _show(from: null);
+  }
+
+  @override
+  void didUpdateWidget(BattleScope oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final same = oldWidget.battle.id == widget.battle.id;
+    if (same && oldWidget.index == widget.index && oldWidget.replay == widget.replay) {
+      if (widget.index == null) field.setSides(widget.idle);
+      return;
+    }
+    _show(from: same && oldWidget.replay == widget.replay ? oldWidget.index : null);
+  }
+
+  /// Draw the round the widget names. Coming from the round before it the
+  /// marks stand as they are and the round is played over them; coming
+  /// from anywhere else they are first stood as the round before left
+  /// them, when that round is held.
+  void _show({required int? from}) {
+    final held = widget.battle.held;
+    final index = widget.index;
+    field
+      ..reduced = widget.still
+      ..showFallen = !widget.live;
+    if (index == null || index >= held.length) {
+      field.setSides(widget.idle, snap: true);
+      return;
+    }
+    final round = held[index];
+    if (from == null || from != index - 1) {
+      final before = index > 0 && held[index - 1].round == round.round - 1 ? held[index - 1] : round;
+      field
+        ..marks.clear()
+        ..firing = false
+        ..setSides(Sides.ofRound(before), snap: true);
+    }
+    field
+      ..play(round)
+      ..setSides(Sides.ofRound(round));
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    _frame.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final (ours, theirs) = sideNames(raid: widget.battle.isRaid);
+    return LayoutBuilder(builder: (context, box) {
+      final centre = Offset(box.maxWidth / 2, box.maxHeight / 2);
+      void pick(Offset at) {
+        final found = field.markAt(at - centre);
+        if (found != _hover) setState(() => _hover = found);
+      }
+
+      return MouseRegion(
+        onHover: (e) => pick(e.localPosition),
+        onExit: (_) => setState(() => _hover = null),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (d) => pick(d.localPosition),
+          child: RepaintBoundary(
+            child: CustomPaint(
+              key: const Key('battle-scope'),
+              painter: ScopePainter(field, _frame, ours: ours.toUpperCase(), theirs: theirs.toUpperCase(), bloom: widget.bloom, hover: _hover),
+              size: Size.infinite,
+            ),
+          ),
+        ),
+      );
+    });
+  }
+}
+
+/// The ground of a [BattleScope]: a frame, the line between the two sides
+/// with each side named at its end, and the field drawn on it.
+class ScopePainter extends CustomPainter {
+  final BattleField field;
+  final String ours, theirs;
+  final bool bloom;
+  final Mark? hover;
+  ScopePainter(this.field, Listenable repaint, {required this.ours, required this.theirs, required this.bloom, this.hover}) : super(repaint: repaint);
+
+  @override
+  void paint(Canvas c, Size size) {
+    final centre = Offset(size.width / 2, size.height / 2);
+    double half(double from) => math.max(30.0, size.width / 2 - 12);
+    field.ground(
+        ours: Ground(near: 16, far: size.height / 2 - 6, halfWidth: half),
+        theirs: Ground(near: 16, far: size.height / 2 - 6, halfWidth: half),
+        scale: (math.min(size.width, size.height) / 400).clamp(.8, 1.6));
+    c.save();
+    c.clipRect(Offset.zero & size);
+    c.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF07050A));
+    final hair = Draw.line(C.a500, 1, .1);
+    for (var x = centre.dx % 40; x < size.width; x += 40) {
+      c.drawLine(Offset(x, 0), Offset(x, size.height), hair);
+    }
+    for (var y = centre.dy % 40; y < size.height; y += 40) {
+      c.drawLine(Offset(0, y), Offset(size.width, y), hair);
+    }
+    Draw.dashedLine(c, Offset(8, centre.dy), Offset(size.width - 8, centre.dy), Draw.line(C.a500, 1, .4), 5, 5);
+    Draw.text(c, theirs, 8, centre.dy - 9, T.cond(size: 9, color: C.ember.withValues(alpha: .85), spacing: 1.6));
+    Draw.text(c, ours, 8, centre.dy + 9, T.cond(size: 9, color: C.own.withValues(alpha: .85), spacing: 1.6));
+    if (field.shake > 0) c.translate((field.rng.nextDouble() - .5) * field.shake, (field.rng.nextDouble() - .5) * field.shake);
+    FieldPainter(c, field, centre, t: field.now, bloom: bloom, hover: hover).paint();
+    c.restore();
+    c.drawRect((Offset.zero & size).deflate(.5), Draw.line(C.a500, 1, .3));
+  }
+
+  @override
+  bool shouldRepaint(ScopePainter old) => true;
+}
+
+/// The battle view: a fight as a report, round by round. The picture of the
+/// round on the left or on top; beside or under it the two sides by class
+/// with what entered the round, what it destroyed and what stands after
+/// it, every volley of the round as a table of who fired at whom with what
+/// result, and each side's totals. Opened while the fight is fought it
+/// follows the rounds as they come; a step back holds it on a round, and
+/// after the fight it steps through the rounds this console was sent.
+/// Nothing in it is counted here: every figure is a field of a round or of
+/// the fight's end.
+class BattleView extends StatefulWidget {
+  final Console con;
+
+  /// The fight shown, by [Battle.id].
+  final String fight;
+  final ValueChanged<String> onPick;
+  final VoidCallback onClose;
+  const BattleView({super.key, required this.con, required this.fight, required this.onPick, required this.onClose});
+
+  @override
+  State<BattleView> createState() => BattleViewState();
+}
+
+class BattleViewState extends State<BattleView> {
+  /// The round held on, among the rounds held of the fight; null follows
+  /// the newest.
+  int? _at;
+  int _replay = 0;
+
+  /// Width from which the picture stands beside the tables.
+  static const _beside = 900.0;
+
+  @override
+  void didUpdateWidget(BattleView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.fight != widget.fight) _at = null;
+  }
+
+  /// Step [by] rounds from the one shown; past the newest it follows again.
+  void step(int by) {
+    final held = widget.con.state.fight(widget.fight)?.held.length ?? 0;
+    if (held == 0) return;
+    final to = ((_at ?? held - 1) + by).clamp(0, held - 1);
+    setState(() => _at = to == held - 1 ? null : to);
+  }
+
+  void _first() => setState(() => _at = (widget.con.state.fight(widget.fight)?.held.length ?? 0) > 1 ? 0 : null);
+
+  void _latest() => setState(() => _at = null);
+
+  @override
+  Widget build(BuildContext context) => Positioned.fill(
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onClose,
+          child: ColoredBox(
+            color: const Color(0xE6050308),
+            child: LayoutBuilder(builder: (context, box) {
+              final narrow = box.maxWidth < _beside;
+              return Padding(
+                padding: EdgeInsets.all(narrow ? 6 : 22),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1260),
+                    child: GestureDetector(
+                      onTap: () {},
+                      child: ListenableBuilder(listenable: widget.con.game, builder: (context, _) => _panel(context, narrow: narrow)),
+                    ),
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+      );
+
+  Widget _panel(BuildContext context, {required bool narrow}) {
+    final st = widget.con.state;
+    final b = st.fight(widget.fight);
+    final close = ConsoleButton('Close', key: const ValueKey('bv-close'), small: true, keyHint: narrow ? null : 'ESC', onPressed: widget.onClose);
+    if (b == null) {
+      return ConsolePanel(
+        key: const Key('battle-view'),
+        title: 'Battle view',
+        trailing: close,
+        padding: const EdgeInsets.all(14),
+        child: Text('THIS FIGHT IS NO LONGER HELD: THE CONSOLE KEEPS THE LAST ${Battle.fightsKept} THAT ENDED WHILE IT WAS OPEN.', style: _small),
+      );
+    }
+    final held = b.held;
+    final index = held.isEmpty ? null : (_at ?? held.length - 1).clamp(0, held.length - 1);
+    final round = index == null ? null : held[index];
+    final following = _at == null;
+    final still = reducedMotion(context) || widget.con.prefs.reduceMotion;
+    final scope = BattleScope(
+        battle: b,
+        index: index,
+        idle: Sides.at(st, b.sector),
+        live: !b.over && following,
+        replay: _replay,
+        still: still,
+        bloom: widget.con.prefs.quality != Quality.low);
+    final rows = _rows(b, round, st.tick, wide: !narrow);
+    final others = st.fights;
+    return ConsolePanel(
+      key: const Key('battle-view'),
+      title: 'Battle view',
+      titleColor: C.ember,
+      mark: C.ember,
+      subText: '${b.isRaid ? 'RAID' : 'FIGHT'} AT ${b.sector.q}, ${b.sector.r}',
+      trailing: close,
+      padding: EdgeInsets.fromLTRB(narrow ? 8 : 14, 8, narrow ? 8 : 14, narrow ? 8 : 12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        if (others.length > 1) _fights(others, st.tick),
+        _status(b),
+        const SizedBox(height: 6),
+        _stepper(b, held, index, following: following, narrow: narrow),
+        const SizedBox(height: 8),
+        Expanded(
+          child: narrow
+              ? Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  SizedBox(height: (MediaQuery.sizeOf(context).height * .28).clamp(150.0, 280.0), child: scope),
+                  const SizedBox(height: 6),
+                  Expanded(
+                      child: ListView.builder(key: const Key('bv-rows'), itemCount: rows.length, itemBuilder: (context, i) => rows[i](context))),
+                ])
+              : Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  Expanded(
+                      flex: 9,
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                        Expanded(child: scope),
+                        const SizedBox(height: 5),
+                        Text(marksRule, key: const Key('bv-legend'), style: _small.copyWith(fontSize: 9.5)),
+                      ])),
+                  const SizedBox(width: 14),
+                  Expanded(
+                      flex: 11,
+                      child: ListView.builder(key: const Key('bv-rows'), itemCount: rows.length, itemBuilder: (context, i) => rows[i](context))),
+                ]),
+        ),
+      ]),
+    );
+  }
+
+  /// The fights the console holds, to look at another.
+  Widget _fights(List<Battle> fights, int tick) => Padding(
+        padding: const EdgeInsets.only(bottom: 7),
+        child: SizedBox(
+          height: 24,
+          child: ListView(key: const Key('bv-fights'), scrollDirection: Axis.horizontal, children: [
+            for (final other in fights)
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: ConsoleButton(
+                    '${other.sector.q}, ${other.sector.r}  ${other.over ? '${clockFmt(math.max(0, tick - other.endedTick))} AGO' : 'NOW'}',
+                    key: ValueKey('bv-fight-${other.id}'),
+                    small: true,
+                    active: other.id == widget.fight,
+                    semanticsLabel: 'Fight at ${other.sector.q}, ${other.sector.r}',
+                    onPressed: () => widget.onPick(other.id)),
+              ),
+          ]),
+        ),
+      );
+
+  /// Where the fight stands: under way, with a raid's rounds left and how
+  /// it stands, or how it ended.
+  Widget _status(Battle b) {
+    final ended = b.ended;
+    if (ended != null) {
+      final (title, color, sentence) = battleVerdict(b, ended);
+      return Wrap(crossAxisAlignment: WrapCrossAlignment.center, spacing: 10, runSpacing: 2, children: [
+        Text(title, key: const Key('bv-outcome'), style: T.cond(size: 16, color: color, weight: FontWeight.w700, spacing: 2.2)),
+        Text('${sentence.toUpperCase()}, AFTER ${roundsOf(ended.rounds).toUpperCase()}.', style: _small.copyWith(color: C.text2)),
+      ]);
+    }
+    final raid = b.raid;
+    return Wrap(crossAxisAlignment: WrapCrossAlignment.center, spacing: 10, runSpacing: 2, children: [
+      const Lamp('Being fought', color: C.ember, blink: true),
+      Text(b.isRaid ? raidRoundOf(b.rounds) : 'ROUND ${b.rounds}',
+          key: const Key('bv-standing'), style: T.cond(size: 16, color: C.a100, weight: FontWeight.w700, spacing: 2.2)),
+      if (raid != null)
+        Text.rich(
+          key: const Key('bv-raid'),
+          TextSpan(children: [
+            TextSpan(text: '${roundsLeftOf(raid.roundsLeft).toUpperCase()}.  AS IT STANDS  '),
+            TextSpan(text: raid.odds.label.label, style: TextStyle(color: raidLabelColor(raid.odds.label), fontWeight: FontWeight.w600)),
+          ]),
+          style: _small.copyWith(color: C.text2),
+        ),
+    ]);
+  }
+
+  /// The round shown among those held, the steps back and forth, and what
+  /// the console does not hold of the fight.
+  Widget _stepper(Battle b, List<proto.BattleRoundEvent> held, int? index, {required bool following, required bool narrow}) {
+    if (index == null) {
+      return Text(
+          b.over
+              ? 'NO ROUND OF THIS FIGHT REACHED THIS CONSOLE.'
+              : b.isRaid
+                  ? 'THE RAID STANDS HERE. THE FIRST ROUND IS FOUGHT ON THE NEXT TICK.'
+                  : 'THE FIRST ROUND IS NOT FOUGHT YET.',
+          key: const Key('bv-round'),
+          style: _small.copyWith(color: C.text2));
+    }
+    final round = held[index];
+    final first = held.first.round;
+    final missed = first > 1
+        ? 'ROUND${first == 2 ? ' 1 WAS' : 'S 1 TO ${first - 1} WERE'} FOUGHT BEFORE THIS CONSOLE HAD THE FIGHT. THE SERVER KEEPS A FIGHT\'S LAST ROUND AND NOTHING OF ONE '
+            'THAT IS OVER: THE ROUNDS HERE ARE THE ONES THIS PAGE RECEIVED.'
+        : null;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+      Wrap(crossAxisAlignment: WrapCrossAlignment.center, spacing: 6, runSpacing: 6, children: [
+        ConsoleButton('First', key: const ValueKey('bv-first'), small: true, semanticsLabel: 'First round held', onPressed: index > 0 ? _first : null, reason: 'This is the first round held.'),
+        ConsoleButton('Back',
+            key: const ValueKey('bv-prev'),
+            small: true,
+            keyHint: narrow ? null : '<',
+            semanticsLabel: 'Round before',
+            onPressed: index > 0 ? () => step(-1) : null,
+            reason: 'This is the first round held.'),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Text('ROUND ${round.round}', key: const Key('bv-round'), style: T.cond(size: 15, color: C.a100, weight: FontWeight.w700, spacing: 2)),
+        ),
+        ConsoleButton('Next',
+            key: const ValueKey('bv-next'),
+            small: true,
+            keyHint: narrow ? null : '>',
+            semanticsLabel: 'Round after',
+            onPressed: index < held.length - 1 ? () => step(1) : null,
+            reason: 'This is the newest round.'),
+        ConsoleButton(b.over ? 'Last' : 'Follow',
+            key: const ValueKey('bv-latest'),
+            small: true,
+            active: following,
+            semanticsLabel: b.over ? 'Last round' : 'Follow the fight',
+            onPressed: following ? null : _latest,
+            reason: b.over ? 'This is the last round.' : 'The view follows the fight.'),
+        ConsoleButton('Replay', key: const ValueKey('bv-replay'), small: true, semanticsLabel: 'Play the round again', onPressed: () => setState(() => _replay++)),
+        Text(
+            '${index + 1} OF ${roundsOf(held.length).toUpperCase()} HELD${b.over ? '' : following ? ', FOLLOWING' : ', HELD ON THIS ROUND'}',
+            key: const Key('bv-held'),
+            style: _small.copyWith(color: C.text2)),
+      ]),
+      if (missed != null) Padding(padding: const EdgeInsets.only(top: 4), child: Text(missed, key: const Key('bv-missed'), style: _small)),
+    ]);
+  }
+
+  /// The report of [round] as rows, each built when it scrolls into view:
+  /// the two sides by class, each side's fire with its totals, and what the
+  /// fight has cost so far or cost in the end.
+  List<WidgetBuilder> _rows(Battle b, proto.BattleRoundEvent? round, int tick, {required bool wide}) {
+    final rows = <WidgetBuilder>[];
+    void gap(double h) => rows.add((_) => SizedBox(height: h));
+    if (round != null) {
+      final (ours, theirs) = sideNames(raid: round.raid);
+      _standing(rows, ours, round.fleets, lost: round.hostiles.destroyed, color: C.own, tag: 'bv-fleets', wide: wide);
+      gap(10);
+      _standing(rows, theirs, round.hostiles, lost: round.fleets.destroyed, color: C.ember, tag: 'bv-hostiles', wide: wide);
+      gap(12);
+      _fire(rows, '$ours fired', theirs, round.fleets, color: C.own, tag: 'bv-fire-fleets', wide: wide);
+      gap(10);
+      _fire(rows, '$theirs fired', ours, round.hostiles, color: C.ember, tag: 'bv-fire-hostiles', wide: wide);
+      gap(12);
+    }
+    final ended = b.ended;
+    rows.add((_) => Lbl(ended == null ? 'Lost so far' : 'Lost in the fight'));
+    final losses = [for (final l in b.losses) if (l.lost.isNotEmpty) l];
+    if (losses.isEmpty) {
+      rows.add((_) => Text(ended == null ? 'NOTHING YET.' : 'NOTHING WAS LOST ON EITHER SIDE.', key: const Key('bv-losses'), style: _small));
+    }
+    for (final (i, l) in losses.indexed) {
+      rows.add((_) => Text(lossesLine(l).toUpperCase(),
+          key: Key(i == 0 ? 'bv-losses' : 'bv-losses-$i'), style: _small.copyWith(color: l.owner == null ? C.text2 : l.mine ? C.own : C.text3)));
+    }
+    final how = b.resolved;
+    if (how != null) {
+      for (final line in [?raidRebuilt(how), ?raidTaken(how), ?raidWreckage(how, tick: tick), ?raidBreach(how)]) {
+        rows.add((_) => Padding(padding: const EdgeInsets.only(top: 4), child: Text('${line.toUpperCase()}.', style: _small.copyWith(color: C.text2))));
+      }
+    } else if (ended?.salvage case final pile?) {
+      rows.add((_) => Padding(
+          padding: const EdgeInsets.only(top: 4), child: Text('WRECKAGE LEFT: ${amountsOf(pile).toUpperCase()}', style: _small.copyWith(color: C.gold))));
+    }
+    if (!wide) {
+      gap(10);
+      rows.add((_) => Text(marksRule, key: const Key('bv-legend'), style: _small.copyWith(fontSize: 9.5)));
+    }
+    gap(8);
+    return rows;
+  }
+
+  static const _cell = 46.0;
+
+  TextStyle get _head => T.cond(size: 9, color: C.text3, weight: FontWeight.w500, spacing: 1.2);
+
+  Widget _cells(String name, List<(String, Color)> figures, {Key? key, bool head = false, Color tint = C.text2, double width = _cell}) => Padding(
+        key: key,
+        padding: const EdgeInsets.only(top: 2),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
+          Expanded(child: Text(name, overflow: TextOverflow.ellipsis, style: head ? _head : _name.copyWith(color: tint))),
+          for (final (text, color) in figures)
+            SizedBox(width: width, child: Text(text, textAlign: TextAlign.right, style: head ? _head : _figure.copyWith(color: color))),
+        ]),
+      );
+
+  /// One side of the round by class: what entered it, what it destroyed,
+  /// what stands after it, and of those how many are damaged and at risk.
+  void _standing(List<WidgetBuilder> rows, String title, proto.BattleSide side, {required int lost, required Color color, required String tag, required bool wide}) {
+    rows.add((_) => Row(key: Key(tag), children: [
+          Expanded(child: Lbl(title, color: color, size: 10.5)),
+          Text.rich(
+            TextSpan(children: [
+              TextSpan(text: '${shortCount(side.entered)} ENTERED  '),
+              if (lost > 0) TextSpan(text: '-${shortCount(lost)}  ', style: const TextStyle(color: atRiskColor)),
+              TextSpan(text: '${shortCount(side.standing)} STAND', style: const TextStyle(color: C.text)),
+            ]),
+            style: _small.copyWith(color: C.text2),
+          ),
+        ]));
+    rows.add((_) => _cells('', [for (final name in ['BEFORE', 'LOST', 'AFTER', 'DMG', 'RISK', if (wide) 'HULL']) (name, C.text3)], head: true));
+    for (final g in side.groups) {
+      if (side.groups.length > 1 || !g.mine || g.fleeing || g.battery) {
+        rows.add((_) => Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text.rich(
+              key: Key(g.battery ? '$tag-battery' : '$tag-group-${g.fleetId}'),
+              TextSpan(children: [
+                TextSpan(text: groupName(g).toUpperCase(), style: g.battery ? const TextStyle(color: C.crystal) : null),
+                if (g.battery) const TextSpan(text: '  NO FLEET: THEY STAND WHERE THEY ARE'),
+                if (g.fleeing) const TextSpan(text: '  LEAVING: FIRED ON, NOT FIRING', style: TextStyle(color: damagedColor)),
+              ]),
+              overflow: TextOverflow.ellipsis,
+              style: _small,
+            )));
+      }
+      for (final u in g.units) {
+        final gone = u.count == 0;
+        rows.add((_) => _cells(
+            u.unit.label.toUpperCase(),
+            [
+              (shortCount(u.entered), C.text2),
+              (u.lost > 0 ? '-${shortCount(u.lost)}' : '', atRiskColor),
+              (shortCount(u.count), gone ? C.text3 : C.text),
+              (u.damaged > 0 ? shortCount(u.damaged) : '', damagedColor),
+              (u.atRisk > 0 ? shortCount(u.atRisk) : '', atRiskColor),
+              if (wide) (gone ? '' : shortCount(u.hull), C.text3),
+            ],
+            key: Key('$tag-${g.battery ? 'battery' : g.fleetId}-${u.unit.toJson()}'),
+            tint: gone ? C.text4 : g.battery ? C.a(C.crystal, .85) : C.text2));
+      }
+    }
+  }
+
+  /// What a side fired in the round: its totals as a sentence, then every
+  /// volley, the ones that decided the round first.
+  void _fire(List<WidgetBuilder> rows, String title, String target, proto.BattleSide side,
+      {required Color color, required String tag, required bool wide}) {
+    rows.add((_) => Lbl(title, color: color, size: 10.5));
+    rows.add((_) => Text(
+        side.shots == 0
+            ? 'NOT A SHOT.'
+            : '${shortCount(side.shots)} SHOT${side.shots == 1 ? '' : 'S'} OF POWER ${shortCount(side.power)}. THE ${target.toUpperCase()}\' SHIELDS TOOK '
+                '${shortCount(side.absorbed)}, ${shortCount(side.hullDamage)} REACHED HULLS, ${shortCount(side.destroyed)} DESTROYED.',
+        key: Key(tag),
+        style: _small.copyWith(color: C.text2)));
+    final volleys = volleysByWeight(side.volleys);
+    if (volleys.isEmpty) return;
+    if (wide) {
+      rows.add((_) => _cells('WHO AT WHOM', [for (final name in ['SHOTS', 'BOUNCED', 'WASTED', 'SHIELDS', 'HULL', 'DESTR']) (name, C.text3)], head: true, width: 58));
+    }
+    for (final (i, v) in volleys.indexed) {
+      final name = '${v.from.label} > ${v.at.label}'.toUpperCase();
+      rows.add(wide
+          ? (_) => _cells(
+              name,
+              [
+                (shortCount(v.shots), C.text),
+                (v.bounced > 0 ? shortCount(v.bounced) : '', C.crystal),
+                (v.wasted > 0 ? shortCount(v.wasted) : '', C.text3),
+                (shortCount(v.absorbed), C.text2),
+                (shortCount(v.hullDamage), v.hullDamage > 0 ? C.a300 : C.text3),
+                (v.destroyed > 0 ? shortCount(v.destroyed) : '', color),
+              ],
+              key: Key('$tag-$i'),
+              width: 58)
+          : (_) => Padding(
+              key: Key('$tag-$i'),
+              padding: const EdgeInsets.only(top: 4),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+                Row(children: [
+                  Expanded(child: Text(name, overflow: TextOverflow.ellipsis, style: T.cond(size: 10.5, color: C.text2, spacing: .9))),
+                  if (v.destroyed > 0) Text('${shortCount(v.destroyed)} DESTROYED', style: T.mono(size: 10, color: color, weight: FontWeight.w600)),
+                ]),
+                Wrap(spacing: 10, children: [for (final part in volleyFigures(v)) Text(part, style: _small)]),
+              ])));
+    }
   }
 }

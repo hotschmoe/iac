@@ -15,6 +15,7 @@ import '../design/tokens.dart';
 import '../models/game_state.dart';
 import '../protocol/protocol.dart' as proto;
 import '../state/game_controller.dart';
+import 'battle_view.dart' show BattleView, BattleViewState;
 import 'homeworld/homeworld_view.dart';
 import 'hud.dart';
 import 'map/map_view.dart';
@@ -65,6 +66,11 @@ class _ShellState extends State<Shell> {
 
   late Screen _screen = widget.initial;
   bool _help = false, _alerts = false, _palette = false;
+
+  /// The fight the battle view is open on, by its id; null while it is shut.
+  String? _battle;
+  final GlobalKey<BattleViewState> _battleView = GlobalKey();
+  StreamSubscription<proto.GameEvent>? _fights;
   DateTime? _gAt;
   int _gToast = 0;
   StreamSubscription<proto.ErrorMessage>? _refusals;
@@ -79,6 +85,8 @@ class _ShellState extends State<Shell> {
     super.initState();
     _con.screen = _screen;
     _con.go = _go;
+    _con.openBattle = _openBattle;
+    _fights = widget.controller.gameEvents.listen(_onFight);
     _prefs.addListener(_onPrefs);
     _onPrefs();
     HardwareKeyboard.instance.addHandler(_onKey);
@@ -110,6 +118,7 @@ class _ShellState extends State<Shell> {
     HardwareKeyboard.instance.removeHandler(_onKey);
     widget.controller.removeListener(_onGame);
     _refusals?.cancel();
+    _fights?.cancel();
     _gov.dispose();
     _con.dispose();
     super.dispose();
@@ -163,6 +172,29 @@ class _ShellState extends State<Shell> {
     });
   }
 
+  void _openBattle(String fight) {
+    if (!mounted) return;
+    setState(() {
+      _battle = fight;
+      _help = _alerts = false;
+    });
+    _con.play('click');
+  }
+
+  /// With the setting on, the battle view opens on the first round of a
+  /// fight of the player's. The state has the fight by then: a round is
+  /// told to the console before it is told to the screens.
+  void _onFight(proto.GameEvent e) {
+    if (!_prefs.battleView || _battle != null) return;
+    final k = e.kind;
+    if (k is! proto.BattleRoundKind || !k.battleRound.mine || k.battleRound.round != 1) return;
+    final at = k.battleRound.sector;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final fight = widget.controller.state.battleAt(at);
+      if (mounted && _battle == null && fight != null && !fight.over) _openBattle(fight.id);
+    });
+  }
+
   bool _typing() {
     final ctx = FocusManager.instance.primaryFocus?.context;
     return ctx != null && (ctx.widget is EditableText || ctx.findAncestorWidgetOfExactType<EditableText>() != null);
@@ -188,6 +220,16 @@ class _ShellState extends State<Shell> {
     if (hw.isControlPressed || hw.isMetaPressed || hw.isAltPressed) return false;
     final ch = e.character;
     final k = e.logicalKey;
+    if (_battle != null) {
+      if (k == LogicalKeyboardKey.escape) {
+        setState(() => _battle = null);
+      } else if (k == LogicalKeyboardKey.arrowLeft || ch == ',' || ch == '<') {
+        _battleView.currentState?.step(-1);
+      } else if (k == LogicalKeyboardKey.arrowRight || ch == '.' || ch == '>') {
+        _battleView.currentState?.step(1);
+      }
+      return true;
+    }
 
     if (ch == '?') {
       setState(() {
@@ -310,6 +352,13 @@ class _ShellState extends State<Shell> {
                   if (narrow) Rail(active: _screen, bottom: true, onGo: _go, badges: badges, mark: mark, outpost: outpost),
                 ]),
                 if (!toastsOnTop) ToastLayer(key: _toastLayer, toasts: _toasts, top: false),
+                if (_battle case final fight?)
+                  BattleView(
+                      key: _battleView,
+                      con: _con,
+                      fight: fight,
+                      onPick: (other) => setState(() => _battle = other),
+                      onClose: () => setState(() => _battle = null)),
                 if (_alerts) AlertsPopover(con: _con, narrow: narrow, onClose: () => setState(() => _alerts = false)),
                 if (_help) HelpOverlay(con: _con, governor: _gov, onClose: () => setState(() => _help = false)),
                 if (_palette)

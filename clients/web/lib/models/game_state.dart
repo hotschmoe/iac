@@ -134,16 +134,27 @@ class SurveyEntry {
 }
 
 /// A fight the player has a fleet in or is present at, as the console
-/// follows it: what the state says of it, the last round it was sent, and
-/// the end once it has ended. The rounds before the last are not kept.
+/// follows it: what the state says of it, the rounds it was sent, and the
+/// end once it has ended. The server keeps the last round of a fight under
+/// way and nothing of one that is over, so the rounds are this console's:
+/// those it received while it was open.
 class Battle {
   final proto.Hex sector;
+
+  /// The tick this console first heard of the fight. With the sector it
+  /// tells the fight from another fought there.
+  final int since;
 
   /// Rounds fought so far, as the state counts them.
   final int rounds;
 
   /// The last round the server sent; null before the first is fought.
   final proto.BattleRoundEvent? round;
+
+  /// The rounds this console was sent, oldest first, the last
+  /// [roundsKept] of them. A console that opened in the middle of the
+  /// fight holds none before the one the state then carried.
+  final List<proto.BattleRoundEvent> history;
 
   /// What each fleet and group has lost so far, as the state lists it.
   final List<proto.BattleLosses> losses;
@@ -161,8 +172,10 @@ class Battle {
 
   const Battle({
     required this.sector,
+    this.since = 0,
     required this.rounds,
     this.round,
+    this.history = const [],
     this.losses = const [],
     this.ended,
     this.endedTick = 0,
@@ -170,14 +183,58 @@ class Battle {
     this.resolved,
   });
 
+  /// The most rounds of one fight the console holds.
+  static const roundsKept = 120;
+
+  /// The most fights that have ended the console holds.
+  static const fightsKept = 8;
+
   bool get over => ended != null;
 
   /// A raid's fight, as the state, its rounds or its end mark it.
   bool get isRaid => raid != null || (round?.raid ?? false) || (ended?.raid ?? false);
 
+  /// What names this fight among those the console holds.
+  String get id => '${sector.q},${sector.r}@$since';
+
+  /// The rounds held, oldest first: [history], or the last round alone for
+  /// a fight that was handed its round without one.
+  List<proto.BattleRoundEvent> get held => history.isNotEmpty ? history : [?round];
+
+  /// This fight with [next] fought: the round it now stands at, held with
+  /// those before it.
+  Battle fought(proto.BattleRoundEvent next) {
+    final kept = [...held, next];
+    return Battle(
+        sector: sector,
+        since: since,
+        rounds: next.round,
+        round: next,
+        history: kept.length > roundsKept ? kept.sublist(kept.length - roundsKept) : kept,
+        losses: losses,
+        raid: raid);
+  }
+
+  /// This fight as the state lists it now.
+  Battle listed(proto.BattleState now) =>
+      Battle(sector: sector, since: since, rounds: now.rounds, round: round, history: history, losses: now.losses, raid: now.raid);
+
+  /// This fight ended, as [how] says, on [tick].
+  Battle endedAs(proto.CombatEndedEvent how, int tick) => Battle(
+      sector: sector, since: since, rounds: how.rounds, round: round, history: history, losses: how.losses, ended: how, endedTick: tick, raid: raid);
+
   /// This fight with what its raid came to.
   Battle resolvedAs(proto.RaidResolvedEvent how) => Battle(
-      sector: sector, rounds: rounds, round: round, losses: losses, ended: ended, endedTick: endedTick, raid: raid, resolved: how);
+      sector: sector,
+      since: since,
+      rounds: rounds,
+      round: round,
+      history: history,
+      losses: losses,
+      ended: ended,
+      endedTick: endedTick,
+      raid: raid,
+      resolved: how);
 }
 
 /// A raid on the player's homeworld or outpost that has ended, and the tick
@@ -275,6 +332,10 @@ class GameState {
   /// that ended in the last [battleReportTicks], by sector.
   final Map<proto.Hex, Battle> battles;
 
+  /// The last fights that ended while the console was open, newest first,
+  /// with the rounds it was sent of each: at most [Battle.fightsKept].
+  final List<Battle> pastFights;
+
   const GameState({
     required this.tick,
     required this.clockSec,
@@ -307,10 +368,23 @@ class GameState {
     this.surveys = const {},
     this.policyActs = const {},
     this.battles = const {},
+    this.pastFights = const [],
   });
 
   /// The fight in [sector], under way or just ended.
   Battle? battleAt(proto.Hex sector) => battles[sector];
+
+  /// Every fight the console can show round by round: those under way,
+  /// then those that have ended, newest first.
+  List<Battle> get fights {
+    final live = [for (final b in battles.values) if (!b.over) b];
+    final ended = {for (final b in pastFights) b.id: b, for (final b in battles.values) if (b.over) b.id: b}.values.toList()
+      ..sort((a, b) => b.endedTick.compareTo(a.endedTick));
+    return [...live, ...ended];
+  }
+
+  /// The fight named [id] among [fights].
+  Battle? fight(String id) => fights.where((b) => b.id == id).firstOrNull;
 
   /// The raid on the homeworld as a fight, while it is fought and for
   /// [battleReportTicks] after; null when there is none.
@@ -437,6 +511,7 @@ class GameState {
     Map<(int, proto.Hex), SurveyEntry>? surveys,
     Map<int, List<PolicyAct>>? policyActs,
     Map<proto.Hex, Battle>? battles,
+    List<Battle>? pastFights,
   }) =>
       GameState(
         tick: tick ?? this.tick,
@@ -470,5 +545,6 @@ class GameState {
         surveys: surveys ?? this.surveys,
         policyActs: policyActs ?? this.policyActs,
         battles: battles ?? this.battles,
+        pastFights: pastFights ?? this.pastFights,
       );
 }

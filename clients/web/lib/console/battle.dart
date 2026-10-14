@@ -381,21 +381,3 @@ String dockRepairLine(proto.RepairQuote quote, proto.DockRepair dock) {
 /// "4 damaged ships lack 640 hull": what a fleet's damage amounts to.
 String damageLine(proto.RepairQuote q) =>
     '${groupDigits(q.ships)} damaged ship${q.ships == 1 ? ' lacks' : 's lack'} ${shortCount(q.hull)} hull';
-
-/// How many marks stand for [count] ships on a scope where one mark stands
-/// for [scale]: a class with a ship in it always has one.
-int marksFor(int count, int scale) => count <= 0 ? 0 : (count + scale - 1) ~/ scale;
-
-/// How many ships one mark stands for on a scope that draws [sides], each a
-/// list of ship counts by class, with at most [most] marks a side: the
-/// smallest of 1, 2, 5, 10, 20, 50 and so on that fits them. A drawing rule,
-/// and nothing of the game's.
-int markScale(Iterable<Iterable<int>> sides, {required int most}) {
-  var scale = 1;
-  const steps = [2, 2.5, 2];
-  for (var i = 0;; i++) {
-    final fits = sides.every((side) => side.fold<int>(0, (n, count) => n + marksFor(count, scale)) <= most);
-    if (fits || scale >= 1000000) return scale;
-    scale = (scale * steps[i % steps.length]).round();
-  }
-}

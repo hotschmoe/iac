@@ -2,6 +2,7 @@
   "fleets": {
     "absorbed": 820,
     "destroyed": 4,
+    "entered": 43,
     "groups": [
       {
         "battery": false,
@@ -14,6 +15,7 @@
             "at_risk": 1,
             "count": 5,
             "damaged": 2,
+            "entered": 6,
             "hull": 1710,
             "hull_max": 2000,
             "lost": 1,
@@ -33,6 +35,7 @@
             "at_risk": 0,
             "count": 2,
             "damaged": 0,
+            "entered": 4,
             "hull": 400,
             "hull_max": 400,
             "lost": 2,
@@ -42,6 +45,7 @@
             "at_risk": 0,
             "count": 9,
             "damaged": 2,
+            "entered": 20,
             "hull": 1690,
             "hull_max": 1800,
             "lost": 11,
@@ -51,6 +55,7 @@
             "at_risk": 0,
             "count": 10,
             "damaged": 3,
+            "entered": 12,
             "hull": 1840,
             "hull_max": 2000,
             "lost": 2,
@@ -60,6 +65,7 @@
             "at_risk": 0,
             "count": 1,
             "damaged": 0,
+            "entered": 1,
             "hull": 2000,
             "hull_max": 2000,
             "lost": 0,
@@ -138,6 +144,7 @@
   "hostiles": {
     "absorbed": 424,
     "destroyed": 16,
+    "entered": 13,
     "groups": [
       {
         "battery": false,
@@ -150,6 +157,7 @@
             "at_risk": 2,
             "count": 7,
             "damaged": 4,
+            "entered": 11,
             "hull": 2230,
             "hull_max": 2800,
             "lost": 4,
@@ -159,6 +167,7 @@
             "at_risk": 0,
             "count": 2,
             "damaged": 1,
+            "entered": 2,
             "hull": 5070,
             "hull_max": 5400,
             "lost": 0,

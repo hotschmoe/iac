@@ -67,6 +67,35 @@ class Sym {
   static final _hostileBattlecruiser = _d('M0-52L10-30L26-46L40-12L34 20L20 40L8 32L0 48L-8 32L-20 40L-34 20L-40-12L-26-46L-10-30Z',
       'M0-52V48M-10-30H10M-26-46L-20-12M26-46L20-12M-34 20L-18 10M34 20L18 10');
 
+  static final _rocketLauncher = _d('M-24 16H24V38H-24ZM-18 16V-26H-8V16M-5 16V-38H5V16M8 16V-26H18V16', 'M-24 27H24M-18-14H-8M8-14H18M-5-24H5');
+  static final _lightLaser = _d('M-20 14H20V38H-20ZM-5 14V-42H5V14', 'M-12-22H12M-12-32H12M-20 26H20');
+  static final _heavyLaser = _d('M-28 12H28V40H-28ZM-16 12V-44H-6V12M6 12V-44H16V12', 'M-22-30H0M0-30H22M-28 26H28M-6-10H6');
+  static final _gaussCannon = _d('M-30 6L-18-8H18L30 6V40H-30ZM-7-8V-48H7V-8', 'M-14-30H14M-14-40H14M-30 22H30M-12 6H12V30H-12Z');
+  static final _ionCannon = _d('M-24 16H24V38H-24ZM-22-14A22 22 0 1 0 22-14A22 22 0 1 0-22-14', 'M0-36V-48M-8-14H8M0-22V-6M0 8V16M-24 27H24');
+  static final _plasmaTurret = _d('M-32 10L-20-6H20L32 10V42H-32ZM-14-6V-30L0-46L14-30V-6',
+      'M-6-24A6 6 0 1 0 6-24A6 6 0 1 0-6-24M-32 26H32M-20-6L-28-22M20-6L28-22');
+  static final _smallShieldDome = _d('M-36 30A36 36 0 0 1 36 30Z', 'M-24 30A24 24 0 0 1 24 30M0-6V30M-44 30H-36M36 30H44');
+  static final _largeShieldDome = _d('M-46 34A46 46 0 0 1 46 34Z', 'M-32 34A32 32 0 0 1 32 34M-18 34A18 18 0 0 1 18 34M0-12V34');
+
+  /// The glyph of a defence, an emplacement seen with its guns up.
+  static SymbolDef defence(proto.DefenceKind k) => switch (k) {
+        proto.DefenceKind.rocketLauncher => _rocketLauncher,
+        proto.DefenceKind.lightLaser => _lightLaser,
+        proto.DefenceKind.heavyLaser => _heavyLaser,
+        proto.DefenceKind.gaussCannon => _gaussCannon,
+        proto.DefenceKind.ionCannon => _ionCannon,
+        proto.DefenceKind.plasmaTurret => _plasmaTurret,
+        proto.DefenceKind.smallShieldDome => _smallShieldDome,
+        proto.DefenceKind.largeShieldDome => _largeShieldDome,
+      };
+
+  /// The glyph of a unit of a fight: a ship of the side it is on, or a
+  /// defence, which only a defender has.
+  static SymbolDef unit(proto.ShipyardItem u, {required bool hostile}) => switch (u.ship) {
+        final ship? => hostile ? Sym.hostile(ship) : own(ship),
+        null => defence(u.defence!),
+      };
+
   /// The glyph of a ship of the player's.
   static SymbolDef own(proto.ShipClass c) => switch (c) {
         proto.ShipClass.smallCargo => _ownSmallCargo,
