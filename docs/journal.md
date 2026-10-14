@@ -9613,3 +9613,132 @@ work that follows takes up.
 
 **Not verified.** Nobody played the new patrol. The bot figures are one seed a
 pace and three more at blitz.
+
+## 2026-10-14: the score rework, and the knobs the playtest and the study found wrong
+
+The owner's model is built (`docs/design/decisions.md`, the entry of that
+date has his words and every value): the score is buildings, research, the
+ships an empire has now, its outpost and its defences at none; kills, charts
+and derelicts pay in resources; wreckage is three times what it was; raids
+keep 0.30 of the raiders' cost as wreckage; the jump law is linear (25,000 /
+speed); the pirates' clock is a finds timer; pirates past ring 8 are packs;
+a new empire has 800 deuterium. `ECONOMY_VERSION` 15, `WORLDGEN_VERSION` 5,
+`SAVE_FORMAT` 13.
+
+**How it was measured.** `sim-run` on master (1b2197e) and on the branch,
+seeds 1 to 3, four configurations: `--pace season --days 7`, `--pace blitz
+--days 1`, `--pace blitz --hours 1 --seat all:all`, `--pace 1200 --hours 1
+--seat all:hands-on`, all `--json`. Each variant was the branch with one
+change, built in a scratch tree: wreckage x2 and x4, raid wreckage 0.15,
+0.20 and 0.45 (season and blitz day only), deuterium 100 at the start
+(season, blitz hour, pace 1200), and exploration in points under a soft cap
+(charts at a third of their old points, first boardings and relics as
+before, counted in full to a quarter of the rest of the score and by the
+square root beyond, kills still nothing). Defences at half need no run:
+`--defence-share 0.5` and the report's `defences` column score the same
+world.
+
+**All bots of a world, summed, mean of three seeds** (points; hands-on
+medians for the turtle and for the raider, explorer and mixed bots):
+
+| | season week | blitz day | blitz hour | pace 1200 hour |
+|---|---|---|---|---|
+| master: turtle / flyers | 9264 / 9870 | 16503 / 24046 | 1336 / 1523 | 4444 / 4972 |
+| branch: turtle / flyers | 8644 / 9129 | 15607 / 20022 | 1136 / 1645 | 4159 / 5102 |
+| branch: mined | 115,887 | 1,343,198 | 11,900 | 23,672 |
+| branch: wreckage of kills / fuel | 2,346 / 3,677 | 85,957 / 113,616 | 990 / 123 | 1,921 / 255 |
+| branch: derelicts / charts | 484 / 1,682 | 6,700 / 2,071 | 303 / 447 | 627 / 540 |
+| branch: raid wreckage / raid cost | 15,672 / 2,291 | 62,979 / 31,635 | 262 / 24 | 1,030 / 79 |
+| branch: raids destroyed / outlasted / lost | 424 / 0 / 0 | 1158 / 13 / 13 | 24 / 0 / 2 | 31 / 0 / 0 |
+| branch: defences bought | 1,270 | 23,430 | 174 | 249 |
+| branch: kills / ships lost | 5,044 / 619 | 14,162 / 4,742 | 314 / 12 | 354 / 53 |
+
+What the numbers say:
+
+- *Building at home is the backbone.* The mines made 116k points in a season
+  week against 4.5k from the field and 15.7k from raids.
+- *Fighting near home pays its fuel at a fast pace.* In an hour at pace 1200
+  the flyers' wreckage is 7.5 times their fuel and about a twelfth of what
+  their mines made; at x2 it was 4.5 times, at x4 7.9 times, and the flyers
+  stood at 1.14, 1.23 and 1.26 of the turtle. At season it never pays: the
+  bots' wreckage stayed below the deuterium they burned at every multiplier
+  tried, because loot grows with P^0.5 and fuel does not shrink.
+  In a blitz day the hands-on raider and mixed bots burned 40,000 points of
+  deuterium against 15,000 to 21,000 of wreckage: their pilot flies big
+  fleets for small groups.
+- *Raids pay.* At 0.30 a season week's raid wreckage is 13.5% of mine output
+  and about seven times what raids destroy; it is the second income an
+  empire has. 0.15 gives 6.7%, 0.20 9.2%, 0.45 21% (the turtle then leads
+  the flyers, 1.07 to 0.93). Defences are cheap against it: a world of bots
+  bought 1,270 of them in the season week.
+- *Flying is not punished at a fast pace and is roughly level at season*
+  (flyers 1.06 of the turtle at season, 1.28 in a blitz day, 1.45 in a blitz
+  hour, 1.23 at pace 1200). In a blitz day the check-in and hybrid flyers
+  fall to 0.6 to 0.8 of a turtle: they built the largest defence walls
+  (15,000 points for the hybrid explorer), which scored at half and now
+  score nothing. At half they are 0.9 to 1.2 of a turtle.
+- *Exploration in resources against points.* Under points with a soft cap
+  the flyers lead by more (blitz hour 1.87 of the turtle, pace 1200 1.46,
+  season 1.09); in resources 1.45, 1.23, 1.06. The cap is gone either way,
+  so the bots fly wherever they find work. Charts priced as loot (P^0.5)
+  paid a hands-on explorer 13,700 points in its first blitz hour; at any
+  pace, at `50 + 50 x T^1.5` units, they pay 450 to 2,100 points a world.
+- *Pirates.* Kills in three blitz days fell from 101,865 (master) to 42,485: a
+  group returns in 7 to 17 minutes at blitz, not seconds. The bots almost
+  never leave a fight (27 flights a blitz day, 7 a season week, almost all
+  cargo hulls and probes), so a group fought again while hurt was counted 0
+  to 3 times a world; the scenarios of `sim/tests/scenarios_world.rs` show
+  it. Flight by hull, all bots of three blitz days: Recyclers (8 ticks a
+  jump on Combustion Drive 6) took 238 rounds under fire, Large and Small
+  Cargos 125, warships 22, probes 69.
+- *The opening.* With 800 deuterium the hands-on bots order Robotics Factory
+  2 in the first minutes of a season (1 to 17 against 4 to 175 with 100) and
+  the Research Lab at 2 to 4 minutes; the season week's total moved 2%. In a
+  blitz hour the hands-on turtle scored 13% less (its lab comes first). The
+  planning simulation was never held by deuterium, with either start.
+- *Milestones*, hands-on bots, first order paid: at pace 1200 the first
+  Cruiser at 32 to 33 minutes (master 36 to 40), at blitz 54 to 60 minutes in
+  some seeds; Shipyard 2 at 3 to 6 minutes, the first Light Fighter at 5 to
+  8 minutes at pace 1200.
+- *The planning simulation* (`sim.py --compare`): at a blitz hour the
+  explorer scores 64% of the builder and the raider 61%; at season 87% and
+  78% (under the old rule 77%, 67%, 98% and 91%). Its field model pays less
+  than the bots fly for, and it disagrees with them on who leads; the
+  presets' estimates were rendered again from it (`shared/src/pace.rs`;
+  blitz's first Cruiser 3,231 s to 3,236 s), and the bots now reach the
+  first Cruiser close to it at pace 1200 (32 minutes against 27).
+
+**Outposts.** The packs changed their raids: a level-2 platform now holds to
+ring 13 and is at risk at 14, where it held to the middle of the Outer Ring
+against one Cruiser or Battlecruiser; level 3 holds to ring 20. The
+platforms were not retuned; the forecast table and the season week's post
+at ring 14 (now level 3) in `sim/tests/outposts.rs` were measured again.
+
+**Tests.** Moved: the arc of `empire_arc.rs` (a chart pays resources and no
+score, a kill adds nothing to the score, the hold takes what fits of a pile
+three times larger, the score is what the empire holds); in
+`scenarios_world.rs` the label table and the starter fleet's rings measured
+again on packs, the slow fleet is Large Cargos (four ticks to a pack's two;
+three Small Cargos' five-tick jumps let the pack destroy them), a default
+patrol meets the lone weak Cruiser it was written against as a staged group,
+kill points gone from five tests; `fleet_logistics.rs`'s jump table on the
+linear law; `outposts.rs` as above, and a convoy's round trip counts the
+charts it delivers; `stored_world.rs`'s flight is Large Cargos at blitz so
+the pack mends within the run; `bots.rs`, `both_targets.rs` (deeds counted
+from `charted`, a group mends on the finds clock), `smoke.rs` and
+`single_player.rs` (the formats named). Added: a Cruiser on Impulse Drive 4
+outrunning the pack it leaves, a fleet destroyed leaving the score, an outer
+pack found short when fought again before it mends (`scenarios_world.rs`),
+and defences scoring nothing while the raid they beat pays its wreckage home
+(`scenarios_raids.rs`); a chart under the new rule and a kill paying
+wreckage and no points are in the arc.
+
+**Run.** `cargo test --workspace --no-fail-fast`: 206 passed after the last
+fixes (203 and 3 failures on the run before them, all three fixed and run
+again); `cargo clippy --workspace --all-targets` silent; the wasm build;
+`python3 tools/check_sim_constants.py` agrees on 4,386 values; `sim.py
+--tables`; `flutter analyze` clean; `flutter test` 517 of 517.
+
+**Not verified.** No person or agent played it. The bundle and
+`tool/solo_e2e.dart` were not run. Three seeds a configuration, and a
+style's median moves by a tenth from seed to seed.
