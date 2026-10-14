@@ -3,6 +3,130 @@
 Owner decisions that set the game's identity. Newest first. Proposals that
 conflict with these need the owner's sign-off.
 
+## 2026-10-14 (the built-in bots play every style at every pace: what the agent decided)
+
+The playtest of 2026-10-14 and the balance study beside it found the bots
+broken in seven ways (`docs/playtests/2026-10-14/README.md`); the journal
+entry of the same date has what was found and measured. None of what follows
+was put to the owner; each line ends with what undoes it. The bots are not a
+rule of the game, but every world of bots plays differently, so
+`ECONOMY_VERSION` is 14; a bot's stored record gained the lairs it remembers,
+so `SAVE_FORMAT` is 13. Nothing is migrated.
+
+While this was built the owner said where scoring is going: kills that count
+for nothing but pay more wreckage, defences at half or nothing, raids that
+leave good wreckage at home. The bots were planned for that: no fight is
+chosen for points, and a turtle's defences are sized by the raids, not by
+what defences score.
+
+- *A check-in bot's day is shorter past the season's pace.*
+  `bot::look_in_day`: a day of the clock up to the season (pace 10), and
+  beyond it the day times `(10 / pace)^0.75`, which is how the time a full
+  store holds of production shrinks there (`Pace::cap_mult` over the pace):
+  67 minutes at blitz, 40 at pace 1200, 5.6 hours at sprint. A look-in is at
+  most a quarter of the time between two (300 ticks at a season, 167 at
+  blitz), a hybrid's piloting session at most half. The rule lives in the
+  bot, so the server's `--bot` and the single-player host play by it; the
+  single-player page still offers hands-on bots first at pace 70 and above
+  (`soloShortWorldPace`), which was not changed (no Flutter was run). The
+  alternative, seating hands-on bots at a fast pace whatever was asked, was
+  not taken: a check-in seat should play as a check-in player would. Undo:
+  `look_in_day` returning `DAY`, and `session_ticks`.
+- *A trip is flown for what it brings home.* `bot::field::pays`: ore,
+  wreckage or a derelict's hold, as much as the fleet can carry, at least
+  `PAYS` (1.5) times the deuterium of the detour out and back, and from home
+  no more deuterium than the stockpile has beyond its next orders (it was a
+  full tank's worth for every wing; it still is for the survey wing). A
+  fight also counts the worth the server's odds say the fleet will lose,
+  read off `scaling::RATIO_MARGINS`, with the table's last row (ratio 10, the
+  most the odds say) taken as nothing lost (`fight_pays`, `worth_lost`). No
+  part of the score enters a fight; the wreckage formula is the game's
+  (`wreck_value`, the finds factor), so a retuned wreck moves the bots with
+  it. Undo: `pays`, `fight_pays`.
+- *A bot remembers the lairs it farmed.* `Memory::heat`: each attack heats
+  the lair by one, cooling as the game's farm heat does; the wreckage it
+  expects there is cut by `farm_factor`. Kills by other empires are not
+  seen. This is the record change. Undo: the field and `Heat`.
+- *The strike wing works past the score cap*, for wreckage; *the survey
+  wing charts past it*, because charting finds what the other wings live
+  on. Another wing charts and boards for points only while points still
+  raise the score and the trip pays for them (`chart_worth`, the boarding
+  points in `worth_a_visit`, `nothing_pays`). A strike wing under standing
+  orders patrols only while kills still raise the score, and otherwise
+  flies the recovery wing's doctrines (`Wing::doctrines`): a patrol does not
+  weigh a fight against its fuel, and in a season week the check-in and
+  hybrid raiders' and mixed empires' patrols past the cap burned more
+  deuterium than they brought home. When `patrol_home` collects the wreckage
+  it makes, this is worth trying again. These, and the leaderboard row the
+  bot asks for, are the only places a bot reads the score's parts. Undo:
+  `has_work` as it was, and the strike line of `Wing::doctrines`.
+- *A fleet with no warship leaves home for any raid announced*, as every
+  fleet does for one forecast `at_risk` or `lost`: the explorer lost 5,084
+  Espionage Probes in a blitz day to raids it repelled, the raiders' rapid
+  fire eating them first. Undo: the `raid_announced` terms in `fly` and
+  `head_home`.
+- *Probes are a count, not a share of the fleet*: four for the explorer,
+  two for the mixed empire (`Profile::probes`). The share had the planner
+  rebuild every probe a raid ate. Undo: the field, and the scout share in
+  `hulls`.
+- *The warship line runs to the Deathstar*: Deathstar, Destroyer,
+  Battlecruiser, Bomber, Battleship, Cruiser, Heavy Fighter, Light Fighter.
+  The research of the next class up a line becomes rungs of the ladder once
+  that class costs no more than `CLASS_APPETITE` yardsticks, as its Shipyard
+  level already did. The Bomber stands between the Battleship and the
+  Battlecruiser, so Plasma Technology is researched on the way. Graviton
+  Technology needs energy no planner counts, so the Deathstar stays out of
+  reach. Undo: `WARSHIPS`, the `hulls` rungs of `tech_ladder`.
+- *Energy from the cheapest source.* `energy_sources`: the next Solar Plant
+  level, the next Fusion Reactor level with the deuterium it burns over
+  `FUSION_HORIZON_HOURS` (72 game hours at pace 1), and Solar Satellites at
+  `SATELLITE_RISK` (2) times their price for what raids take. Fusion takes
+  over from about Solar Plant 13, and a level is built only while its burn
+  stays under `FUSION_SHARE` (a fifth) of what the synthesizer makes: the
+  reactor stops when the stockpile runs out of deuterium, and the mines with
+  it, which in one season seed cut a mixed hybrid to half its score before
+  the guard. Satellites were bought only once the plant stood at 20. Undo:
+  `energy_sources` with the Solar Plant alone.
+- *A store is raised before its resource would spill while the player is
+  away*: the stock plus the income over the absence, against 0.75 of the
+  cap. Undo: `coming` in `next_building`.
+- *Defences mix.* A kind's worth falls with the share of the standing
+  defence it already is (`MIX` 3.0). Undo: the divisor in `answer`.
+- *What no order claims is spent.* The score counts what is built; a
+  hands-on bot ended a blitz day on 110,000 to 130,000 points of stock.
+  Every bot, present or leaving, spends what no queued order claims (a
+  player who stays keeps the next Metal Mine level's price) on the heaviest
+  warship it pays for, several batches at a look if the yard has room, and
+  the defence that answers the next raid while it pays for none; with
+  nothing on the research ladder due, the lab takes the cheapest research
+  the purse pays for. A turtle's ships, and a miner's warships once it has a
+  cargo ship, are a garrison that stays home and stands in every raid. The
+  turtle's defences are what the raids ask (its margin, the top-ups while
+  the forecast is short of repelled, `MIX`), not a sink: a defence scores
+  half today and may score nothing, and what it earns is a raid repelled,
+  whose wreckage is income, and the stock it protects. A version that put
+  the turtle's surplus into walls first was measured and dropped: a season
+  turtle that checks in fell from 7,507 to 6,168. Undo: `surplus`,
+  `surplus_tech`, the miner's line in `Wing::of`.
+- *Refining.* A hands-on pilot away from home refines from its hold when
+  its fuel would not bring it home or let it reach a target; `in_range`
+  counts what the hold would refine. No bot loads a tanker. Undo: the
+  `refine` calls in `fly` and `head_home`.
+- *One claim a turn.* Two fleets of one bot in one sector no longer both
+  scoop the same pile, board the same derelict or attack the same group;
+  the second was refused, which became tens of thousands of refusals a
+  blitz day once the strike and the recovery wing hunted the same wrecks
+  during this work. Undo: `claim`.
+
+**Unsure of.** Whether the look-in day should follow the economy's clock
+(`10 / pace`, 24 minutes at blitz) rather than the store's; whether a
+fight at the odds' last row costs nothing; `PAYS` 1.5; the fusion horizon;
+whether flyers should put their surplus into warships that then fly (it
+makes their wings bigger and every jump dearer, which `pays` then answers);
+`FUSION_SHARE`. Late in a blitz day deuterium outruns
+everything the bots buy: a bot that trades at the hub's exchange would
+turn it into metal, and none does.
+
 ## 2026-10-14 (Solar Satellites that fall in a raid are rebuilt as defences are)
 
 Since slice 4 a raid at the homeworld is a fight in which the Solar

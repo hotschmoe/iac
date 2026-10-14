@@ -9460,3 +9460,243 @@ measured. No knob of the five slices was fitted against play: pirate
 strength, raid size and what raiders fly, the heal rate, how far a group
 chases, the tanks, the harvest powers, the level ceiling of 20, the bots'
 rule that a wing without a warship picks no fight.
+
+## 2026-10-14: the built-in bots play every style at every pace
+
+The playtest of the same day (`docs/playtests/2026-10-14/README.md`) and the
+balance study beside it found the bots broken in seven ways. Each was
+confirmed on master's bots before it was changed; what was decided is in
+`docs/design/decisions.md` under today's date, with what undoes each.
+`ECONOMY_VERSION` is 14; `SAVE_FORMAT` is 13, for the lairs a bot remembers
+(`Memory::heat`). Nothing in `shared/src/constants.rs`, `scaling.rs`,
+`pace.rs` or `sim/src/score.rs` moved but the version.
+
+**The report first** (`8e4ca83`, then the split of the refuel). `sim-run`
+counts the ships each player lost by class, in fights and in raids (the
+raids' Solar Satellites included, which `ships_lost` never counted), the
+deuterium refined from holds, and splits the dock's fuel into `refuel`,
+what trips burned, and `fill`, the tanks of ships joining a fleet. Before
+the split a turtle that never flew showed 3,000 points of refuel in a blitz
+day.
+
+**What was found.**
+
+1. *Check-in and hybrid bots at a fast pace.* A look-in day was a day of
+   the clock: in a blitz hour a check-in bot looked in at its start and
+   perhaps once more. The hour's means: 29 to 103 points against 1,337 to
+   1,652 for the hands-on bots, as the playtest had it.
+2. *The hands-on raider at season.* Its strike wing had no work once
+   combat and exploration filled the 25% cap (`has_work`), and a fleet at
+   home waited for a full tank's deuterium spare beyond the next orders
+   (`held_at_home`): 5 kills in a season week, 1.4 points brought home.
+3. *The hands-on miner.* `mine` took the nearest seam with no fuel check
+   and, with none, surveyed for charts: a blitz day burned 16,665 points of
+   deuterium for 1,520 brought home.
+4. *The explorer's probes.* The scout line was a share of the fleet's
+   value, and an Espionage Probe at home is what a raid's rapid fire eats
+   first: the hands-on explorer lost 5,084 probes a blitz day to raids it
+   repelled (5,281 ships in all, the rest 1,456 Solar Satellites and 154
+   Large Cargos), and the planner bought every one again.
+5. *The unarmed wing.* `armed` kept the hauling wings out of fights; what
+   it had ended for the raider was the work of its Small Cargos, while its
+   warships were held by item 2.
+6. *The catalogue.* No Fusion Reactor, Nanite Factory, Bomber, Destroyer,
+   Battlecruiser or Deathstar in any run, the Battleship in one season
+   seed; satellites only past Solar Plant 20, and in a blitz day the turtle
+   and the miner each lost 5,200 of them to raids.
+7. *Unspent stock.* A hands-on bot ended a blitz day on 108,000 to 130,000
+   points of stock and averaged 50,000 to 64,000 through it; at a season it
+   holds a few hundred. Late in a blitz day what is left is deuterium: the
+   Metal Mine is at 20 and metal bounds every hull.
+
+**What was changed** (`sim/src/bot/`): the look-in day (`look_in_day`);
+trips that pay their fuel and, for a fight, the worth the odds say it
+costs (`pays`, `fight_pays`), no score part in a fight; the lairs a bot
+farmed; the survey wing charting and the strike wing hunting past the cap,
+and a strike wing under standing orders scooping instead of patrolling
+past it; unarmed fleets out of the way of any announced raid; four probes
+for the explorer, two for the mixed empire; refining from the hold; one
+claim a turn on a pile, a derelict or a group; the warship line to the
+Deathstar with the research of the next class up; energy from the
+cheapest source, with a guard on the reactor's burn; stores raised before
+an absence spills them; a mix of defences; what no order claims spent on
+warships, or a defence, or the cheapest research; a miner's surplus
+warships and a turtle's ships kept home. Seated through `ScriptedPlayer::seated`,
+which now hands over the pace.
+
+**Measured**, three seeds each (1, 2, 3), every style once and an idle
+player but in the blitz hour (`--seat all:all`, the playtest's): `sim-run
+--pace season --days 7`, `--pace blitz --days 1`, `--pace blitz --hours 1
+--seat all:all`, `--pace 1200 --hours 1`, text and `--json`. Before is
+master's bots (`8e4ca83`) with the final report; after is `2cd3ad6`. Points
+are cost weight over 1,000; fuel is the dock's refuel after trips, in
+points; brought is ore, wreckage and derelict loot hauled home; stock is
+the unspent stockpile in points, the mean of the samples and at the end;
+ships lost counts satellites only in the class column.
+
+Season, seven days:
+
+| style | total | core | combat | explore | kills | ships lost (most) | fuel / brought | stock mean / end | heaviest hull | techs | refused |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| turtle/check-in | 7507 -> 7209 | 7507 -> 7209 | 0.1 -> 0.0 | 0.0 -> 0.0 | 0.7 -> 0.3 | 2.3 (Sat 68, LF 2) -> 2.0 (Sat 193, LF 2) | 0.0 / 0.0 -> 0.0 / 0.0 | 322 / 654 -> 400 / 1031 | Light Fighter -> Light Fighter | 48 -> 50 | 0.7 -> 0.0 |
+| miner/check-in | 7227 -> 7640 | 6470 -> 6696 | 1.0 -> 2.2 | 756 -> 942 | 7.7 -> 18 | 15 (Sat 105, SC 11, Rec 2) -> 13 (Sat 117, SC 7, LF 5) | 54 / 167 -> 51 / 128 | 309 / 622 -> 351 / 836 | Recycler -> Recycler | 48 -> 54 | 0.3 -> 0.0 |
+| raider/check-in | 7081 -> 7463 | 5691 -> 6069 | 15 -> 26 | 1750 -> 1665 | 439 -> 529 | 25 (SC 18, LF 7, Sat 2) -> 22 (Sat 52, LF 11, HF 6) | 131 / 266 -> 166 / 498 | 251 / 695 -> 443 / 1148 | Cruiser -> Battleship | 54 -> 55 | 1.3 -> 0.0 |
+| explorer/check-in | 6189 -> 8096 | 5249 -> 7025 | 1.5 -> 1.5 | 957 -> 1070 | 31 -> 13 | 41 (EP 33, Sat 23, SC 3) -> 30 (Sat 82, EP 24, SC 2) | 95 / 180 -> 68 / 170 | 506 / 1081 -> 418 / 1172 | Cruiser -> Cruiser | 36 -> 57 | 0.3 -> 0.0 |
+| mixed/check-in | 7715 -> 7805 | 6733 -> 6554 | 22 -> 7.3 | 960 -> 1244 | 844 -> 313 | 21 (EP 17, Sat 13, SC 2) -> 18 (Sat 42, EP 10, LF 6) | 205 / 277 -> 142 / 335 | 330 / 771 -> 377 / 703 | Cruiser -> Battleship | 54 -> 59 | 1.7 -> 0.0 |
+| turtle/hybrid | 7470 -> 7853 | 7470 -> 7853 | 0.0 -> 0.0 | 0.0 -> 0.0 | 0.0 -> 0.0 | 4.3 (Sat 93, LF 4) -> 6.7 (Sat 141, LF 7) | 0.0 / 0.0 -> 0.0 / 0.0 | 450 / 838 -> 630 / 1241 | Light Fighter -> Light Fighter | 48 -> 48 | 0.0 -> 0.0 |
+| miner/hybrid | 8523 -> 8738 | 7356 -> 7714 | 2.0 -> 0.8 | 1166 -> 1024 | 20 -> 6.7 | 16 (Sat 87, SC 13, LF 2) -> 12 (Sat 149, SC 11, LF 2) | 132 / 444 -> 104 / 373 | 293 / 417 -> 385 / 641 | Recycler -> Recycler | 53 -> 54 | 0.3 -> 0.0 |
+| raider/hybrid | 8430 -> 7317 | 6744 -> 5874 | 11 -> 3.8 | 1803 -> 1700 | 327 -> 92 | 25 (SC 18, Sat 12, LF 6) -> 17 (Sat 28, LF 10, SC 6) | 113 / 241 -> 126 / 302 | 292 / 699 -> 387 / 683 | Battleship -> Battleship | 56 -> 58 | 1.3 -> 0.0 |
+| explorer/hybrid | 8357 -> 8004 | 6686 -> 6403 | 5.6 -> 3.6 | 2286 -> 3532 | 70 -> 32 | 82 (EP 63, Sat 30, LF 8) -> 30 (Sat 115, EP 17, LF 10) | 184 / 184 -> 63 / 127 | 350 / 956 -> 450 / 1197 | Cruiser -> Battleship | 51 -> 54 | 1.0 -> 0.0 |
+| mixed/hybrid | 7973 -> 7261 | 6450 -> 5809 | 5.1 -> 2.4 | 1951 -> 3154 | 159 -> 23 | 38 (EP 28, Sat 16, SC 6) -> 18 (Sat 29, SC 8, EP 7) | 57 / 195 -> 89 / 182 | 260 / 611 -> 387 / 1122 | Cruiser -> Battleship | 52 -> 51 | 0.0 -> 0.0 |
+| turtle/hands-on | 9192 -> 9488 | 9192 -> 9488 | 0.0 -> 0.0 | 0.0 -> 0.0 | 5.0 -> 1.0 | 2.0 (Sat 157, LF 2) -> 2.0 (Sat 267, LF 2) | 0.0 / 0.0 -> 0.0 / 0.0 | 328 / 882 -> 372 / 793 | Solar Satellite -> Solar Satellite | 59 -> 67 | 0.0 -> 0.0 |
+| miner/hands-on | 9926 -> 10604 | 8591 -> 9220 | 8.4 -> 0.0 | 1326 -> 1383 | 77 -> 0.0 | 32 (Sat 108, SC 28, Rec 2) -> 1.3 (Sat 178, LF 1) | 181 / 63 -> 43 / 40 | 222 / 611 -> 267 / 585 | Recycler -> Recycler | 57 -> 60 | 0.0 -> 0.0 |
+| raider/hands-on | 10222 -> 11112 | 8178 -> 8889 | 0.3 -> 0.7 | 2290 -> 2626 | 5.0 -> 25 | 0.7 (Sat 6) -> 4.7 (Sat 37, LF 4) | 136 / 1.4 -> 123 / 15 | 148 / 250 -> 184 / 394 | Cruiser -> Battleship | 57 -> 64 | 0.0 -> 0.0 |
+| explorer/hands-on | 8406 -> 10745 | 6725 -> 8596 | 23 -> 2.9 | 3652 -> 3859 | 408 -> 27 | 131 (EP 85, SC 18, HF 13) -> 21 (Sat 55, SC 9, HF 6) | 547 / 159 -> 28 / 104 | 227 / 471 -> 361 / 447 | Cruiser -> Battleship | 56 -> 69 | 0.0 -> 0.0 |
+| mixed/hands-on | 10192 -> 11012 | 8153 -> 8809 | 0.4 -> 0.6 | 2580 -> 2850 | 47 -> 43 | 108 (EP 107, Sat 13, SC 1) -> 3.7 (Sat 61, LF 2, HF 1) | 196 / 1.7 -> 19 / 51 | 180 / 421 -> 246 / 726 | Cruiser -> Battleship | 59 -> 64 | 0.0 -> 0.0 |
+
+Blitz, one day:
+
+| style | total | core | combat | explore | kills | ships lost (most) | fuel / brought | stock mean / end | heaviest hull | techs | refused |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| turtle/check-in | 15260 -> 168411 | 15251 -> 168407 | 9.2 -> 4.5 | 0.0 -> 0.0 | 400 -> 201 | 237 (LF 237) -> 156 (Sat 133, LF 110, HF 46) | 0.0 / 0.0 -> 0.0 / 0.0 | 5368 / 9164 -> 5997 / 11554 | Heavy Fighter -> Destroyer | 66 -> 143 | 0.0 -> 0.0 |
+| miner/check-in | 7444 -> 167141 | 6651 -> 165838 | 11 -> 31 | 782 -> 1273 | 100 -> 116 | 3.0 (SC 2, LF 1) -> 142 (Sat 152, LF 90, HF 36) | 86 / 912 -> 215 / 420 | 3101 / 6199 -> 5489 / 11551 | Recycler -> Destroyer | 49 -> 143 | 0.0 -> 0.0 |
+| raider/check-in | 13815 -> 154692 | 13049 -> 151792 | 291 -> 226 | 475 -> 2673 | 1825 -> 1764 | 4.0 (HF 2, LF 2) -> 205 (Sat 603, LF 162, HF 19) | 823 / 1031 -> 10820 / 2535 | 4480 / 9140 -> 3989 / 6655 | Battleship -> Destroyer | 60 -> 141 | 0.0 -> 0.0 |
+| explorer/check-in | 12606 -> 162963 | 11280 -> 160600 | 31 -> 119 | 1294 -> 2243 | 77 -> 141 | 6.0 (LF 5, SC 1) -> 201 (Sat 242, LF 133, HF 30) | 73 / 1180 -> 8772 / 1737 | 4810 / 8699 -> 3999 / 5436 | Cruiser -> Destroyer | 60 -> 142 | 0.0 -> 0.0 |
+| mixed/check-in | 10721 -> 160495 | 9925 -> 158188 | 267 -> 151 | 529 -> 2156 | 1672 -> 1505 | 2.3 (LF 2) -> 187 (Sat 397, LF 127, HF 20) | 476 / 867 -> 11766 / 1742 | 4185 / 6822 -> 3299 / 3603 | Cruiser -> Destroyer | 52 -> 141 | 0.0 -> 0.0 |
+| turtle/hybrid | 19727 -> 157684 | 19727 -> 157684 | 0.0 -> 0.0 | 0.0 -> 0.0 | 0.0 -> 0.0 | 289 (LF 287, Sat 16, HF 2) -> 310 (LF 283, Sat 191, HF 27) | 0.0 / 0.0 -> 0.0 / 0.0 | 6572 / 13858 -> 6881 / 14514 | Heavy Fighter -> Destroyer | 70 -> 141 | 0.0 -> 0.0 |
+| miner/hybrid | 13620 -> 163375 | 12708 -> 162166 | 17 -> 12 | 895 -> 1197 | 69 -> 92 | 23 (Sat 36, Rec 13, SC 9) -> 233 (Sat 216, LF 195, HF 32) | 541 / 5371 -> 171 / 628 | 6922 / 16033 -> 5623 / 8889 | Recycler -> Destroyer | 71 -> 142 | 1.0 -> 0.0 |
+| raider/hybrid | 19754 -> 159118 | 17476 -> 154701 | 118 -> 328 | 2161 -> 4089 | 1509 -> 1625 | 12 (Sat 13, HF 5, SC 4) -> 218 (Sat 486, LF 160, HF 26) | 2861 / 5225 -> 11880 / 2368 | 8042 / 21063 -> 3470 / 4017 | Battleship -> Destroyer | 75 -> 140 | 12 -> 0.0 |
+| explorer/hybrid | 21259 -> 165157 | 18992 -> 160167 | 49 -> 89 | 2218 -> 4901 | 76 -> 148 | 30 (Sat 15, EP 14, SC 7) -> 290 (Sat 356, LF 195, EP 40) | 418 / 5485 -> 6707 / 1414 | 9793 / 27447 -> 4230 / 7045 | Cruiser -> Destroyer | 72 -> 142 | 0.0 -> 0.0 |
+| mixed/hybrid | 19365 -> 163419 | 16087 -> 159110 | 604 -> 195 | 2803 -> 4114 | 2139 -> 1116 | 35 (EP 27, HF 3, LF 3) -> 213 (Sat 315, LF 149, HF 26) | 1048 / 3235 -> 12699 / 1607 | 6203 / 12882 -> 3888 / 2443 | Cruiser -> Destroyer | 68 -> 141 | 108 -> 0.7 |
+| turtle/hands-on | 16504 -> 132275 | 16504 -> 132274 | 0.2 -> 1.8 | 0.0 -> 0.0 | 1.0 -> 69 | 2.0 (Sat 5201, LF 2) -> 126 (Sat 126, LF 76, HF 50) | 0.0 / 0.0 -> 0.0 / 0.0 | 64270 / 129830 -> 17495 / 35100 | Solar Satellite -> Bomber | 70 -> 106 | 1.0 -> 0.0 |
+| miner/hands-on | 18075 -> 132772 | 17566 -> 130987 | 54 -> 8.2 | 456 -> 1777 | 733 -> 10 | 14 (Sat 5219, SC 10, Rec 3) -> 113 (Sat 151, LF 63, HF 42) | 16665 / 1520 -> 96 / 168 | 55496 / 114013 -> 16581 / 34043 | Recycler -> Bomber | 73 -> 105 | 8.7 -> 0.0 |
+| raider/hands-on | 24434 -> 153057 | 20949 -> 143437 | 311 -> 4245 | 3174 -> 5375 | 8463 -> 14654 | 38 (Sat 2740, SC 29, LF 6) -> 230 (HF 97, LF 89, Sat 73) | 39983 / 15369 -> 1493 / 11391 | 49973 / 109628 -> 14259 / 30037 | Battleship -> Battlecruiser | 75 -> 110 | 126 -> 39 |
+| explorer/hands-on | 24304 -> 146390 | 19443 -> 134251 | 936 -> 1346 | 9717 -> 10793 | 4961 -> 1763 | 5281 (EP 5084, Sat 1456, LC 154) -> 453 (LF 193, HF 154, Sat 126) | 25075 / 21203 -> 1101 / 4353 | 60497 / 127783 -> 15617 / 32107 | Cruiser -> Battlecruiser | 72 -> 109 | 36 -> 68 |
+| mixed/hands-on | 24206 -> 159652 | 20013 -> 147837 | 379 -> 5802 | 3814 -> 6013 | 11565 -> 21803 | 1135 (Sat 3827, EP 1117, LC 9) -> 301 (HF 124, LF 89, Sat 80) | 40157 / 19104 -> 2039 / 16434 | 52115 / 112149 -> 14076 / 28168 | Cruiser -> Battlecruiser | 72 -> 111 | 782 -> 1620 |
+
+Blitz, one hour, every style once (the playtest's hour):
+
+| style | total | core | combat | explore | kills | ships lost (most) | fuel / brought | stock mean / end | heaviest hull | techs | refused |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| turtle/check-in | 40 -> 481 | 40 -> 480 | 0.0 -> 0.5 | 0.0 -> 0.0 | 0.0 -> 2.7 | 0.0 (-) -> 0.3 (-) | 0.0 / 0.0 -> 0.0 / 0.0 | 220 / 448 -> 109 / 268 | - -> Light Fighter | 3.0 -> 30 | 0.0 -> 0.0 |
+| miner/check-in | 29 -> 346 | 23 -> 277 | 0.1 -> 0.4 | 94 -> 147 | 0.7 -> 1.7 | 0.0 (-) -> 1.7 (LF 2) | 0.8 / 5.4 -> 1.7 / 6.8 | 67 / 135 -> 80 / 120 | - -> Light Fighter | 3.0 -> 25 | 0.0 -> 0.0 |
+| raider/check-in | 50 -> 548 | 40 -> 439 | 14 -> 1.7 | 24 -> 167 | 35 -> 3.3 | 0.3 (-) -> 0.0 (-) | 0.6 / 11 -> 1.4 / 18 | 144 / 290 -> 68 / 75 | - -> Light Fighter | 4.7 -> 31 | 0.0 -> 0.0 |
+| explorer/check-in | 103 -> 551 | 83 -> 441 | 0.1 -> 0.7 | 156 -> 290 | 0.7 -> 1.3 | 0.0 (-) -> 1.0 (EP 1) | 0.9 / 29 -> 2.4 / 41 | 111 / 174 -> 36 / 64 | - -> Heavy Fighter | 7.0 -> 27 | 0.0 -> 0.0 |
+| mixed/check-in | 33 -> 444 | 26 -> 355 | 1.6 -> 1.9 | 14 -> 190 | 3.7 -> 4.7 | 0.0 (-) -> 0.0 (-) | 0.1 / 1.2 -> 2.6 / 23 | 124 / 251 -> 80 / 284 | - -> Light Fighter | 3.0 -> 24 | 0.0 -> 0.0 |
+| turtle/hybrid | 60 -> 440 | 60 -> 440 | 0.0 -> 0.0 | 0.0 -> 0.0 | 0.0 -> 0.0 | 0.0 (-) -> 0.3 (-) | 0.0 / 0.0 -> 0.0 / 0.0 | 242 / 513 -> 120 / 176 | - -> Light Fighter | 6.3 -> 26 | 0.0 -> 0.0 |
+| miner/hybrid | 61 -> 541 | 49 -> 433 | 0.1 -> 0.2 | 110 -> 148 | 0.7 -> 0.7 | 0.0 (-) -> 0.0 (-) | 0.8 / 7.7 -> 0.9 / 8.5 | 72 / 168 -> 63 / 82 | - -> Light Fighter | 5.7 -> 31 | 0.0 -> 0.0 |
+| raider/hybrid | 51 -> 460 | 41 -> 368 | 1.5 -> 3.3 | 14 -> 155 | 2.7 -> 14 | 0.0 (-) -> 0.0 (-) | 0.0 / 1.0 -> 1.5 / 20 | 114 / 235 -> 55 / 152 | - -> Heavy Fighter | 4.7 -> 28 | 0.0 -> 0.0 |
+| explorer/hybrid | 69 -> 444 | 55 -> 355 | 0.3 -> 0.4 | 147 -> 177 | 0.3 -> 0.7 | 0.0 (-) -> 0.7 (EP 1) | 0.9 / 17 -> 1.1 / 13 | 160 / 330 -> 93 / 168 | - -> Light Fighter | 5.0 -> 32 | 0.0 -> 0.0 |
+| mixed/hybrid | 32 -> 585 | 26 -> 468 | 1.1 -> 11 | 12 -> 328 | 2.3 -> 35 | 0.0 (-) -> 0.7 (LF 1) | 0.0 / 0.9 -> 1.7 / 49 | 107 / 216 -> 79 / 84 | - -> Heavy Fighter | 3.0 -> 27 | 0.0 -> 0.0 |
+| turtle/hands-on | 1337 -> 1302 | 1337 -> 1302 | 0.2 -> 0.4 | 0.0 -> 0.0 | 1.0 -> 2.7 | 0.0 (-) -> 0.0 (Sat 2) | 0.0 / 0.0 -> 0.0 / 0.0 | 40 / 70 -> 37 / 111 | - -> Solar Satellite | 40 -> 40 | 1.0 -> 0.0 |
+| miner/hands-on | 1348 -> 1243 | 1138 -> 994 | 4.5 -> 1.0 | 247 -> 254 | 7.3 -> 3.0 | 1.3 (LF 1, SC 1) -> 0.3 (-) | 4.3 / 36 -> 0.5 / 11 | 44 / 67 -> 38 / 56 | Small Cargo -> Small Cargo | 38 -> 25 | 1.7 -> 1.3 |
+| raider/hands-on | 1485 -> 1515 | 1188 -> 1212 | 7.3 -> 19 | 1100 -> 386 | 29 -> 80 | 0.0 (-) -> 1.3 (LF 1) | 2.9 / 26 -> 4.6 / 53 | 39 / 103 -> 38 / 68 | Cruiser -> Heavy Fighter | 37 -> 32 | 4.7 -> 0.0 |
+| explorer/hands-on | 1652 -> 2016 | 1322 -> 1613 | 61 -> 17 | 1180 -> 2125 | 75 -> 22 | 20 (EP 9, SC 5, LF 5) -> 6.3 (LF 3, SC 2, Sat 2) | 17 / 181 -> 4.2 / 332 | 44 / 85 -> 53 / 146 | Heavy Fighter -> Cruiser | 37 -> 31 | 2.3 -> 0.0 |
+| mixed/hands-on | 1422 -> 1381 | 1137 -> 1105 | 8.7 -> 50 | 726 -> 1397 | 20 -> 179 | 2.0 (EP 2) -> 1.3 (LF 1, EP 1) | 2.1 / 14 -> 5.6 / 107 | 28 / 76 -> 32 / 57 | Heavy Fighter -> Heavy Fighter | 36 -> 36 | 1.3 -> 1.3 |
+
+Pace 1200, one hour:
+
+| style | total | core | combat | explore | kills | ships lost (most) | fuel / brought | stock mean / end | heaviest hull | techs | refused |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| turtle/check-in | 62 -> 1873 | 61 -> 1871 | 0.4 -> 1.7 | 0.0 -> 0.0 | 0.7 -> 4.7 | 2.0 (LF 2) -> 0.7 (Sat 4, LF 1) | 0.0 / 0.0 -> 0.0 / 0.0 | 569 / 1066 -> 338 / 878 | - -> Light Fighter | 8.0 -> 40 | 0.0 -> 0.0 |
+| miner/check-in | 67 -> 1970 | 54 -> 1750 | 0.0 -> 2.2 | 67 -> 225 | 0.0 -> 8.3 | 0.0 (-) -> 5.0 (LF 5) | 0.6 / 6.7 -> 4.2 / 18 | 413 / 780 -> 137 / 284 | - -> Heavy Fighter | 7.3 -> 41 | 0.0 -> 0.0 |
+| raider/check-in | 83 -> 1759 | 67 -> 1534 | 4.9 -> 28 | 15 -> 231 | 6.3 -> 109 | 1.0 (LF 1) -> 0.7 (Sat 1, LF 1) | 0.1 / 2.3 -> 13 / 102 | 305 / 595 -> 206 / 361 | - -> Heavy Fighter | 8.3 -> 47 | 0.0 -> 0.0 |
+| explorer/check-in | 275 -> 2841 | 220 -> 2382 | 0.2 -> 39 | 148 -> 842 | 0.3 -> 24 | 0.0 (-) -> 19 (HF 10, Sat 8, EP 5) | 0.6 / 33 -> 18 / 300 | 481 / 872 -> 228 / 589 | - -> Heavy Fighter | 20 -> 47 | 0.0 -> 0.0 |
+| mixed/check-in | 49 -> 1977 | 39 -> 1836 | 3.2 -> 24 | 11 -> 116 | 5.7 -> 222 | 0.0 (-) -> 1.3 (EP 1) | 0.1 / 2.4 -> 29 / 110 | 366 / 713 -> 207 / 362 | - -> Heavy Fighter | 5.0 -> 47 | 0.0 -> 0.0 |
+| turtle/hybrid | 130 -> 1847 | 130 -> 1847 | 0.0 -> 0.0 | 0.0 -> 0.0 | 0.0 -> 0.0 | 0.7 (LF 1) -> 0.0 (Sat 1) | 0.0 / 0.0 -> 0.0 / 0.0 | 612 / 1262 -> 449 / 889 | - -> Light Fighter | 14 -> 39 | 0.0 -> 0.0 |
+| miner/hybrid | 276 -> 2044 | 221 -> 1892 | 0.0 -> 0.7 | 106 -> 151 | 0.0 -> 2.0 | 0.0 (-) -> 0.3 (Sat 1) | 1.0 / 12 -> 1.9 / 22 | 411 / 906 -> 193 / 324 | Small Cargo -> Heavy Fighter | 16 -> 42 | 0.3 -> 0.0 |
+| raider/hybrid | 90 -> 2331 | 77 -> 1979 | 2.4 -> 56 | 11 -> 387 | 3.0 -> 238 | 0.0 (-) -> 8.0 (LF 8) | 0.0 / 1.9 -> 20 / 213 | 254 / 521 -> 230 / 423 | - -> Heavy Fighter | 9.0 -> 45 | 0.0 -> 0.0 |
+| explorer/hybrid | 151 -> 2935 | 121 -> 2354 | 0.0 -> 13 | 101 -> 797 | 0.0 -> 11 | 0.3 (-) -> 8.0 (LF 6, EP 2) | 0.6 / 32 -> 9.3 / 213 | 478 / 968 -> 349 / 702 | - -> Heavy Fighter | 13 -> 47 | 0.0 -> 0.3 |
+| mixed/hybrid | 48 -> 1823 | 38 -> 1458 | 2.1 -> 52 | 18 -> 568 | 3.0 -> 164 | 0.0 (-) -> 4.0 (LF 4) | 0.1 / 1.4 -> 16 / 209 | 355 / 693 -> 190 / 557 | - -> Cruiser | 5.0 -> 42 | 0.0 -> 0.3 |
+| turtle/hands-on | 4138 -> 4676 | 4138 -> 4675 | 0.0 -> 0.6 | 0.0 -> 0.0 | 0.0 -> 3.3 | 0.3 (Sat 2) -> 0.3 (Sat 12) | 0.0 / 0.0 -> 0.0 / 0.0 | 171 / 519 -> 137 / 323 | Solar Satellite -> Solar Satellite | 55 -> 56 | 1.0 -> 0.0 |
+| miner/hands-on | 4288 -> 4543 | 4122 -> 4062 | 4.8 -> 1.2 | 161 -> 480 | 15 -> 5.0 | 1.0 (Sat 2, SC 1) -> 0.0 (Sat 12) | 14 / 26 -> 9.7 / 27 | 84 / 109 -> 114 / 221 | Recycler -> Recycler | 53 -> 53 | 2.0 -> 0.0 |
+| raider/hands-on | 4798 -> 4953 | 3839 -> 3988 | 16 -> 92 | 1775 -> 994 | 32 -> 220 | 3.7 (SC 2, LF 1) -> 6.7 (LF 6, Sat 2) | 7.4 / 30 -> 20 / 213 | 94 / 236 -> 122 / 284 | Cruiser -> Cruiser | 55 -> 53 | 10 -> 2.3 |
+| explorer/hands-on | 5772 -> 6984 | 4618 -> 5588 | 164 -> 41 | 2941 -> 4284 | 152 -> 51 | 46 (EP 19, SC 12, LF 8) -> 12 (SC 6, Sat 6, LF 4) | 59 / 859 -> 16 / 1008 | 115 / 262 -> 139 / 193 | Cruiser -> Cruiser | 54 -> 56 | 5.3 -> 0.7 |
+| mixed/hands-on | 4555 -> 5312 | 3644 -> 4250 | 25 -> 84 | 1424 -> 2540 | 53 -> 342 | 10 (EP 9) -> 6.3 (LF 6, Sat 4) | 9.6 / 22 -> 20 / 226 | 129 / 305 -> 138 / 401 | Cruiser -> Cruiser | 53 -> 55 | 8.7 -> 4.7 |
+
+**What the tables say.**
+
+- *Check-in against hands-on.* In a season week a check-in bot ends at 67
+  to 76 percent of its hands-on twin (turtle 7,209 / 9,488, miner 7,640 /
+  10,604, raider 7,463 / 11,112, explorer 8,096 / 10,745, mixed 7,805 /
+  11,012): tens of percent, the owner's target. In a blitz hour it is 27 to
+  37 percent where it was 2 to 6, and at pace 1200 36 to 43 where it was 1
+  to 5: a check-in player at a fast pace plays rarely and meaningfully. In
+  a blitz day it ends above the hands-on bots (155,000 to 168,000 against
+  132,000 to 160,000): with the mines at 20 the day is spent, and a player
+  about to leave queues more at once and keeps no Metal Mine level in
+  reserve.
+- *The raider raids where it pays.* Hands-on: 25 kills a season week where
+  it had 5, 15 points brought where it had 1.4, and 14,654 kills a blitz day
+  bringing home 11,391 points for 1,493 of fuel (master: 8,463 for 15,369
+  against 39,983). At a season most groups' wreckage does not pay a
+  Cruiser wing's jumps: a ring-8 group leaves 0.14 points at pace 10 (0.57
+  times its power to the 0.8, times the square root of the pace), so a
+  raider at a season raids little until the wreckage is worth more.
+- *The miner's trips pay* at the pilot's hands: 96 points of fuel for 168
+  brought in a blitz day (16,665 for 1,520), 43 for 40 in a season week
+  (181 for 63).
+- *Probes.* The hands-on explorer lost 453 ships a blitz day (5,281), its
+  probes among them too few to show; it bought no more than its four and
+  those it lost.
+- *The catalogue.* Fusion Reactor in every style in a season week and a
+  blitz day; Battleship in a season week for every flyer but the check-in
+  explorer;
+  Battlecruiser in a blitz day for the hands-on flyers, Destroyer for the
+  check-in and hybrid ones, Bomber for the turtle and the miner; Plasma
+  Technology everywhere in a blitz day; 105 to 143 levels of research where
+  it was 49 to 75. Never: the Nanite Factory (1,950 points a level, beyond
+  every appetite), Graviton Technology and so the Deathstar.
+- *Unspent stock.* A hands-on bot ends a blitz day on 28,000 to 35,000
+  points where it ended on 108,000 to 130,000, and averages 14,000 to
+  17,600 where it averaged 50,000 to 64,000. What is left is deuterium:
+  metal bounds every hull and the lab takes one level at a time.
+- *Refused orders.* None at a season. In a blitz day the hands-on mixed
+  empire 1,620 of 150,000 and odd orders, the explorer 68, the raider 39:
+  most are a scoop or an attack another empire's fleet made first in the
+  same tick.
+- *Fuel at a blitz day, check-in and hybrid.* Their fleets under standing
+  orders burn 6,700 to 12,700 points of deuterium a blitz day and bring
+  home 1,400 to 2,500: the warships bought with what no order claimed fly
+  in their wings, and a doctrine's fuel budget is a share of the deuterium
+  income, which by then nothing else uses. Not fixed; at a season the same
+  styles burn 51 to 166 and bring 127 to 498.
+- *Lower than master.* The raider hybrid at a season (7,317 from 8,430),
+  the mixed hybrid (7,261 from 7,973), the explorer hybrid (8,004 from
+  8,357), the turtle checking in (7,209 from 7,507). Not traced. The mixed
+  hybrid's third seed, before the reactor's guard, ended at 3,903 with its
+  Fusion Reactor starved; the guard is in, and its mean rose from 6,474.
+
+**Tests** (end to end, `sim/tests/bots.rs`).
+
+- New: `a_check_in_bot_in_a_blitz_world_looks_in_a_few_times_an_hour_and_plays`
+  (a check-in explorer beside a hands-on one for a blitz hour: away three
+  quarters of it, a quarter of the pilot's score or more, charting and at
+  Metal Mine 8); `hands_on_pilots_fly_trips_that_pay_keep_a_few_probes_and_reach_the_middle_catalogue`
+  (a raider, a miner and an explorer for six blitz hours: the raider makes
+  20 kills or more and brings home more than its fuel, the miner's ore pays
+  its fuel, the explorer buys 1 to 40 probes and charts 50 sectors, every
+  one builds a Fusion Reactor and sends no more than one refused order in a
+  hundred, the raider and the explorer pay for a Battleship or heavier).
+- Moved: `bots_build_fly_and_delegate_with_orders_the_engine_accepts` seated
+  its check-in and hybrid bots at 24 look-ins a day so several fell in a
+  run; with a blitz look-in day of 67 minutes that is one every two
+  minutes, so they take the default four. The check-in explorer's turns are
+  no longer compared with the pilot's: a look-in takes a turn every tick,
+  a pilot sleeps between orders, so turns do not measure presence; it is
+  still held to less than half the run. Read against the three questions:
+  the assertion measured the old day.
+- Moved for the save format: `solo/tests/single_player.rs` and
+  `server/tests/smoke.rs` refuse format 12 as the one before 13.
+
+**Run.** `cargo build --workspace --all-targets`; `cargo test --workspace
+--no-fail-fast` on `2cd3ad6`: 199 passed, 0 failed (`both_targets` and
+`hosts_agree` among them); `cargo clippy --workspace --all-targets` silent.
+No Flutter was run.
+
+**Not done.** No bot trades at the hub's exchange, the one place the late
+deuterium could become metal. The single-player page still offers hands-on
+bots first at pace 70 and above (`soloShortWorldPace` in
+`clients/web/lib/views/solo_screen.dart`), whose comment now overstates how
+little a check-in bot plays there. No bot loads a tanker or uses an
+outpost.
