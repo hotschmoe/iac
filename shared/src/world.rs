@@ -9,7 +9,7 @@ use std::sync::Arc;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::constants::{
-    HUB_ATTEMPTS, HUB_BAND_RINGS, HUB_FIRST_RING, CLOUD_CELL, CLOUD_DEUT_PEAK, CLOUD_FALLOFF_LEVELS, CLOUD_MIN_DIST, CLOUD_PCT, CLOUD_RADIUS,
+    cloud_band, HUB_ATTEMPTS, HUB_BAND_RINGS, HUB_FIRST_RING, CLOUD_CELL, CLOUD_FALLOFF_LEVELS, CLOUD_MIN_DIST,
     Density, ShipClass, TerrainType, Zone, HOMEWORLD_MAX_DIST, HOMEWORLD_MIN_DIST};
 use crate::scaling::{
     npc_composition, npc_passive_share, npc_presence_pct, ore_density_odds, ore_reserve_units, ship_power,
@@ -162,7 +162,7 @@ impl WorldGen {
         let terrain = if cloud.is_some() { TerrainType::Nebula } else { self.roll_terrain(&mut rng, zone) };
         let mut resources = self.roll_resources(&mut rng, zone, terrain, dist);
         if let Some((depth, centre_ring)) = cloud {
-            let peak = CLOUD_DEUT_PEAK.iter().find(|(ring, _)| centre_ring <= *ring).map_or(Density::Sparse, |row| row.1);
+            let peak = cloud_band(centre_ring).peak;
             resources.deut = (0..depth * CLOUD_FALLOFF_LEVELS).fold(peak, |level, _| match level.downgrade() {
                 Density::None => Density::Sparse,
                 thinner => thinner,
@@ -470,7 +470,7 @@ impl WorldGen {
             for cr in cell_r - 1..=cell_r + 1 {
                 let Some(centre) = self.cloud_centre(cq, cr) else { continue };
                 let depth = u32::from(Hex::distance(&centre, &coord));
-                if depth <= CLOUD_RADIUS {
+                if depth <= cloud_band(centre.dist_from_origin()).radius {
                     let here = (depth as usize, centre.dist_from_origin());
                     found = Some(found.map_or(here, |best| best.min(here)));
                 }
@@ -482,15 +482,12 @@ impl WorldGen {
     fn cloud_centre(&self, cell_q: i32, cell_r: i32) -> Option<Hex> {
         let cell = (u64::from(cell_q as u32) << 32) | u64::from(cell_r as u32);
         let h = self.hash_two(cell, self.world_seed ^ CLOUD_SALT);
-        if h % 100 >= CLOUD_PCT {
-            return None;
-        }
         let cell_size = CLOUD_CELL as u64;
         let q = cell_q * CLOUD_CELL + ((h >> 16) % cell_size) as i32;
         let r = cell_r * CLOUD_CELL + ((h >> 32) % cell_size) as i32;
         let centre = Hex { q: i16::try_from(q).ok()?, r: i16::try_from(r).ok()? };
-        let peak = CLOUD_DEUT_PEAK.iter().find(|(ring, _)| centre.dist_from_origin() <= *ring).map_or(Density::None, |row| row.1);
-        (centre.dist_from_origin() >= CLOUD_MIN_DIST && !is_home_ground(centre) && peak != Density::None).then_some(centre)
+        let ring = centre.dist_from_origin();
+        (h % 100 < cloud_band(ring).pct && ring >= CLOUD_MIN_DIST && !is_home_ground(centre)).then_some(centre)
     }
 
     /// Whether a roaming hub may stand in `coord` as far as the seed says:

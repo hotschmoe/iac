@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 20;
+pub const ECONOMY_VERSION: u32 = 21;
 /// Bumped when sector generation changes.
-pub const WORLDGEN_VERSION: u32 = 7;
+pub const WORLDGEN_VERSION: u32 = 8;
 
 /// Server tick rate.
 pub const TICK_RATE_HZ: u64 = 1;
@@ -720,24 +720,42 @@ pub const TEMPLATE_NPC_ID_BASE: u64 = 1 << 32;
 pub const DERELICT_SPAWN_PCT: u8 = 8;
 pub const DERELICT_MIN_DIST: u16 = 4;
 /// Deuterium clouds: a seeded cluster of Nebula sectors. The map is cut in
-/// cells of `CLOUD_CELL` by `CLOUD_CELL` sectors; each cell holds a cloud with
-/// `CLOUD_PCT` percent, its centre anywhere in the cell, and a cloud is its
-/// centre and the sectors within `CLOUD_RADIUS` hexes of it (which stays below
-/// `CLOUD_CELL`). The centre holds the deuterium of `CLOUD_DEUT_PEAK` for its
-/// own ring, and each hex from it is `CLOUD_FALLOFF_LEVELS` levels thinner,
-/// down to Sparse; a ring whose row is `Density::None` has no clouds, so the
-/// Wandering holds none and a deep fleet is carried by relays and hubs. No
+/// cells of `CLOUD_CELL` by `CLOUD_CELL` sectors; each cell holds
+/// a cloud at its centre anywhere in the cell with the chance of the band its
+/// centre falls in, and a cloud is its centre and the sectors within the
+/// band's `radius` hexes of it (which stays below `CLOUD_CELL`). The centre
+/// holds the band's `peak` density, and each hex from it is
+/// `CLOUD_FALLOFF_LEVELS` levels thinner, down to Sparse. Clouds grow with the
+/// ring, small near home and large in the Wandering, and a fleet's tank is
+/// topped up from them only as far as a relay would fill it (`refining`). No
 /// cloud touches a sector nearer the hub than `CLOUD_MIN_DIST` or a home
 /// seat's ground. Provisional.
 pub const CLOUD_CELL: i32 = 5;
-pub const CLOUD_PCT: u64 = 50;
-pub const CLOUD_RADIUS: u32 = 1;
 pub const CLOUD_MIN_DIST: u16 = 2;
 pub const CLOUD_FALLOFF_LEVELS: usize = 2;
-/// The richest density at a cloud's centre, by the ring of the centre: the
-/// first row whose ring is not below it.
-pub const CLOUD_DEUT_PEAK: [(u16, Density); 4] =
-    [(10, Density::Rich), (13, Density::Moderate), (20, Density::Sparse), (u16::MAX, Density::None)];
+
+/// One row of `CLOUD_BANDS`: the clouds whose centre lies at or under
+/// `max_ring` and over the row before.
+#[derive(Debug, Clone, Copy)]
+pub struct CloudBand {
+    pub max_ring: u16,
+    pub pct: u64,
+    pub radius: u32,
+    pub peak: Density,
+}
+
+pub const CLOUD_BANDS: [CloudBand; 6] = [
+    CloudBand { max_ring: 10, pct: 50, radius: 1, peak: Density::Rich },
+    CloudBand { max_ring: 13, pct: 50, radius: 1, peak: Density::Moderate },
+    CloudBand { max_ring: 20, pct: 50, radius: 1, peak: Density::Sparse },
+    CloudBand { max_ring: 30, pct: 7, radius: 1, peak: Density::Moderate },
+    CloudBand { max_ring: 45, pct: 4, radius: 2, peak: Density::Moderate },
+    CloudBand { max_ring: u16::MAX, pct: 3, radius: 3, peak: Density::Rich },
+];
+
+pub fn cloud_band(ring: u16) -> CloudBand {
+    CLOUD_BANDS.iter().copied().find(|band| ring <= band.max_ring).unwrap_or(CLOUD_BANDS[CLOUD_BANDS.len() - 1])
+}
 /// Ticks a boarding takes, at every pace.
 pub const EXPLORE_DURATION_TICKS: u16 = 20;
 /// An Espionage Probe aboard reads the hulk before breaching (ambush chance

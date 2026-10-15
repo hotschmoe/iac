@@ -10372,3 +10372,26 @@ Energy Technology 10: +20 rings). `ECONOMY_VERSION` is 20 and
 Unmet, and said in `deep-space.md` 3.5: Cruisers at level 3 gain +2 from
 relays (target +4 to +10), and clouds add +9 to +12 at levels 6 to 13 (target
 a top-up).
+
+## 2026-10-15: clouds capped like depots, and back in the Wandering
+
+The cap on what a relay fills a tank to now applies to `refine` too, inside
+`GameEngine::refining`: a fleet standing in a cloud sector (`cloud_depth` is
+Some) fills its tank only to `depot_fill_jumps` of its own burn, at its
+owner's research, and a refused order says so in the engine's sentence;
+`FleetState.refine` is the same function, so the web client's control shows it
+with no change. Elsewhere refining is as it was. The rule is on where the fuel
+is made, not where the deuterium came from: deuterium hauled out of a cloud in
+a hold is refined uncapped, but the hold is a fleet's own and finite, and
+tracking a hold's origin would be a second ledger for nothing. With it a cloud
+is worth one relay at the same research, never more at one stop.
+Clouds are free relays in unlimited number, though, so the cap alone does not
+make deep clouds a top-up: the deep bands are rare. `CLOUD_PCT`, `CLOUD_RADIUS`
+and `CLOUD_DEUT_PEAK` became one table, `CLOUD_BANDS` (chance, radius and peak
+by the ring of the centre): rings 2 to 20 as they were; 21 to 30 7 percent,
+radius 1, Moderate; 31 to 45 4 percent, radius 2 (19 sectors), Moderate; 46
+and beyond 3 percent, radius 3 (37 sectors), Rich. Tried first at 12, 8 and 6
+percent: clouds alone added +17 rings at level 6. `ECONOMY_VERSION` is 21 and
+`WORLDGEN_VERSION` 8; `SAVE_FORMAT` is unchanged. The probe's cloud stops now
+fill to `depot_fill_jumps`, and its flown check allows the greedy planner one
+ring of loss for the two tiers together. Results are in `deep-space.md` 3.5.

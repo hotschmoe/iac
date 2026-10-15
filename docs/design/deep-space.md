@@ -64,40 +64,57 @@ fleet that goes deep is a large one.
 ### 3.1 Deuterium clouds (slice 2)
 
 A cloud is a seeded cluster of sectors with deuterium density that falls off from
-its centre, built in worldgen from a coarse hash cell of the world seed: seven
-sectors, in rings 2 to 20. Terrain of a cloud sector is Nebula.
+its centre, built in worldgen from a coarse hash cell of the world seed. A cloud
+is small near home and large in the Wandering. Terrain of a cloud sector is Nebula.
 
 A fleet harvests it (`harvest_power`: Recycler 5, cargo 1, others 0.5), refines the
 hold into fuel at the usual 15% loss, and sits still in a sector that a pirate
-pack of the ring guards. A cloud buys a few jumps and not a crossing.
+pack of the ring guards. A cloud buys a few jumps and not a crossing, and
+`GameEngine::refining` keeps it so: standing in a cloud sector a fleet's tank
+fills only to `depot_fill_jumps` of its own burn (the fill of a relay or a hub at
+the same Hyperspace Technology), whatever the hold carries. Elsewhere (open
+space, a dock, an outpost) refining fills the tank as it did. `FleetState.refine`
+is that same function, and the refusal says the cloud's limit in the engine's
+sentence.
 
-- *Built.* `WORLDGEN_VERSION` is 7; no stored state is added. The map is cut in
-  `CLOUD_CELL` 5 by 5 cells; a cell holds a cloud with `CLOUD_PCT` 50 percent,
-  its centre at a hashed offset. A cloud is its centre and the sectors within
-  `CLOUD_RADIUS` 1 hex of it: seven sectors. The centre holds the deuterium of
-  `CLOUD_DEUT_PEAK` for its ring (Rich to ring 10, Moderate to 13, Sparse to
-  20, and no cloud beyond: a row of `Density::None` is a ring without clouds),
-  and each hex from it is `CLOUD_FALLOFF_LEVELS` 2 levels thinner, so the six
-  around a centre are Sparse (never below it). No cloud touches a sector nearer
-  the hub than `CLOUD_MIN_DIST` 2 or a home seat's ground. Constants are in
-  `shared/src/constants.rs`; `WorldGen::cloud_depth` in `shared/src/world.rs`.
-- Why the Wandering holds none (measured, 2026-10-15): with clouds there, a
-  Light Fighter fleet at Energy Technology 10 chained deep Sparse sectors one
-  hop apart (a Sparse sector at ring 30 is 4.8 jumps of a level-10 Light
-  Fighter) and a cloud was a crossing, +20 rings at levels 10 and 13. Ore rises
-  with the ring and a jump gets cheaper with Energy Technology, so no density
-  makes a deep cloud a top-up for a big tank and still worth a small one's
-  trip. Clouds are the early fleets' tier, in rings 9 to 20 where an
-  outpost-less fleet first ventures; relays and hubs carry the deep ones.
-- Share of sectors in a cloud on seed 42: rings 2-8 5%, 9-20 13%, 21-30 0.4%
-  (the edge of ring 20's), none beyond.
+- *Built.* `WORLDGEN_VERSION` is 8 and `ECONOMY_VERSION` 21; no stored state is
+  added. The map is cut in `CLOUD_CELL` 5 by 5 cells; a cell holds a cloud with
+  the chance of `CLOUD_BANDS` for the ring of its centre, the centre at a hashed
+  offset. A cloud is its centre and the sectors within the band's `radius`; each
+  hex from the centre is `CLOUD_FALLOFF_LEVELS` 2 levels thinner (never below
+  Sparse). No cloud touches a sector nearer the hub than `CLOUD_MIN_DIST` 2 or a
+  home seat's ground. The bands (centre ring, chance, radius and size, peak):
+
+  | rings | chance | radius | sectors | centre |
+  |---|---|---|---|---|
+  | 2-10 | 50% | 1 | 7 | Rich |
+  | 11-13 | 50% | 1 | 7 | Moderate |
+  | 14-20 | 50% | 1 | 7 | Sparse |
+  | 21-30 | 7% | 1 | 7 | Moderate |
+  | 31-45 | 4% | 2 | 19 | Moderate |
+  | 46+ | 3% | 3 | 37 | Rich |
+
+  Constants are in `shared/src/constants.rs` (`cloud_band`);
+  `WorldGen::cloud_depth` in `shared/src/world.rs`.
+- Why the cap is in the refine and not in the density (measured, 2026-10-15):
+  Sparse clouds beyond ring 20 once let a Light Fighter fleet at Energy
+  Technology 10 chain free fuel, +20 rings, because a tank refilled to full at
+  every cloud is an unlimited number of relays. The cap makes a cloud no better
+  than one relay of that research. It does not stop a chain of clouds closer
+  together than the fill (a relay is limited in number, a cloud is not), so the
+  deep bands are rare: at 12, 8 and 6 percent clouds alone added +17 rings at
+  level 6 and +10 at level 3; at 7, 4 and 3 percent +11.5 and +8, with the
+  census below.
+- Share of sectors in a cloud on seed 42: rings 2-8 5%, 9-20 13%, 21-30 2.2%,
+  31-45 2.3%, 46-60 4.6%.
 - A cloud sector's yield is the ore the density has at its ring (`ore_regen_per_tick`
   refills it as ore refills). Measured by `reach_probe.rs` for ten Light
   Fighters over eight seeds: the nearest cloud is a median 4.5 hops from the
   ring-4 home (8 of 8 within a full tank at level 0) and clouds add +3.5 rings
-  at level 0 (a gain in 7 of 8 seeds), +6 at level 3, +9 at level 6 and about
-  +12 at levels 10 and 13, which is a top-up of a reach of 39 to 57. Ten Cruisers
-  gain nothing: their jump burns more than a deposit holds.
+  at level 0 (a gain in 7 of 8 seeds), +8 at level 3, +11.5 at level 6, +3 at
+  level 10 and +2 at level 13: the cap bites on the big tanks, which a cloud can
+  no longer fill. Ten Cruisers and Battleships gain nothing: their jump burns
+  more than a deposit holds.
 - Pace: the ore regenerates as ore does now (`ore_regen_per_tick`); the fuel it
   makes is real time.
 
@@ -281,21 +298,25 @@ this planner:
 | Battleship | 10 | 25 | 25 (25-25) | 37.5 (36-39) | 38 (36-39) |
 | Battleship | 13 | 29 | 29 (29-30) | 43 (42-45) | 43 (42-45) |
 
-Now (store 800, fill 10 + 3 a level, the clouds of 3.1). Farthest ring, median
-(min-max) over the eight seeds:
+Now (store 800, fill 10 + 3 a level, the clouds of 3.1 with the cap of
+`refining` and clouds beyond ring 20). Farthest ring, median (min-max) over the
+eight seeds. The clouds column before the cap and the deep clouds (clouds of
+rings 2 to 20 only, a tank filled to full) was Light Fighter 12.5, 20, 30, 51 and
+57 at levels 0, 3, 6, 10 and 13, and the all-three column 23.5, 48, 53.5, 60 and
+65.5; Cruiser and Battleship columns are unchanged within a ring:
 
 | class | level | off | clouds | relays | hubs | clouds+relays | all three |
 |---|---|---|---|---|---|---|---|
-| Light Fighter | 0 | 9 (9-9) | 12.5 (9-14) | 19 (18-19) | 9 (9-9) | 22 (21-24) | 23.5 (21-28) |
-| Light Fighter | 3 | 14 (14-14) | 20 (19-22) | 47 (43-48) | 14 (14-14) | 48 (46-49) | 48 (47-58) |
-| Light Fighter | 6 | 21 (21-21) | 30 (28-32) | 53 (52-54) | 35 (21-42) | 53 (52-54) | 53.5 (52-54) |
-| Light Fighter | 10 | 39 (38-39) | 51 (49-53) | 59.5 (59-60) | 52 (42-56) | 60 (59-61) | 60 (59-61) |
-| Light Fighter | 13 | 45 (44-46) | 57 (56-60) | 63 (62-64) | 61.5 (59-66) | 65.5 (64-67) | 65.5 (64-67) |
+| Light Fighter | 0 | 9 (9-9) | 12.5 (9-14) | 19 (18-19) | 9 (9-9) | 23.5 (21-26) | 24.5 (21-31) |
+| Light Fighter | 3 | 14 (14-14) | 22 (19-26) | 47 (43-48) | 14 (14-14) | 48 (46-49) | 48 (48-58) |
+| Light Fighter | 6 | 21 (21-21) | 32.5 (27-38) | 53 (52-54) | 35 (21-42) | 53 (53-54) | 53.5 (53-59) |
+| Light Fighter | 10 | 39 (38-39) | 42 (40-44) | 59.5 (59-60) | 52 (42-56) | 59.5 (59-60) | 59.5 (59-60) |
+| Light Fighter | 13 | 45 (44-46) | 47 (46-48) | 63 (62-64) | 61.5 (59-66) | 63 (62-64) | 63 (62-66) |
 | Cruiser | 0 | 8 (8-8) | 8 (8-8) | 9 (8-9) | 8 (8-8) | 9 (8-9) | 9 (8-9) |
 | Cruiser | 3 | 12 (12-12) | 12 (12-12) | 14 (13-14) | 12 (12-12) | 14.5 (13-15) | 14.5 (13-15) |
-| Cruiser | 6 | 18 (18-18) | 18 (18-18) | 24 (23-25) | 35 (18-42) | 25 (24-25) | 39 (36-47) |
-| Cruiser | 10 | 32 (31-32) | 32 (31-32) | 40 (37-42) | 52 (40-56) | 42 (40-45) | 54 (47-60) |
-| Cruiser | 13 | 38 (37-38) | 38 (37-38) | 46 (42-49) | 61.5 (57-66) | 47.5 (46-51) | 62 (59-66) |
+| Cruiser | 6 | 18 (18-18) | 18 (18-18) | 24 (23-25) | 35 (18-42) | 25 (24-25) | 39.5 (36-47) |
+| Cruiser | 10 | 32 (31-32) | 32 (31-32) | 40 (37-42) | 52 (40-56) | 42 (40-45) | 54 (48-60) |
+| Cruiser | 13 | 38 (37-38) | 38 (37-38) | 46 (42-49) | 61.5 (57-66) | 47 (45-51) | 62 (59-66) |
 | Battleship | 3 | 10 (10-10) | 10 (10-10) | 11 (10-11) | 10 (10-10) | 11 (10-11) | 11 (10-11) |
 | Battleship | 10 | 25 (25-25) | 25 (25-25) | 31 (29-34) | 52 (40-56) | 32.5 (30-34) | 52.5 (40-56) |
 | Battleship | 13 | 29 (29-29) | 29 (29-29) | 36.5 (35-39) | 61.5 (57-66) | 37.5 (35-39) | 61.5 (57-66) |
@@ -306,31 +327,31 @@ most N times the fleet's own power:
 
 | class | level | fleet power | fuel ring | fight 1x | fight 2x | fight 4x | lairs on route | strongest, x fleet |
 |---|---|---|---|---|---|---|---|---|
-| Light Fighter | 0 | 910 | 23.5 (21-28) | 19 (17-21) | 21 (21-22) | 23 (21-24) | 11.5 (8-16) | 3.17 (max 9.44) |
-| Light Fighter | 3 | 1183 | 48 (47-58) | 22 (20-24) | 24 (23-24) | 27 (27-28) | 36.5 (31-41) | 56.97 |
-| Light Fighter | 6 | 1456 | 53.5 (52-54) | 22 (22-24) | 24 (23-25) | 28 (27-29) | 42.5 (34-57) | 46.29 |
-| Light Fighter | 10 | 1820 | 60 (59-61) | 23 (22-24) | 25 (25-27) | 29 (29-32) | 52 (42-106) | 37.03 |
-| Light Fighter | 13 | 2093 | 65.5 (64-67) | 23 (22-24) | 26 (26-27) | 29 (29-32) | 52.5 (48-63) | 32.20 |
+| Light Fighter | 0 | 910 | 24.5 (21-31) | 19 (17-21) | 21 (21-22) | 23 (21-24) | 14.5 (7-17) | 4.72 (max 14.04) |
+| Light Fighter | 3 | 1183 | 48 (48-58) | 22 (20-24) | 24 (23-24) | 27 (27-28) | 38 (33-40) | 56.97 |
+| Light Fighter | 6 | 1456 | 53.5 (53-59) | 22 (22-24) | 24 (23-25) | 28.5 (28-30) | 44 (37-56) | 46.29 |
+| Light Fighter | 10 | 1820 | 59.5 (59-60) | 23 (22-24) | 25 (25-27) | 29 (29-32) | 49.5 (37-75) | 37.03 |
+| Light Fighter | 13 | 2093 | 63 (62-66) | 23 (22-24) | 26 (26-27) | 29 (29-32) | 52 (45-67) | 32.20 |
 | Cruiser | 3 | 8775 | 14.5 (13-15) | 14.5 (13-15) | 14.5 (13-15) | 14.5 (13-15) | 5 (2-6) | 0.06 |
-| Cruiser | 6 | 10800 | 39 (36-47) | 30 (24-31) | 33 (32-34) | 36.5 (34-38) | 26 (23-31) | 6.02 |
-| Cruiser | 10 | 13500 | 54 (47-60) | 33 (32-35) | 35 (35-36) | 38.5 (38-39) | 39.5 (32-51) | 4.99 |
+| Cruiser | 6 | 10800 | 39.5 (36-47) | 30 (24-31) | 33 (32-34) | 36.5 (35-38) | 26 (24-31) | 6.24 |
+| Cruiser | 10 | 13500 | 54 (48-60) | 33 (32-35) | 35 (35-36) | 39 (38-39) | 39.5 (35-51) | 4.99 |
 | Cruiser | 13 | 15525 | 62 (59-66) | 33 (32-35) | 36 (36-38) | 39 (39-41) | 50 (42-54) | 4.34 |
-| Battleship | 10 | 32400 | 52.5 (40-56) | 36 (35-38) | 39 (38-40) | 52.5 (40-56) | 36.5 (27-48) | 2.08 |
-| Battleship | 13 | 37260 | 61.5 (57-66) | 36 (36-38) | 61.5 (57-66) | 61.5 (57-66) | 48 (43-54) | 1.81 |
+| Battleship | 10 | 32400 | 52.5 (40-56) | 36 (35-38) | 39 (38-40) | 52.5 (40-56) | 36.5 (30-48) | 2.08 |
+| Battleship | 13 | 37260 | 61.5 (57-66) | 36 (36-38) | 61.5 (57-66) | 61.5 (57-66) | 47 (43-54) | 1.81 |
 
 Cloud distance from the ring-4 home, in lane hops, and the rings clouds add for a
 Light Fighter at levels 0, 3 and 6 (tank 10, 20 and 35 jumps):
 
 | seed | nearest cloud | rings added, levels 0/3/6 |
 |---|---|---|
-| 42 | 5 | +4/+6/+9 |
-| 7 | 2 | +3/+6/+9 |
-| 101 | 6 | +5/+8/+11 |
-| 2024 | 4 | +1/+8/+10 |
-| 31337 | 4 | +4/+8/+10 |
-| 555 | 6 | +0/+5/+7 |
-| 9001 | 4 | +2/+5/+7 |
-| 1234 | 6 | +4/+6/+9 |
+| 42 | 5 | +4/+6/+12 |
+| 7 | 2 | +3/+6/+10 |
+| 101 | 6 | +5/+11/+11 |
+| 2024 | 4 | +1/+8/+14 |
+| 31337 | 4 | +4/+9/+17 |
+| 555 | 6 | +0/+8/+10 |
+| 9001 | 4 | +2/+5/+6 |
+| 1234 | 6 | +4/+12/+14 |
 
 Reading:
 
@@ -356,6 +377,16 @@ Reading:
   (ring 22). For a Light Fighter at level 13 a hub alone (61.5) is within four
   rings of all three together (65.5): the tiers do not stack, because each
   fills the same capped tank.
+- Clouds with the cap: alone they add +3.5, +8 and +11.5 rings at levels 0, 3
+  and 6 for ten Light Fighters (the first level near +8 is the top-up asked
+  for; level 6 is a few rings over it) and +3 and +2 at levels 10 and 13, where
+  the cap, not the deposit, is the limit: a cloud fills a big tank only to the
+  jumps a relay would. Together with relays and hubs nothing moves: the all-three
+  column at level 13 is ring 63 for Light Fighters and 62 for Cruisers, no deeper
+  than before the deep clouds, and the heavy fleets' columns are unchanged.
+- The deep bands are rare because clouds are free relays in unlimited number: at
+  12, 8 and 6 percent they added +17 rings at level 6, and a rarer deep band
+  was chosen over a lower cap (the owner's reading: tune density, not the cap).
 - Not reached: level 3 for ten Cruisers is +2, not +4 to +10, with the store at
   800 and the quarter held back in the plan; the flown plan on seed 42 is one
   ring better (13 against 12 off). Clouds at levels 6 to 13 add +9 to +12 rather

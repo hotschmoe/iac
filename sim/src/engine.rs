@@ -4115,6 +4115,32 @@ impl GameEngine {
         Ok(())
     }
 
+    /// What `refine` would turn into what for `fleet` right now: all the
+    /// deuterium in its hold, or as much of it as fills the tank, at the dock's
+    /// rate less `REFINE_LOSS`. In a deuterium cloud the tank fills no further
+    /// than a relay would fill it (`depot_room`), so no run of clouds carries a
+    /// fleet beyond what a relay at the same research does. None when the order
+    /// would be refused: in a fight, charging a jump, no deuterium aboard or no
+    /// room in the tank. A hold's deuterium becomes a tank's fuel here and
+    /// nowhere else.
+    pub fn refining(&self, fleet: &Fleet) -> Option<Refining> {
+        if matches!(fleet.state, FleetStatus::InCombat | FleetStatus::Moving) { return None; }
+        let aboard = fleet.cargo.deuterium;
+        let room = if self.world_gen.cloud_depth(fleet.location).is_some() {
+            self.depot_room(fleet)
+        } else {
+            fleet.fuel_max - fleet.fuel
+        };
+        if aboard <= 0.0 || room <= 0.0 { return None; }
+        let rate = scaling::refined_fuel_per_deuterium();
+        let fuel = aboard * rate;
+        Some(if fuel <= room {
+            Refining { deuterium: aboard, fuel }
+        } else {
+            Refining { deuterium: room / rate, fuel: room }
+        })
+    }
+
     /// Fuel a relay or a hub may add to `fleet`'s tank now: up to
     /// `depot_fill_jumps` of its own burn at its owner's research, and no
     /// more than the tank holds.
@@ -6312,7 +6338,7 @@ impl GameEngine {
     pub fn refine_order(&self, player_id: u64, fleet_id: u64) -> Result<Refining, Refusal> {
         let fleet = self.owned_fleet(player_id, fleet_id)
             .map_err(|code| Refusal::new(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
-        refining(fleet).ok_or_else(|| match (fleet.state, fleet.move_target) {
+        self.refining(fleet).ok_or_else(|| match (fleet.state, fleet.move_target) {
             (FleetStatus::InCombat, _) => Refusal::new(
                 ErrorCode::OnCooldown,
                 format!("fleet {fleet_id} is in combat; nothing is refined in a fight"),
@@ -6328,6 +6354,15 @@ impl GameEngine {
             _ if fleet.cargo.deuterium <= 0.0 => Refusal::new(
                 ErrorCode::NoResources,
                 format!("the hold of fleet {fleet_id} carries no deuterium to refine"),
+            ),
+            _ if fleet.fuel < fleet.fuel_max && self.world_gen.cloud_depth(fleet.location).is_some() => Refusal::new(
+                ErrorCode::InvalidCommand,
+                format!(
+                    "a cloud tops a tank up only to {} jumps of fleet {fleet_id}'s own burn at your Hyperspace \
+                     Technology, and its tank stands at {} of {} fuel; a relay or a dock fills it further",
+                    self.players.get(&fleet.owner_id).map_or(0, |p| scaling::depot_fill_jumps(&p.research)),
+                    fuel_words(fleet.fuel), fuel_words(fleet.fuel_max),
+                ),
             ),
             _ => Refusal::new(ErrorCode::InvalidCommand, format!(
                 "the tank of fleet {fleet_id} is full ({} of {} fuel); refining would add nothing",
@@ -6361,8 +6396,8 @@ impl GameEngine {
     /// the tank gained, or None when there was nothing to refine. A tank
     /// that is filled reads exactly its size.
     fn refine_hold(&mut self, fleet_id: u64) -> Option<Refining> {
+        let done = self.refining(self.fleets.get(&fleet_id)?)?;
         let fleet = self.fleets.get_mut(&fleet_id)?;
-        let done = refining(fleet)?;
         let missing = fleet.fuel_max - fleet.fuel;
         fleet.cargo.deuterium = (fleet.cargo.deuterium - done.deuterium).max(0.0);
         fleet.fuel = if done.fuel >= missing { fleet.fuel_max } else { fleet.fuel + done.fuel };
@@ -9048,25 +9083,6 @@ fn fleet_fuel_max(fleet: &Fleet, player: &Player) -> f64 {
     let total_fuel = fleet.ships.counts()
         .fold(0.0, |tank, (class, count)| tank + f64::from(count) * scaling::ship_tank(class, &player.research));
     total_fuel * scaling::tank_modifier(player.buildings.deuterium_tank)
-}
-
-/// What `refine` would turn into what for `fleet` right now: all the
-/// deuterium in its hold, or as much of it as fills the tank, at the dock's
-/// rate less `REFINE_LOSS`. None when the order would be refused: in a fight,
-/// charging a jump, no deuterium aboard or no room in the tank. A hold's
-/// deuterium becomes a tank's fuel here and nowhere else.
-pub fn refining(fleet: &Fleet) -> Option<Refining> {
-    if matches!(fleet.state, FleetStatus::InCombat | FleetStatus::Moving) { return None; }
-    let aboard = fleet.cargo.deuterium;
-    let room = fleet.fuel_max - fleet.fuel;
-    if aboard <= 0.0 || room <= 0.0 { return None; }
-    let rate = scaling::refined_fuel_per_deuterium();
-    let fuel = aboard * rate;
-    Some(if fuel <= room {
-        Refining { deuterium: aboard, fuel }
-    } else {
-        Refining { deuterium: room / rate, fuel: room }
-    })
 }
 
 /// The ships a fleet brings to a fight, as they stand and with its refit.

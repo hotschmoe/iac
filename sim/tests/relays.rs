@@ -353,6 +353,50 @@ fn a_relay_fills_a_tank_to_the_jumps_research_allows_and_no_further() {
 }
 
 #[test]
+fn a_deep_cloud_tops_a_tank_up_only_to_what_a_relay_would_fill_it_to() {
+    let mut e = Empire::join(world("season"), "Skimmer");
+    let (pid, fid) = (e.pid, e.fid);
+    let cloud = (31..=45u16)
+        .flat_map(|ring| hex_ring(Hex::ORIGIN, ring))
+        .find(|at| e.engine.world_gen.cloud_depth(*at).is_some() && open_ground(&e.engine.world_gen.generate_sector(*at)))
+        .expect("a cloud sector in rings 31 to 45");
+    let open = sector_in_ring(&e.engine, 40, |at, t| {
+        e.engine.world_gen.cloud_depth(at).is_none() && open_ground(t)
+    });
+    muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 10)], cloud);
+    let jump = e.engine.hop_fuel_cost(&e.engine.fleets[&fid]);
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.fuel_max = 60.0 * jump;
+        fleet.fuel = 0.0;
+        fleet.cargo = res(0.0, 0.0, 3000.0);
+        fleet.state = FleetStatus::Idle;
+        fleet.move_target = None;
+    });
+
+    let base = f64::from(scaling::depot_fill_jumps(&scaling::ResearchLevels::default()));
+    e.order(Command::Refine { fleet_id: fid }).expect("refine in a cloud");
+    assert!((e.engine.fleets[&fid].fuel - base * jump).abs() < 1e-6, "{} of {} jumps", e.engine.fleets[&fid].fuel / jump, base);
+    assert_eq!(e.engine.refining(&e.engine.fleets[&fid]), None, "the cloud has no more to give");
+    let (code, text) = e.refusal(Command::Refine { fleet_id: fid });
+    assert_eq!(code, ErrorCode::InvalidCommand);
+    assert!(text.contains("a cloud tops a tank up only to"), "{text}");
+
+    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().research.hyperspace_technology = 4);
+    let more = f64::from(scaling::depot_fill_jumps(&e.engine.players[&pid].research));
+    e.order(Command::Refine { fleet_id: fid }).expect("research raises the cloud's fill like a relay's");
+    assert!((e.engine.fleets[&fid].fuel - more * jump).abs() < 1e-6);
+
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.location = open;
+        fleet.fuel = 0.0;
+    });
+    e.order(Command::Refine { fleet_id: fid }).expect("refine in open space");
+    assert!(e.engine.fleets[&fid].fuel > more * jump + 1e-6, "outside a cloud the tank fills as it did");
+}
+
+#[test]
 fn a_relay_nobody_visits_is_gone_with_its_store_and_a_visit_puts_that_off() {
     let mut e = Empire::join(world("test"), "Hermit");
     let fid = e.fid;
