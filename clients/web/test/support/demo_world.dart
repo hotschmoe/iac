@@ -1169,7 +1169,6 @@ class DemoWorld {
               sector: r.at,
               ring: r.at.distFromOrigin,
               store: r.store,
-              storeCap: _relayStore,
               decayIn: max(0, r.visited + _book.relayDecayTicks - _tick),
               foundedTick: r.founded,
             ),
@@ -1178,14 +1177,12 @@ class DemoWorld {
 
   void _stepRelays() {
     for (final r in List.of(_relays)) {
-      if (_fleets.any((f) => f.location == r.at)) {
-        r.visited = _tick;
-      } else if (_tick - r.visited >= _book.relayDecayTicks) {
+      if (_tick - r.visited >= _book.relayDecayTicks) {
         _relays.remove(r);
         _dirty.add(r.at.toKey());
         _ev(RelayDecayedEvent(playerId: _playerId, sector: r.at, lost: r.store));
         _outpostAlert(AlertLevel.warning, r.at,
-            'your relay at ${r.at} stood unvisited for ${_book.relayDecayTicks} ticks and is gone, with ${r.store.toStringAsFixed(0)} deuterium in its store');
+            'your relay at ${r.at} was neither landed at nor deposited into for ${_book.relayDecayTicks} ticks and is gone, with ${r.store.toStringAsFixed(0)} deuterium in its store');
       }
     }
   }
@@ -1255,7 +1252,6 @@ class DemoWorld {
         sector: at,
         ring: ring,
         cost: _book.relayCost(ring),
-        storeCap: _relayStore,
         decayTicks: _book.relayDecayTicks,
         count: _relays.length,
         limit: _relayLimit,
@@ -1278,25 +1274,77 @@ class DemoWorld {
     _ev(AlertEvent(
         level: AlertLevel.info,
         message: 'fleet $fleetId founded your relay at $at for ${_amount(cost)}: it holds up to ${_relayStore.toStringAsFixed(0)} deuterium, '
-            'which fleets of yours standing there load, unload and refuel from. It is gone if no fleet of yours stands there for '
+            'which fleets of yours standing there load, unload and refuel from. It is gone if no fleet of yours lands there or moves a deposit for '
             '${_book.relayDecayTicks} ticks',
         fleetId: fleetId,
         sector: at));
     return [_tickUpdate()];
   }
 
-  /// The engine's `load` and `unload` at a relay: deuterium only.
-  List<ServerMessage> _relayLoad(FleetState f, _Relay r, ResourceKind resource, double? amount) {
+  /// The engine's `standing_at_relay`: why a fleet at a relay cannot handle
+  /// its hold now.
+  (ErrorCode, String)? _relayHandling(FleetState f, String verb) => switch (f.state) {
+        FleetStatus.moving => (ErrorCode.onCooldown, 'fleet ${f.id} is in transit; it can $verb once it stands idle at the relay'),
+        FleetStatus.idle || FleetStatus.docked => null,
+        _ => (ErrorCode.onCooldown, 'fleet ${f.id} is busy; it can $verb once it is idle'),
+      };
+
+  /// The engine's `load_at_relay`: what a load of [resource] would put
+  /// aboard [f], or why not.
+  (double, (ErrorCode, String)?) _relayLoadOf(FleetState f, _Relay r, ResourceKind resource, double? amount) {
+    if (_relayHandling(f, 'load') case final busy?) return (0, busy);
+    if (f.policy != null) {
+      return (
+        0,
+        (
+          ErrorCode.invalidCommand,
+          'fleet ${f.id} is under standing orders (${f.policy!.preset.label}), which do not use the relay; '
+              'set it to manual before loading its hold by hand'
+        )
+      );
+    }
     if (resource != ResourceKind.deuterium) {
-      return [_err(ErrorCode.invalidCommand, 'the relay at ${r.at} holds deuterium only; it has no ${resource.name} to load')];
+      return (0, (ErrorCode.invalidCommand, 'the relay at ${r.at} holds deuterium only; it has no ${resource.name} to load'));
     }
     final room = max(0.0, f.cargoCapacity - f.cargo.total);
     if (amount != null && amount > r.store) {
-      return [_err(ErrorCode.noResources, 'the relay\'s store holds ${r.store.toStringAsFixed(1)} deuterium; fleet ${f.id} cannot load ${amount.toStringAsFixed(1)}')];
+      return (0, (ErrorCode.noResources, 'the relay\'s store holds ${r.store.toStringAsFixed(1)} deuterium; fleet ${f.id} cannot load ${amount.toStringAsFixed(1)}'));
     }
-    if (amount == null && r.store <= 0) return [_err(ErrorCode.noResources, 'the relay\'s store holds no deuterium to load')];
-    if (room <= 0) return [_err(ErrorCode.cargoFull, 'the hold of fleet ${f.id} is full: it carries ${f.cargo.total.round()} of ${f.cargoCapacity.round()}')];
-    final loaded = min(amount ?? r.store, min(r.store, room));
+    if (amount == null && r.store <= 0) return (0, (ErrorCode.noResources, 'the relay\'s store holds no deuterium to load'));
+    if (room <= 0) return (0, (ErrorCode.cargoFull, 'the hold of fleet ${f.id} is full: it carries ${f.cargo.total.round()} of ${f.cargoCapacity.round()}'));
+    return (min(amount ?? r.store, min(r.store, room)), null);
+  }
+
+  /// The engine's `unload_refusal` at a relay.
+  (ErrorCode, String)? _relayUnloadRefusal(FleetState f, _Relay r) {
+    if (_relayHandling(f, 'unload') case final busy?) return busy;
+    if (f.cargo.deuterium <= 0) {
+      return (ErrorCode.noResources, 'the hold of fleet ${f.id} carries no deuterium; a relay\'s store takes nothing else');
+    }
+    if (_relayStore - r.store <= 0) {
+      return (ErrorCode.cargoFull, 'the relay at ${r.at} is full: its store holds ${r.store.toStringAsFixed(0)} of ${_relayStore.toStringAsFixed(0)} deuterium');
+    }
+    return null;
+  }
+
+  RelayQuote? _relayQuote(FleetState f) {
+    final r = _relayAt(f.location);
+    if (r == null) return null;
+    final (load, loadRefusal) = _relayLoadOf(f, r, ResourceKind.deuterium, null);
+    final unloadRefusal = _relayUnloadRefusal(f, r);
+    return RelayQuote(
+      load: load,
+      unload: unloadRefusal == null ? min(f.cargo.deuterium, max(0.0, _relayStore - r.store)) : 0,
+      loadRefusal: loadRefusal?.$2,
+      unloadRefusal: unloadRefusal?.$2,
+    );
+  }
+
+  /// The engine's `load` and `unload` at a relay: deuterium only.
+  List<ServerMessage> _relayLoad(FleetState f, _Relay r, ResourceKind resource, double? amount) {
+    final (loaded, refusal) = _relayLoadOf(f, r, resource, amount);
+    if (refusal != null) return [_err(refusal.$1, refusal.$2)];
+    r.visited = _tick;
     r.store -= loaded;
     _setFleet(_copy(f, cargo: _plus(f.cargo, Resources(deuterium: loaded))));
     _ev(AlertEvent(
@@ -1308,14 +1356,9 @@ class DemoWorld {
   }
 
   List<ServerMessage> _relayUnload(FleetState f, _Relay r) {
-    if (f.cargo.deuterium <= 0) {
-      return [_err(ErrorCode.noResources, 'the hold of fleet ${f.id} carries no deuterium; a relay\'s store takes nothing else')];
-    }
-    final room = max(0.0, _relayStore - r.store);
-    if (room <= 0) {
-      return [_err(ErrorCode.cargoFull, 'the relay at ${r.at} is full: its store holds ${r.store.toStringAsFixed(0)} of ${_relayStore.toStringAsFixed(0)} deuterium')];
-    }
-    final moved = min(f.cargo.deuterium, room);
+    if (_relayUnloadRefusal(f, r) case (final code, final why)?) return [_err(code, why)];
+    final moved = min(f.cargo.deuterium, max(0.0, _relayStore - r.store));
+    r.visited = _tick;
     r.store += moved;
     final left = f.cargo.deuterium - moved;
     _setFleet(_copy(f, cargo: Resources(metal: f.cargo.metal, crystal: f.cargo.crystal, deuterium: left)));
@@ -1332,7 +1375,7 @@ class DemoWorld {
   List<ServerMessage> _load(int fleetId, ResourceKind resource, double? amount) {
     final f = _find(fleetId);
     if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
-    if (_relayAt(f.location) case final relay? when f.policy == null) return _relayLoad(f, relay, resource, amount);
+    if (_relayAt(f.location) case final relay?) return _relayLoad(f, relay, resource, amount);
     final away = _awayFromDocks(f);
     if (away != null) return [away];
     final post = f.location == _home ? null : _outpost;
@@ -3358,7 +3401,7 @@ class DemoWorld {
         jumpTicks: _jumpTicks(ships),
         scanRange: _scanRange(ships),
         atOutpost: _outpost?.at == f.location,
-        atRelay: _relays.any((r) => r.at == f.location),
+        relay: _relayQuote(f),
         outpostFuel: _inService ? Hex.distance(f.location, _outpost!.at) * jump : null,
         cooldownRemaining: f.cooldownRemaining,
         power: _power(rows),
@@ -3505,6 +3548,7 @@ class DemoWorld {
       _recall.remove(cur.id);
     }
     _setFleet(next);
+    _relayAt(target)?.visited = _tick;
     _reveal(target, 1);
     _dirty.add(cur.location.toKey());
     _ev(FleetArrivedEvent(fleetId: cur.id, sector: target));

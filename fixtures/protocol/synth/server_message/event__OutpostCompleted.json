@@ -1,3 +1,3 @@
 [
-{"canonical":{"kind":"OutpostCompleted","level":11,"player_id":8,"sector":{"q":9,"r":-10},"tick":58,"type":"event"},"input":{"kind":"OutpostCompleted","level":11,"player_id":8,"sector":{"q":9,"r":-10},"tick":58,"type":"event"}}
+{"canonical":{"kind":"OutpostCompleted","level":17,"player_id":14,"sector":{"q":15,"r":-16},"tick":64,"type":"event"},"input":{"kind":"OutpostCompleted","level":17,"player_id":14,"sector":{"q":15,"r":-16},"tick":64,"type":"event"}}
 ]

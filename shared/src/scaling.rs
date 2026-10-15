@@ -1723,7 +1723,7 @@ pub fn ore_density_odds(dist: u16) -> [f32; 4] {
 /// Loot paid P^0.5 times its constants before it followed production; the
 /// constants carry that factor at the season preset, `sqrt(FIND_ANCHOR)`, so
 /// a season find pays what it always did and `Pace::find_mult` is 1 there.
-pub const SEASON_LOOT_LIFT: f64 = 3.1622776601683795;
+pub const SEASON_LOOT_LIFT: f64 = crate::maths::sqrt(crate::pace::FIND_ANCHOR);
 
 /// A destroyed group leaves `WRECK_VALUE_K * power^WRECK_VALUE_EXPONENT`
 /// units: three times 1.2 * `MAP_PAYS` / 10^0.8, the 10 being what a

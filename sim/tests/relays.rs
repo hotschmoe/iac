@@ -163,7 +163,7 @@ fn a_relay_that_a_convoy_stocked_carries_a_fleet_past_what_its_tank_allows() {
     for &hop in &chain[..=depth] {
         e.travel_fleet(hauler, hop);
     }
-    assert!(!fleet_of(&e, hauler).at_relay, "no relay stands there yet");
+    assert!(fleet_of(&e, hauler).relay.is_none(), "no relay stands there yet");
     let survey = {
         let outcome = e.engine.execute(e.pid, Command::RelaySurvey { fleet_id: hauler, sector: None });
         let Some(ServerMessage::RelaySurvey(survey)) = outcome.reply else { panic!("no relay survey") };
@@ -172,7 +172,7 @@ fn a_relay_that_a_convoy_stocked_carries_a_fleet_past_what_its_tank_allows() {
     assert_eq!((survey.refusal.as_deref(), survey.cost, survey.ring), (None, cost, ring));
     e.order(Command::FoundRelay { fleet_id: hauler }).expect("the relay is founded from the hold");
     assert_eq!(e.engine.fleets[&hauler].cargo, res(0.0, 0.0, 600.0), "the hold paid the cost and nothing else");
-    assert!(fleet_of(&e, hauler).at_relay);
+    assert!(fleet_of(&e, hauler).relay.is_some());
     let founded = relays(&e);
     assert_eq!((founded.len(), founded[0].sector, founded[0].store), (1, relay_at, 0.0));
 
@@ -188,7 +188,7 @@ fn a_relay_that_a_convoy_stocked_carries_a_fleet_past_what_its_tank_allows() {
     let stocked = relays(&e)[0].store;
     e.travel(relay_at);
     let there = e.fleet();
-    assert!(there.at_relay);
+    assert!(there.relay.is_some());
     assert_eq!(there.fuel, there.fuel_max, "arriving at the relay fills the tank");
     let drawn = (there.fuel_max - (before.fuel - there.jump_fuel)) * FUEL_DEUT_PER_UNIT;
     assert!((relays(&e)[0].store - (stocked - drawn)).abs() < 1e-6, "the store paid for it at the dock's rate");
@@ -430,8 +430,7 @@ fn a_relay_nobody_visits_is_gone_with_its_store_and_a_visit_puts_that_off() {
 
     e.order(Command::Move { fleet_id: fid, target: at }).expect("back");
     e.run_until(100, |e| e.engine.fleets[&fid].location == at && e.engine.fleets[&fid].state != FleetStatus::Moving);
-    e.run(2);
-    assert_eq!(relays(&e)[0].decay_in, span, "the visit set it back");
+    assert_eq!(relays(&e)[0].decay_in, span, "the landing set it back");
     e.order(Command::Move { fleet_id: fid, target: aside }).expect("away again");
     e.run_until(100, |e| e.engine.fleets[&fid].location == aside && e.engine.fleets[&fid].state != FleetStatus::Moving);
     e.run(span - 12);
@@ -450,6 +449,86 @@ fn a_relay_nobody_visits_is_gone_with_its_store_and_a_visit_puts_that_off() {
         "and the owner was told",
     );
     assert!(e.engine.relays.is_empty(), "an empty list is not kept");
+}
+
+#[test]
+fn a_fleet_parked_at_a_relay_does_not_keep_it_and_a_landing_or_a_deposit_does() {
+    let mut e = Empire::join(world("test"), "Sentry");
+    let fid = e.fid;
+    let span = e.engine.relay_decay_ticks();
+    let at = sector_in_ring(&e.engine, 10, |_, t| open_ground(t));
+    muster(&mut e.engine, fid, &[(ShipClass::LargeCargo, 2)], at);
+    sweep(&mut e.engine, &[at]);
+    stow(&mut e, fid, scaling::relay_cost(10).add(res(0.0, 0.0, 500.0)));
+    e.order(Command::FoundRelay { fleet_id: fid }).expect("founded");
+    assert_eq!(relays(&e)[0].decay_in, span);
+
+    e.run(span / 2);
+    let left = relays(&e)[0].decay_in;
+    assert!(left <= span / 2 + 2 && left > span / 2 - 10, "a parked fleet does not set it back: {left} of {span}");
+
+    let quote = fleet_of(&e, fid).relay.expect("standing at its relay");
+    assert_eq!((quote.unload, quote.unload_refusal.is_none()), (500.0, true));
+    e.order(Command::Unload { fleet_id: fid }).expect("a deposit");
+    assert_eq!(relays(&e)[0].decay_in, span, "a deposit sets it back");
+    let quote = fleet_of(&e, fid).relay.expect("still at it");
+    assert_eq!(quote.load, 500.0, "the store would hand back what was put in");
+    assert!(quote.unload_refusal.is_some() && quote.unload == 0.0, "an empty hold has nothing to unload");
+
+    e.run(span / 2);
+    e.order(Command::Load { fleet_id: fid, resource: Deuterium, amount: Some(100.0) }).expect("a withdrawal");
+    assert_eq!(relays(&e)[0].decay_in, span, "a withdrawal sets it back");
+
+    e.run(span - 2);
+    assert_eq!(relays(&e).len(), 1);
+    e.run(4);
+    assert!(relays(&e).is_empty(), "a fleet that stood by it for the whole span did not save it");
+    assert!(e.engine.fleets.contains_key(&fid));
+}
+
+#[test]
+fn a_relay_fills_no_tank_in_a_fight() {
+    let mut e = Empire::join(world("test"), "Besieged");
+    let fid = e.fid;
+    let at = sector_in_ring(&e.engine, 10, |_, t| open_ground(t));
+    muster(&mut e.engine, fid, &[(ShipClass::LargeCargo, 2)], at);
+    sweep(&mut e.engine, &[at]);
+    stow(&mut e, fid, scaling::relay_cost(10).add(res(0.0, 0.0, 500.0)));
+    e.order(Command::FoundRelay { fleet_id: fid }).expect("founded");
+    e.order(Command::Unload { fleet_id: fid }).expect("stocked");
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.fuel = 0.0;
+        fleet.state = FleetStatus::InCombat;
+    });
+    let store = relays(&e)[0].store;
+    e.run(1);
+    let fleet = &e.engine.fleets[&fid];
+    assert_eq!(fleet.state, FleetStatus::InCombat);
+    assert_eq!(fleet.fuel, 0.0, "a fleet in a fight is not refuelled");
+    assert_eq!(relays(&e)[0].store, store);
+}
+
+#[test]
+fn a_survey_of_a_sector_never_seen_names_nothing_that_is_there() {
+    let mut e = Empire::join(world("season"), "Stranger");
+    let den = find_deep(&e.engine, |t| t.npc_template.is_some() && !t.has_derelict && t.terrain != TerrainType::Anomaly);
+    let derelict = find_deep(&e.engine, |t| t.has_derelict && t.npc_template.is_none());
+    let hub = e.engine.hubs[0].sector;
+    let fid = e.fid;
+    for unseen in [den, derelict, hub] {
+        assert!(e.engine.known.remembered(e.pid, unseen).is_none());
+        let outcome = e.engine.execute(e.pid, Command::RelaySurvey { fleet_id: fid, sector: Some(unseen) });
+        let Some(ServerMessage::RelaySurvey(survey)) = outcome.reply else { panic!("no relay survey") };
+        let refusal = survey.refusal.expect("refused");
+        assert!(refusal.contains("not on your chart"), "{refusal}");
+        for word in ["lair", "pirate", "derelict", "hub", "relay of", "outpost"] {
+            assert!(!refusal.contains(word), "{refusal} leaks {word}");
+        }
+    }
+    let outcome = e.engine.execute(e.pid, Command::RelaySurvey { fleet_id: fid, sector: Some(Hex { q: 2, r: 0 }) });
+    let Some(ServerMessage::RelaySurvey(near)) = outcome.reply else { panic!("no relay survey") };
+    assert!(near.refusal.is_some_and(|r| r.contains("ring") || r.contains("not on your chart")));
 }
 
 fn story(ticks: u64, stops: &[u64]) -> u64 {

@@ -1,3 +1,3 @@
 [
-{"canonical":{"fleet_id":78,"kind":"FleetArrived","sector":{"q":79,"r":-80},"tick":58,"type":"event"},"input":{"fleet_id":78,"kind":"FleetArrived","sector":{"q":79,"r":-80},"tick":58,"type":"event"}}
+{"canonical":{"fleet_id":84,"kind":"FleetArrived","sector":{"q":85,"r":-86},"tick":64,"type":"event"},"input":{"fleet_id":84,"kind":"FleetArrived","sector":{"q":85,"r":-86},"tick":64,"type":"event"}}
 ]

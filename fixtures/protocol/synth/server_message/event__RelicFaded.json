@@ -1,8 +1,8 @@
 [
-{"canonical":{"kind":"RelicFaded","player_id":39,"relic_kind":"metal_output","tick":58,"type":"event"},"input":{"kind":"RelicFaded","player_id":39,"relic_kind":"metal_output","tick":58,"type":"event"}},
-{"canonical":{"kind":"RelicFaded","player_id":39,"relic_kind":"crystal_output","tick":58,"type":"event"},"input":{"kind":"RelicFaded","player_id":39,"relic_kind":"crystal_output","tick":58,"type":"event"}},
-{"canonical":{"kind":"RelicFaded","player_id":39,"relic_kind":"deuterium_output","tick":58,"type":"event"},"input":{"kind":"RelicFaded","player_id":39,"relic_kind":"deuterium_output","tick":58,"type":"event"}},
-{"canonical":{"kind":"RelicFaded","player_id":39,"relic_kind":"fuel_burn","tick":58,"type":"event"},"input":{"kind":"RelicFaded","player_id":39,"relic_kind":"fuel_burn","tick":58,"type":"event"}},
-{"canonical":{"kind":"RelicFaded","player_id":39,"relic_kind":"research_time","tick":58,"type":"event"},"input":{"kind":"RelicFaded","player_id":39,"relic_kind":"research_time","tick":58,"type":"event"}},
-{"canonical":{"kind":"RelicFaded","player_id":39,"relic_kind":"building_time","tick":58,"type":"event"},"input":{"kind":"RelicFaded","player_id":39,"relic_kind":"building_time","tick":58,"type":"event"}}
+{"canonical":{"kind":"RelicFaded","player_id":45,"relic_kind":"metal_output","tick":64,"type":"event"},"input":{"kind":"RelicFaded","player_id":45,"relic_kind":"metal_output","tick":64,"type":"event"}},
+{"canonical":{"kind":"RelicFaded","player_id":45,"relic_kind":"crystal_output","tick":64,"type":"event"},"input":{"kind":"RelicFaded","player_id":45,"relic_kind":"crystal_output","tick":64,"type":"event"}},
+{"canonical":{"kind":"RelicFaded","player_id":45,"relic_kind":"deuterium_output","tick":64,"type":"event"},"input":{"kind":"RelicFaded","player_id":45,"relic_kind":"deuterium_output","tick":64,"type":"event"}},
+{"canonical":{"kind":"RelicFaded","player_id":45,"relic_kind":"fuel_burn","tick":64,"type":"event"},"input":{"kind":"RelicFaded","player_id":45,"relic_kind":"fuel_burn","tick":64,"type":"event"}},
+{"canonical":{"kind":"RelicFaded","player_id":45,"relic_kind":"research_time","tick":64,"type":"event"},"input":{"kind":"RelicFaded","player_id":45,"relic_kind":"research_time","tick":64,"type":"event"}},
+{"canonical":{"kind":"RelicFaded","player_id":45,"relic_kind":"building_time","tick":64,"type":"event"},"input":{"kind":"RelicFaded","player_id":45,"relic_kind":"building_time","tick":64,"type":"event"}}
 ]

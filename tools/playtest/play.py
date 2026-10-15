@@ -519,8 +519,8 @@ def survey_line(m):
 def relay_survey_line(m):
     """One line for a relay_survey reply: what founding costs, what the store holds and why it cannot be founded."""
     s = m["sector"]
-    return (f"relay survey {s['q']},{s['r']} ring {m['ring']}: costs {res(m['cost'])}; a store of {m['store_cap']:g} deuterium; "
-            f"gone after {age(m['decay_ticks'])} with no fleet of yours there; you keep {m['count']} of {m['limit']} "
+    return (f"relay survey {s['q']},{s['r']} ring {m['ring']}: costs {res(m['cost'])}; a store of deuterium; "
+            f"gone after {age(m['decay_ticks'])} with no landing or deposit of yours; you keep {m['count']} of {m['limit']} "
             f"(raised by {m['technology']})"
             + (f"  CANNOT FOUND NOW: {m['refusal']}" if m.get("refusal") else "  CAN BE FOUNDED NOW"))
 
@@ -529,8 +529,8 @@ def relays_line(r, now):
     """One line for the player's relays: the limit and what each holds and how long it has."""
     if not r or (not r.get("relays") and not r.get("limit")):
         return None
-    stands = "; ".join(f"{x['sector']['q']},{x['sector']['r']} ring {x['ring']} holds {x['store']:.0f} of {x['store_cap']:g} "
-                       f"deuterium, gone in {age(x['decay_in'])} unless a fleet of yours stands there"
+    stands = "; ".join(f"{x['sector']['q']},{x['sector']['r']} ring {x['ring']} holds {x['store']:.0f} "
+                       f"deuterium, gone in {age(x['decay_in'])} unless a fleet of yours lands there or moves a deposit"
                        for x in r.get("relays") or [])
     return (f"Relays {len(r.get('relays') or [])}/{r['limit']} ({r['technology']} level {r['level']})"
             + (": " + stands if stands else ""))

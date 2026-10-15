@@ -281,7 +281,7 @@ pub enum Command {
     #[serde(rename = "refine")]
     Refine { fleet_id: u64 },
     /// Turn what is in the hold of `fleet_id` into fuel at a roaming hub
-    /// (`HubState.services` has `refuel`), until the tank is full or holds
+    /// (a roaming hub offers `exchange` and `refuel`), until the tank is full or holds
     /// `RelaysState.fill_jumps` jumps of the fleet's own burn: deuterium
     /// at the dock's rate with no loss, any other resource first through the
     /// exchange, at the player's meter and its fee, so the hub never returns
@@ -545,8 +545,9 @@ pub enum ServerMessage {
     RelaySurvey(RelaySurvey),
 }
 
-/// Answer to `relay_survey`: what a relay in `sector` would cost and hold,
-/// and why it cannot be founded now. `refusal` depends on the asking fleet
+/// Answer to `relay_survey`: what a relay in `sector` would cost, and why it
+/// cannot be founded now. Of a sector the player has never seen it says what
+/// the ring decides and that the sector is not on the chart. `refusal` depends on the asking fleet
 /// and on the moment; the rest follows from the sector's ring and the
 /// player's research.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -557,10 +558,8 @@ pub struct RelaySurvey {
     pub ring: u16,
     /// What founding takes from the hold.
     pub cost: Resources,
-    /// Deuterium the store holds.
-    pub store_cap: f64,
-    /// Ticks the relay stands with no fleet of its owner in its sector
-    /// before it is gone.
+    /// Ticks the relay stands with no fleet of its owner landing at it and no
+    /// deposit or withdrawal before it is gone.
     pub decay_ticks: u64,
     /// Relays the player has now.
     pub count: u32,
@@ -581,16 +580,15 @@ pub struct RelayState {
     pub ring: u16,
     /// Deuterium in the store.
     pub store: f64,
-    pub store_cap: f64,
-    /// Ticks until the relay is gone unless a fleet of the owner stands in
-    /// its sector: a visit sets it back to the full span, and it stays there
-    /// while a fleet stands in the sector.
+    /// Ticks until the relay is gone unless a fleet of the owner lands in
+    /// its sector or moves a deposit there: either sets it back to the full
+    /// span, and a fleet that merely stands there does not.
     pub decay_in: u64,
     pub founded_tick: u64,
 }
 
 /// The player's relays and how many they may keep. `limit` is the base
-/// plus a step for each `levels_per_step` levels of `technology`.
+/// plus a step for each `RELAY_LEVELS_PER_STEP` levels of `technology`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RelaysState {
     pub limit: u32,
@@ -1507,11 +1505,11 @@ pub struct FleetState {
     /// here, and a raid on it finds the fleet in its fight.
     #[serde(default)]
     pub at_outpost: bool,
-    /// The fleet is in the sector of one of its owner's relays: `load` and
-    /// `unload` use the relay's deuterium store here, and a fleet flown by
-    /// hand has its tank filled from it.
-    #[serde(default)]
-    pub at_relay: bool,
+    /// Present while the fleet is in the sector of one of its owner's
+    /// relays: `load` and `unload` use the relay's deuterium store here, and
+    /// a fleet flown by hand has its tank filled from it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub relay: Option<RelayQuote>,
     /// Fuel the way to the owner's outpost costs: the fewest lane hops
     /// there times `jump_fuel`, 0 at the outpost. Present while that
     /// outpost is in service, which is when it fills a tank.
@@ -1530,6 +1528,23 @@ pub struct FleetState {
     /// with its settings, so the two cannot be told apart or disagree.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub policy: Option<StandingOrders>,
+}
+
+/// What `load` and `unload` of deuterium would do for a fleet standing at
+/// its owner's relay right now, each with the engine's sentence when it would
+/// be refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RelayQuote {
+    /// Deuterium a `load` of deuterium with no `amount` would put aboard;
+    /// 0 when it would be refused.
+    pub load: f64,
+    /// Deuterium an `unload` would move into the store; 0 when it would be
+    /// refused.
+    pub unload: f64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub load_refusal: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub unload_refusal: Option<String>,
 }
 
 /// What leaving a fight costs a fleet, as things stand this tick. The price
@@ -2407,6 +2422,7 @@ pub struct DefenceOption {
 impl HomeworldCatalog {
     /// `defences` is what stands of each kind; `committed` adds to it those
     /// on order, which is what a limit counts.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         buildings: &BuildingLevels,
         research: &ResearchLevels,
@@ -2414,10 +2430,11 @@ impl HomeworldCatalog {
         committed: &[u32; DefenceKind::COUNT],
         satellites: u32,
         fusion_fed: bool,
+        power: &scaling::Power,
         relics: &scaling::RelicBonus,
         pace: &Pace,
     ) -> Self {
-        let energy_made = scaling::home_power(buildings, research, satellites, fusion_fed, pace).made;
+        let energy_made = power.made;
         let building_options = BuildingType::ALL
             .into_iter()
             .map(|b| {

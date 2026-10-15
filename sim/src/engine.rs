@@ -50,7 +50,7 @@ use iac_shared::protocol::{
     StockpileCause, StockpileEvent, StorageFullEvent, StorageNearCapEvent, StorageState,
     ExchangeMeter, ExchangeTerms, ExchangedEvent,
     OutpostCompletedEvent, OutpostSurvey, PowerRange, SectorResources, SurveySite,
-    RelayDecayedEvent, RelayFoundedEvent, RelicClaimedEvent, RelicFadedEvent, RelicFoundEvent, RelaySurvey, HubArrivedEvent, HubDepartingEvent, RefuelOffer, RefuelQuote,
+    RelayDecayedEvent, RelayFoundedEvent, RelicClaimedEvent, RelicFadedEvent, RelicFoundEvent, RelaySurvey, RelayQuote, HubArrivedEvent, HubDepartingEvent, RefuelOffer, RefuelQuote,
     BattleGroup, BattleLosses, BattleOutcome, BattleRoundEvent, BattleSide, BattleState, BattleUnits,
     RaidBattle, RaidForecast, RaidLabel, RaidOdds,
     DockRepair, RepairQuote, ShipCount, ShipGroupState, ShipsLostEvent, UnitCount,
@@ -553,10 +553,14 @@ impl Player {
             || DefenceKind::ALL.into_iter().any(|kind| self.defences.owned(kind) > 0)
     }
 
-    /// The homeworld's energy this tick. The Fusion Reactor runs while the
-    /// stockpile holds any deuterium for it.
+    /// The Fusion Reactor runs while the stockpile holds any deuterium for it.
+    pub fn fusion_fed(&self) -> bool {
+        self.resources.deuterium > 0.0
+    }
+
+    /// The homeworld's energy this tick.
     pub fn power(&self, pace: &Pace) -> scaling::Power {
-        scaling::home_power(&self.buildings, &self.research, self.satellites, self.resources.deuterium > 0.0, pace)
+        scaling::home_power(&self.buildings, &self.research, self.satellites, self.fusion_fed(), pace)
     }
 
     /// What the mines add to the stockpile each tick with the energy there
@@ -820,7 +824,8 @@ pub struct Relay {
     pub sector: Hex,
     pub store: f64,
     pub founded_tick: u64,
-    /// The last tick a fleet of its owner stood in its sector.
+    /// The last tick a fleet of its owner landed in its sector or moved a
+    /// deposit at it, or the tick it was founded.
     pub visited_tick: u64,
     /// Fleets standing here that were told the store could not fill their tank.
     pub dry_tanks: Vec<u64>,
@@ -862,6 +867,23 @@ pub enum OutpostTask {
 pub enum Dock {
     Home,
     Outpost,
+}
+
+/// A place that fills a tank from its store: a relay or an outpost. A
+/// relay's filling stops at a fight; the outpost's dock, where a raid is
+/// fought and a fleet may need fuel to leave it, goes on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Depot {
+    Relay,
+    Outpost,
+}
+
+impl Depot {
+    fn refuels(self, fleet: &Fleet) -> bool {
+        !fleet.ships.is_empty()
+            && fleet.state != FleetStatus::Moving
+            && (self == Self::Outpost || fleet.state != FleetStatus::InCombat)
+    }
 }
 
 /// What a dock does for a fleet's damaged ships with what it has in stock.
@@ -1681,6 +1703,7 @@ impl GameEngine {
         for fleet_id in arrival_ids {
             self.check_homeworld_docking(fleet_id)?;
             self.check_outpost_docking(fleet_id);
+            self.visit_relay(fleet_id);
             self.refuel_at_relay(fleet_id);
             self.claim_relic(fleet_id);
             self.announce_if_stranded(fleet_id);
@@ -3888,6 +3911,16 @@ impl GameEngine {
         self.world.pace.attention_ticks(RELAY_DECAY_TICKS as f64)
     }
 
+    /// A fleet that has landed at its owner's relay sets its decay back.
+    fn visit_relay(&mut self, fleet_id: u64) {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        let (owner, sector) = (fleet.owner_id, fleet.location);
+        let tick = self.current_tick;
+        if let Some(relay) = self.relays.get_mut(&owner).and_then(|list| list.iter_mut().find(|r| r.sector == sector)) {
+            relay.visited_tick = tick;
+        }
+    }
+
     fn own_relay_at(&self, owner: u64, sector: Hex) -> Option<&Relay> {
         self.relays.get(&owner)?.iter().find(|relay| relay.sector == sector)
     }
@@ -3936,6 +3969,22 @@ impl GameEngine {
         }))
     }
 
+    /// What `load` and `unload` of deuterium would do for `fleet` at its
+    /// owner's relay now; None for a fleet that does not stand at one.
+    pub fn relay_quote(&self, fleet: &Fleet) -> Option<RelayQuote> {
+        let (owner, id) = (fleet.owner_id, fleet.id);
+        let relay = self.own_relay_at(owner, fleet.location)?;
+        let load = self.load_at_relay(owner, id, ResourceKind::Deuterium, None)?;
+        let unload = self.unload_refusal(owner, id);
+        let room = (RELAY_STORE - relay.store).max(0.0);
+        Some(RelayQuote {
+            load: *load.as_ref().unwrap_or(&0.0),
+            unload: if unload.is_some() { 0.0 } else { fleet.cargo.deuterium.min(room) },
+            load_refusal: load.err().map(|refusal| refusal.reason),
+            unload_refusal: unload.map(|refusal| refusal.reason),
+        })
+    }
+
     fn board_from_relay(
         &mut self,
         player_id: u64,
@@ -3948,6 +3997,7 @@ impl GameEngine {
             .and_then(|list| list.iter_mut().find(|relay| relay.sector == sector))
             .ok_or(ErrorCode::ServerError)?;
         relay.store = (relay.store - loaded).max(0.0);
+        relay.visited_tick = self.current_tick;
         let capacity = self.fleets.get(&fleet_id).map_or(0.0, |f| fleet_cargo_capacity(f, &self.world.pace));
         let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
         *fleet.cargo.get_mut(resource) += loaded;
@@ -3967,6 +4017,7 @@ impl GameEngine {
             .ok_or(ErrorCode::ServerError)?;
         let moved = fleet.cargo.deuterium.min((RELAY_STORE - relay.store).max(0.0));
         relay.store += moved;
+        relay.visited_tick = self.current_tick;
         fleet.cargo.deuterium -= moved;
         let (stored, aboard) = (relay.store, fleet.cargo.deuterium);
         let rest = if aboard > LOAD_SLACK {
@@ -3987,12 +4038,7 @@ impl GameEngine {
         let refuse = |code: ErrorCode, reason: String| Err(Refusal::new(code, reason));
         let fleet_id = fleet.id;
         let ring = sector.dist_from_origin();
-        if ring < RELAY_MIN_RING {
-            let subject = if fleet.location == sector { format!("fleet {fleet_id}") } else { sector.to_string() };
-            return refuse(ErrorCode::InvalidTarget, format!(
-                "{subject} is at ring {ring}; a relay stands in ring {RELAY_MIN_RING} and deeper",
-            ));
-        }
+        Self::relay_ring(fleet, sector)?;
         let template = self.world_gen.generate_sector(sector);
         if template.terrain == iac_shared::constants::TerrainType::Anomaly {
             return refuse(ErrorCode::InvalidTarget, format!("{sector} is an Anomaly; no relay stands in one"));
@@ -4018,10 +4064,9 @@ impl GameEngine {
             return refuse(ErrorCode::InvalidTarget, format!("{whose} already stands at {sector}; a sector holds one"));
         }
         if fleet.location != sector {
-            let hexes = Hex::distance(&fleet.location, &sector);
             return refuse(ErrorCode::NotInSector, format!(
-                "fleet {fleet_id} is at {}, {hexes} hex{} from {sector}; a relay is founded by a fleet standing in its sector",
-                fleet.location, if hexes == 1 { "" } else { "es" },
+                "fleet {fleet_id} is at {}, {} from {sector}; a relay is founded by a fleet standing in its sector",
+                fleet.location, hex_words(Hex::distance(&fleet.location, &sector)),
             ));
         }
         match fleet.state {
@@ -4077,24 +4122,46 @@ impl GameEngine {
         Ok(())
     }
 
+    /// The founding rule a sector's place on the map alone decides.
+    fn relay_ring(fleet: &Fleet, sector: Hex) -> Result<(), Refusal> {
+        let ring = sector.dist_from_origin();
+        if ring >= RELAY_MIN_RING {
+            return Ok(());
+        }
+        let subject = if fleet.location == sector { format!("fleet {}", fleet.id) } else { sector.to_string() };
+        Err(Refusal::new(ErrorCode::InvalidTarget, format!(
+            "{subject} is at ring {ring}; a relay stands in ring {RELAY_MIN_RING} and deeper",
+        )))
+    }
+
     /// Answer to `relay_survey`: what a relay in `sector` (the fleet's own
-    /// when None) would cost, and why it cannot be founded now.
+    /// when None) would cost, and why it cannot be founded now. Of a sector
+    /// the player has never seen it tells what its ring decides and nothing
+    /// of what is there.
     pub fn relay_survey(&self, player_id: u64, fleet_id: u64, sector: Option<Hex>) -> Result<RelaySurvey, Refusal> {
         let fleet = self.owned_fleet(player_id, fleet_id)
             .map_err(|code| Refusal::new(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
         let sector = sector.unwrap_or(fleet.location);
         let ring = sector.dist_from_origin();
+        let seen = sector == fleet.location || self.known.remembered(player_id, sector).is_some();
+        let verdict = if seen {
+            self.relay_site(player_id, fleet, sector)
+        } else {
+            Self::relay_ring(fleet, sector).and_then(|()| Err(Refusal::new(
+                ErrorCode::InvalidTarget,
+                format!("{sector} is not on your chart; a survey reads the site of a sector you have seen"),
+            )))
+        };
         Ok(RelaySurvey {
             fleet_id,
             sector,
             ring,
             cost: scaling::relay_cost(ring),
-            store_cap: RELAY_STORE,
             decay_ticks: self.relay_decay_ticks(),
             count: self.relay_count(player_id),
             limit: self.relay_limit(player_id),
             technology: ResearchType::HyperspaceTechnology,
-            refusal: self.relay_site(player_id, fleet, sector).err().map(|refusal| refusal.reason),
+            refusal: verdict.err().map(|refusal| refusal.reason),
         })
     }
 
@@ -4164,38 +4231,42 @@ impl GameEngine {
         (fills_to - fleet.fuel).max(0.0)
     }
 
-    /// A fleet standing at its owner's relay, flown by hand, has its tank
-    /// filled from the store as far as `depot_room` allows and the store
-    /// pays; a tank it cannot fill that far is reported once per stay.
+    /// A fleet standing at its owner's relay, flown by hand and not in a
+    /// fight, has its tank filled from the store as far as `depot_room`
+    /// allows and the store pays; a tank it cannot fill that far is
+    /// reported once per stay.
     fn refuel_at_relay(&mut self, fleet_id: u64) {
         if self.policies.contains_key(&fleet_id) { return; }
         let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
-        if fleet.state == FleetStatus::Moving || fleet.ships.is_empty() { return; }
+        if !Depot::Relay.refuels(fleet) { return; }
         let owner = fleet.owner_id;
         let sector = fleet.location;
-        let missing = self.depot_room(fleet);
-        if missing <= 0.0 { return; }
+        let room = self.depot_room(fleet);
+        if room <= 0.0 { return; }
         let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
         let Some(relay) = self.relays.get_mut(&owner).and_then(|list| list.iter_mut().find(|r| r.sector == sector)) else {
             return;
         };
-        let units = missing.min(relay.store / FUEL_DEUT_PER_UNIT);
-        if units > 0.0 {
-            relay.store = (relay.store - units * FUEL_DEUT_PER_UNIT).max(0.0);
-            fleet.fuel = if units >= missing && missing == fleet.fuel_max - fleet.fuel {
-                fleet.fuel_max
-            } else {
-                fleet.fuel + units.min(missing)
-            };
-        }
-        if units >= missing || relay.dry_tanks.contains(&fleet_id) { return; }
-        relay.dry_tanks.push(fleet_id);
+        if !draw_tank(fleet, room, &mut relay.store, true, &mut relay.dry_tanks) { return; }
         let (fuel, fuel_max) = (fleet.fuel, fleet.fuel_max);
         self.push_alert(AlertLevel::Warning, fleet_id, sector, format!(
             "your relay at {sector} has no deuterium left for the tank of fleet {fleet_id}; unload some into its \
              store: the fleet stands at {} of {} fuel",
             fuel_words(fuel), fuel_words(fuel_max),
         ));
+    }
+
+    /// The fleets of `owner` standing in `sector` that `depot` would fill and
+    /// whose tank is not full; the depot's list of fleets told it was dry
+    /// forgets every other.
+    fn thirsty_at(&self, depot: Depot, owner: u64, sector: Hex) -> Vec<u64> {
+        self.fleets.values()
+            .filter(|f| {
+                f.owner_id == owner && f.location == sector && !f.ships.is_empty()
+                    && depot.refuels(f) && f.fuel < f.fuel_max
+            })
+            .map(|f| f.id)
+            .collect()
     }
 
     // ── Roaming hubs ──────────────────────────────────────────────
@@ -4232,12 +4303,13 @@ impl GameEngine {
     }
 
     /// Whether a hub may not arrive in `sector`: something of a player's or
-    /// of the pirates' stands there.
+    /// of the pirates' stands there, or a group is on its way to land there.
     fn hub_blocked(&self, sector: Hex) -> bool {
         self.relay_at(sector).is_some()
             || self.outpost_at(sector).is_some()
-            || self.hubs.iter().any(|hub| hub.sector == sector)
-            || self.npc_fleets.values().any(|group| group.location == sector)
+            || self.npc_fleets.values().any(|group| {
+                group.location == sector || group.errand.is_some_and(|errand| errand.to == sector)
+            })
             || self.active_combats.values().any(|combat| combat.sector == sector)
     }
 
@@ -4286,29 +4358,9 @@ impl GameEngine {
     fn observe_hubs(&mut self) {
         let tick = self.current_tick;
         let mut seen: Vec<(u64, u8)> = Vec::new();
-        for fleet in self.fleets.values().filter(|fleet| !fleet.ships.is_empty()) {
-            if let Some(hub) = self.hub_at(fleet.location) {
-                seen.push((fleet.owner_id, hub.id));
-            }
-        }
-        for (player_id, reveals) in &self.scan_reveals {
-            for hub in &self.hubs {
-                if reveals.get(&hub.sector.to_key()).is_some_and(|expiry| *expiry > tick) {
-                    seen.push((*player_id, hub.id));
-                }
-            }
-        }
-        for (player_id, player) in &self.players {
-            let range = scaling::sensor_range(player.research.espionage_technology);
-            if range == 0 {
-                continue;
-            }
-            for hub in &self.hubs {
-                let near = Hex::distance(&player.homeworld, &hub.sector) <= u16::from(range);
-                if near && self.world_gen.lane_hops(player.homeworld, hub.sector, range).is_some() {
-                    seen.push((*player_id, hub.id));
-                }
-            }
+        for player_id in self.players.keys() {
+            let live = crate::intel::live_coords(self, *player_id);
+            seen.extend(self.hubs.iter().filter(|hub| live.contains(&hub.sector)).map(|hub| (*player_id, hub.id)));
         }
         seen.sort_unstable();
         seen.dedup();
@@ -4332,9 +4384,9 @@ impl GameEngine {
         }
     }
 
-    /// Each relay's tick, in owner order: a visit sets the decay back and
-    /// fills the tanks of the fleets there; a relay no fleet of its owner
-    /// has stood at for the whole span is gone with its store.
+    /// Each relay's tick, in owner order: a relay no fleet of its owner has
+    /// landed at or moved a deposit at for the whole span is gone with its
+    /// store; the tanks of the fleets standing at the rest are filled.
     fn process_relays(&mut self) {
         if self.relays.is_empty() { return; }
         let tick = self.current_tick;
@@ -4343,15 +4395,10 @@ impl GameEngine {
         for owner in owners {
             let sectors: Vec<Hex> = self.relays[&owner].iter().map(|relay| relay.sector).collect();
             for sector in sectors {
-                let standing: Vec<u64> = self.fleets.values()
-                    .filter(|f| f.owner_id == owner && f.location == sector && !f.ships.is_empty())
-                    .map(|f| f.id)
-                    .collect();
-                let Some(relay) = self.relays.get_mut(&owner).and_then(|l| l.iter_mut().find(|r| r.sector == sector)) else {
+                let Some(relay) = self.relays.get(&owner).and_then(|l| l.iter().find(|r| r.sector == sector)) else {
                     continue;
                 };
-                if standing.is_empty() {
-                    if tick.saturating_sub(relay.visited_tick) < span { continue; }
+                if tick.saturating_sub(relay.visited_tick) >= span {
                     let lost = relay.store;
                     if let Some(list) = self.relays.get_mut(&owner) {
                         list.retain(|relay| relay.sector != sector);
@@ -4361,15 +4408,12 @@ impl GameEngine {
                         kind: EventKind::RelayDecayed(RelayDecayedEvent { player_id: owner, sector, lost }),
                     });
                     self.outpost_alert(owner, AlertLevel::Warning, sector, format!(
-                        "your relay at {sector} stood unvisited for {span} ticks and is gone, with {lost:.0} \
-                         deuterium in its store",
+                        "your relay at {sector} was neither landed at nor deposited into for {span} ticks and is \
+                         gone, with {lost:.0} deuterium in its store",
                     ));
                     continue;
                 }
-                relay.visited_tick = tick;
-                let thirsty: Vec<u64> = standing.into_iter()
-                    .filter(|id| self.fleets.get(id).is_some_and(|f| f.fuel < f.fuel_max && f.state != FleetStatus::Moving))
-                    .collect();
+                let thirsty = self.thirsty_at(Depot::Relay, owner, sector);
                 if let Some(relay) = self.relays.get_mut(&owner).and_then(|l| l.iter_mut().find(|r| r.sector == sector)) {
                     relay.dry_tanks.retain(|id| thirsty.contains(id));
                 }
@@ -4761,22 +4805,17 @@ impl GameEngine {
     fn refuel_at_outpost(&mut self, fleet_id: u64) {
         if self.policies.contains_key(&fleet_id) { return; }
         let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
-        if fleet.state == FleetStatus::Moving { return; }
+        if !Depot::Outpost.refuels(fleet) { return; }
         let owner = fleet.owner_id;
         let Some(outpost) = self.outposts.get_mut(&owner).filter(|o| o.level >= 1 && o.sector == fleet.location) else {
             return;
         };
-        let missing = fleet.fuel_max - fleet.fuel;
-        if missing <= 0.0 { return; }
-        let units = if outpost.breached { 0.0 } else { missing.min(outpost.store.deuterium / FUEL_DEUT_PER_UNIT) };
-        if units > 0.0 {
-            outpost.store.deuterium = (outpost.store.deuterium - units * FUEL_DEUT_PER_UNIT).max(0.0);
-            fleet.fuel = if units >= missing { fleet.fuel_max } else { fleet.fuel + units };
-        }
-        if units >= missing || outpost.dry_tanks.contains(&fleet_id) { return; }
-        outpost.dry_tanks.push(fleet_id);
+        let room = fleet.fuel_max - fleet.fuel;
+        if room <= 0.0 { return; }
+        let breached = outpost.breached;
+        if !draw_tank(fleet, room, &mut outpost.store.deuterium, !breached, &mut outpost.dry_tanks) { return; }
         let (sector, fuel, fuel_max) = (outpost.sector, fleet.fuel, fleet.fuel_max);
-        let why = if outpost.breached {
+        let why = if breached {
             "is breached and fills no tank until it is repaired".to_string()
         } else {
             format!("has no deuterium left for the tank of fleet {fleet_id}; unload some into its store")
@@ -4885,11 +4924,7 @@ impl GameEngine {
 
     fn fill_tanks_at_outpost(&mut self, owner: u64) {
         let Some(outpost) = self.outposts.get(&owner).filter(|o| o.level >= 1) else { return; };
-        let sector = outpost.sector;
-        let stands = |f: &Fleet| {
-            f.owner_id == owner && f.location == sector && !f.ships.is_empty() && f.state != FleetStatus::Moving
-        };
-        let thirsty: Vec<u64> = self.fleets.values().filter(|f| stands(f) && f.fuel < f.fuel_max).map(|f| f.id).collect();
+        let thirsty = self.thirsty_at(Depot::Outpost, owner, outpost.sector);
         self.outposts.get_mut(&owner).unwrap().dry_tanks.retain(|id| thirsty.contains(id));
         for fleet_id in thirsty {
             self.refuel_at_outpost(fleet_id);
@@ -6041,13 +6076,7 @@ impl GameEngine {
         let (sector, fuel, fuel_max) = (fleet.location, fleet.fuel, fleet.fuel_max);
         let fee = deal.exchange.as_ref().map_or(0.0, |(terms, _)| terms.fee);
         if let Some((terms, pressure_after)) = deal.exchange {
-            let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
-            player.exchange_pressure = pressure_after;
-            player.exchange_tick = self.current_tick;
-            self.pending_events.push(GameEvent {
-                tick: self.current_tick,
-                kind: EventKind::Exchanged(ExchangedEvent { sector, terms }),
-            });
+            self.settle_trade(player_id, sector, terms, pressure_after)?;
         }
         let fee_words = if fee > 0.0 { format!(" at a fee of {:.0}%", fee * 100.0) } else { String::new() };
         self.push_alert(AlertLevel::Info, fleet_id, sector, format!(
@@ -6076,6 +6105,18 @@ impl GameEngine {
         *fleet.cargo.get_mut(give) = left;
         *fleet.cargo.get_mut(want) += terms.receive;
         let sector = fleet.location;
+        self.settle_trade(player_id, sector, terms, pressure_after)
+    }
+
+    /// The one place a trade is booked: the owner's meter takes the reading
+    /// the trade left and the exchange is reported.
+    fn settle_trade(
+        &mut self,
+        player_id: u64,
+        sector: Hex,
+        terms: ExchangeTerms,
+        pressure_after: f64,
+    ) -> Result<(), ErrorCode> {
         let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
         player.exchange_pressure = pressure_after;
         player.exchange_tick = self.current_tick;
@@ -8967,6 +9008,24 @@ impl GameEngine {
 }
 
 // ── Helper Functions ──────────────────────────────────────────────
+
+/// Move deuterium from a depot's `store` into `fleet`'s tank, `room` of fuel
+/// at most and as far as the store pays. True when the tank is left short
+/// and the fleet was not yet told so this stay: it is now in `dry_tanks`.
+fn draw_tank(fleet: &mut Fleet, room: f64, store: &mut f64, usable: bool, dry_tanks: &mut Vec<u64>) -> bool {
+    let units = if usable { room.min(*store / FUEL_DEUT_PER_UNIT) } else { 0.0 };
+    if units > 0.0 {
+        *store = (*store - units * FUEL_DEUT_PER_UNIT).max(0.0);
+        fleet.fuel = if units >= room && room == fleet.fuel_max - fleet.fuel {
+            fleet.fuel_max
+        } else {
+            fleet.fuel + units.min(room)
+        };
+    }
+    if units >= room || dry_tanks.contains(&fleet.id) { return false; }
+    dry_tanks.push(fleet.id);
+    true
+}
 
 /// A fuel amount in a sentence: whole when it is whole, else to a tenth.
 fn fuel_words(fuel: f64) -> String {

@@ -51,7 +51,6 @@
   "fleets": [
     {
       "at_outpost": true,
-      "at_relay": false,
       "attack": 20610,
       "cargo": {
         "crystal": 3.0,
@@ -83,6 +82,11 @@
         "weapons": 0
       },
       "refit_due": true,
+      "relay": {
+        "load": 0.0,
+        "load_refusal": "the relay's store holds no deuterium to load",
+        "unload": 120.5
+      },
       "relic": {
         "kind": "fuel_burn",
         "pct": 0.125
@@ -222,8 +226,7 @@
           "q": 12,
           "r": -3
         },
-        "store": 640.0,
-        "store_cap": 1000.0
+        "store": 640.0
       }
     ],
     "technology": "HyperspaceTechnology"

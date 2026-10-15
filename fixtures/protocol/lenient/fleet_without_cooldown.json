@@ -3,7 +3,6 @@
     "fleets": [
       {
         "at_outpost": false,
-        "at_relay": false,
         "attack": 0,
         "cargo": {
           "crystal": 0.0,

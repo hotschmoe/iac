@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 22;
+pub const ECONOMY_VERSION: u32 = 23;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 8;
 
@@ -971,7 +971,8 @@ pub const HUB_PERIOD_TICKS: u64 = 86_400;
 /// Pace-1 ticks of warning before a hub departs (attention class, so the
 /// warning is the same share of a stay at every pace: ten minutes at season).
 pub const HUB_WARN_TICKS: u64 = 3_456;
-/// Hashed sectors tried for a hub's epoch before the last is taken as it is.
+/// Hashed sectors tried for a hub's epoch before its band is searched in ring
+/// order for the first sector it may take.
 pub const HUB_ATTEMPTS: u32 = 64;
 
 /// WebSocket server defaults.
