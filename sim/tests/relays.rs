@@ -319,6 +319,40 @@ fn a_relay_holds_deuterium_only_and_takes_what_the_store_has_room_for() {
 }
 
 #[test]
+fn a_relay_fills_a_tank_to_the_jumps_research_allows_and_no_further() {
+    let mut e = Empire::join(world("season"), "Pump");
+    let fid = e.fid;
+    let at = sector_in_ring(&e.engine, 10, |_, t| open_ground(t));
+    muster(&mut e.engine, fid, &[(ShipClass::LightFighter, 10)], at);
+    stow(&mut e, fid, scaling::relay_cost(10).add(res(0.0, 0.0, RELAY_STORE)));
+    e.order(Command::FoundRelay { fleet_id: fid }).expect("founded");
+    e.order(Command::Unload { fleet_id: fid }).expect("stocked");
+    assert_eq!(relays(&e)[0].store, RELAY_STORE);
+    let jump = e.engine.hop_fuel_cost(&e.engine.fleets[&fid]);
+    let pid = e.pid;
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).unwrap();
+        fleet.fuel_max = 40.0 * jump;
+        fleet.fuel = 0.0;
+    });
+
+    e.run(2);
+    let jump = e.engine.hop_fuel_cost(&e.engine.fleets[&fid]);
+    let base = f64::from(scaling::depot_fill_jumps(&scaling::ResearchLevels::default()));
+    assert_eq!(e.state().relays.fill_jumps, base as u32);
+    assert!((e.engine.fleets[&fid].fuel - base * jump).abs() < 1e-6, "{} of {} jumps", e.engine.fleets[&fid].fuel / jump, base);
+    let drawn = RELAY_STORE - relays(&e)[0].store;
+    assert!((drawn - base * jump * FUEL_DEUT_PER_UNIT).abs() < 0.1, "the store paid for what was filled: {drawn}");
+
+    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().research.hyperspace_technology = 4);
+    let more = f64::from(scaling::depot_fill_jumps(&e.engine.players[&pid].research));
+    assert!(more > base);
+    e.run(2);
+    assert_eq!(e.state().relays.fill_jumps, more as u32);
+    assert!((e.engine.fleets[&fid].fuel - more * jump).abs() < 1e-6, "research raises what a relay fills to");
+}
+
+#[test]
 fn a_relay_nobody_visits_is_gone_with_its_store_and_a_visit_puts_that_off() {
     let mut e = Empire::join(world("test"), "Hermit");
     let fid = e.fid;

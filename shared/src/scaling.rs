@@ -15,7 +15,7 @@ use crate::constants::{
     MAP_PAYS, NPC_DRIVE_FREE_RINGS, NPC_DRIVE_RINGS_PER_LEVEL, NPC_HEAL_SHARE, NPC_HEAL_STEPS, OUTPOST_BUILD_RATE,
     OUTPOST_COST, OUTPOST_GROWTH, OUTPOST_RAID_FACTOR, OUTPOST_REPAIR_SHARE, OUTPOST_STORE_BASE,
     OUTPOST_YIELD_PER_HOUR, RECALL_SAVING_PER_LEVEL, REFINE_LOSS, RELAY_BASE_MAX, RELAY_COST_BASE, RELAY_COST_GROWTH,
-    HUB_COUNT, HUB_PERIOD_TICKS, HUB_WARN_TICKS, RELAY_LEVELS_PER_STEP, RELAY_MIN_RING, SENSOR_HOPS_PER_LEVEL, TANK_PER_DEUT_TANK_LEVEL,
+    DEPOT_FILL_JUMPS_BASE, DEPOT_FILL_JUMPS_PER_LEVEL, HUB_COUNT, HUB_PERIOD_TICKS, HUB_WARN_TICKS, RELAY_LEVELS_PER_STEP, RELAY_MIN_RING, SENSOR_HOPS_PER_LEVEL, TANK_PER_DEUT_TANK_LEVEL,
 };
 use crate::maths;
 use crate::pace::Pace;
@@ -1585,6 +1585,13 @@ pub fn relay_cost(ring: u16) -> Resources {
 /// every `RELAY_LEVELS_PER_STEP` levels of Hyperspace Technology.
 pub fn relay_limit(research: &ResearchLevels) -> u32 {
     RELAY_BASE_MAX + u32::from(research.hyperspace_technology) / RELAY_LEVELS_PER_STEP
+}
+
+/// Jumps of its own burn that a relay or a roaming hub fills a visiting
+/// fleet's tank to: `DEPOT_FILL_JUMPS_BASE`, and `DEPOT_FILL_JUMPS_PER_LEVEL`
+/// for every level of Hyperspace Technology.
+pub fn depot_fill_jumps(research: &ResearchLevels) -> u32 {
+    DEPOT_FILL_JUMPS_BASE + u32::from(research.hyperspace_technology) * DEPOT_FILL_JUMPS_PER_LEVEL
 }
 
 // ── Roaming hubs ─────────────────────────────────────────────────

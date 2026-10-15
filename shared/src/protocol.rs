@@ -281,7 +281,8 @@ pub enum Command {
     #[serde(rename = "refine")]
     Refine { fleet_id: u64 },
     /// Turn what is in the hold of `fleet_id` into fuel at a roaming hub
-    /// (`HubState.services` has `refuel`), until the tank is full: deuterium
+    /// (`HubState.services` has `refuel`), until the tank is full or holds
+    /// `RelaysState.fill_jumps` jumps of the fleet's own burn: deuterium
     /// at the dock's rate with no loss, any other resource first through the
     /// exchange, at the player's meter and its fee, so the hub never returns
     /// more than it takes. `amount` of `give` at most; without it, as much
@@ -596,12 +597,20 @@ pub struct RelaysState {
     pub technology: ResearchType,
     /// The player's level of `technology`.
     pub level: u8,
+    /// Jumps of a fleet's own burn that a relay or a hub fills its tank to.
+    pub fill_jumps: u32,
     pub relays: Vec<RelayState>,
 }
 
 impl Default for RelaysState {
     fn default() -> RelaysState {
-        RelaysState { limit: 0, technology: ResearchType::HyperspaceTechnology, level: 0, relays: Vec::new() }
+        RelaysState {
+            limit: 0,
+            technology: ResearchType::HyperspaceTechnology,
+            level: 0,
+            fill_jumps: 0,
+            relays: Vec::new(),
+        }
     }
 }
 
@@ -642,7 +651,8 @@ pub struct RefuelOffer {
 /// What `refuel` would do for a fleet standing at a hub that refuels.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RefuelQuote {
-    /// Fuel the tank lacks.
+    /// Fuel the hub would add at most: what the tank lacks, up to
+    /// `RelaysState.fill_jumps` jumps of the fleet's own burn.
     pub missing: f64,
     /// One offer for each resource the hold carries that would be accepted.
     pub offers: Vec<RefuelOffer>,

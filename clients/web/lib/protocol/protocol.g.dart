@@ -684,7 +684,8 @@ class RefineCommand extends Command {
 }
 
 /// Turn what is in the hold of `fleet_id` into fuel at a roaming hub
-/// (`HubState.services` has `refuel`), until the tank is full: deuterium
+/// (`HubState.services` has `refuel`), until the tank is full or holds
+/// `RelaysState.fill_jumps` jumps of the fleet's own burn: deuterium
 /// at the dock's rate with no loss, any other resource first through the
 /// exchange, at the player's meter and its fee, so the hub never returns
 /// more than it takes. `amount` of `give` at most; without it, as much
@@ -1217,12 +1218,16 @@ class RelaysState {
 
   /// The player's level of `technology`.
   final int level;
+
+  /// Jumps of a fleet's own burn that a relay or a hub fills its tank to.
+  final int fillJumps;
   final List<RelayState> relays;
 
   const RelaysState({
     this.limit = 0,
     this.technology = ResearchType.hyperspaceTechnology,
     this.level = 0,
+    this.fillJumps = 0,
     this.relays = const [],
   });
 
@@ -1232,6 +1237,7 @@ class RelaysState {
       limit: _int(m['limit']),
       technology: ResearchType.fromJson(m['technology']),
       level: _int(m['level']),
+      fillJumps: _int(m['fill_jumps']),
       relays: _list(m['relays'], RelayState.fromJson),
     );
   }
@@ -1240,6 +1246,7 @@ class RelaysState {
     'limit': limit,
     'technology': technology.toJson(),
     'level': level,
+    'fill_jumps': fillJumps,
     'relays': relays.map((e) => e.toJson()).toList(),
   };
 }
@@ -1331,7 +1338,8 @@ class RefuelOffer {
 
 /// What `refuel` would do for a fleet standing at a hub that refuels.
 class RefuelQuote {
-  /// Fuel the tank lacks.
+  /// Fuel the hub would add at most: what the tank lacks, up to
+  /// `RelaysState.fill_jumps` jumps of the fleet's own burn.
   final double missing;
 
   /// One offer for each resource the hold carries that would be accepted.
@@ -7463,8 +7471,8 @@ const outpostMaxRing = 20;
 const relayMinRing = 9;
 
 /// Deuterium a relay holds. Not scaled by pace: it is a small depot, about
-/// four jumps for ten Cruisers.
-const double relayStore = 1000;
+/// three jumps for ten Cruisers at their base burn.
+const double relayStore = 800;
 
 /// The most characters an account name may have.
 const nameMaxLen = 24;

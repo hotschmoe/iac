@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use common::*;
 use futures_util::SinkExt;
 use iac_server::store::Beside;
-use iac_shared::constants::ECONOMY_VERSION;
+use iac_shared::constants::{ECONOMY_VERSION, WORLDGEN_VERSION};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -331,8 +331,8 @@ async fn a_server_refuses_a_world_another_holds_or_this_build_does_not_play() {
         )) && old_economy.contains("new --world path"),
         "unclear refusal: {old_economy}",
     );
-    write(text.replacen("\"worldgen_version\":6", "\"worldgen_version\":1", 1).as_bytes());
-    assert!(refusal(&file, &[]).contains("worldgen version 1, this build runs version 6"));
+    write(text.replacen(&format!("\"worldgen_version\":{WORLDGEN_VERSION}"), "\"worldgen_version\":1", 1).as_bytes());
+    assert!(refusal(&file, &[]).contains(&format!("worldgen version 1, this build runs version {WORLDGEN_VERSION}")));
     write(text.replacen("\"format\":17", "\"format\":16", 1).as_bytes());
     assert!(refusal(&file, &[]).contains("this world file is format 16, this build reads format 17"));
 

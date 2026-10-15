@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 19;
+pub const ECONOMY_VERSION: u32 = 20;
 /// Bumped when sector generation changes.
-pub const WORLDGEN_VERSION: u32 = 6;
+pub const WORLDGEN_VERSION: u32 = 7;
 
 /// Server tick rate.
 pub const TICK_RATE_HZ: u64 = 1;
@@ -721,24 +721,23 @@ pub const DERELICT_SPAWN_PCT: u8 = 8;
 pub const DERELICT_MIN_DIST: u16 = 4;
 /// Deuterium clouds: a seeded cluster of Nebula sectors. The map is cut in
 /// cells of `CLOUD_CELL` by `CLOUD_CELL` sectors; each cell holds a cloud with
-/// `CLOUD_PCT` percent, its centre anywhere in the cell. A cloud reaches
-/// `CLOUD_RADIUS_BASE + CLOUD_RADIUS_PER_RING * ring` hundredths of a hex
-/// (ring is the centre's, at most `CLOUD_RADIUS_MAX`, which stays below
-/// `CLOUD_CELL`), and a sector in it holds the deuterium of
-/// `CLOUD_DEUT_PEAK` for its distance from the centre. No cloud touches
-/// a sector nearer the hub than `CLOUD_MIN_DIST` or a home seat's ground.
-/// Provisional.
-pub const CLOUD_CELL: i32 = 8;
-pub const CLOUD_PCT: u64 = 25;
-pub const CLOUD_RADIUS_BASE: u32 = 20;
-pub const CLOUD_RADIUS_PER_RING: u32 = 7;
-pub const CLOUD_RADIUS_MAX: u32 = 300;
+/// `CLOUD_PCT` percent, its centre anywhere in the cell, and a cloud is its
+/// centre and the sectors within `CLOUD_RADIUS` hexes of it (which stays below
+/// `CLOUD_CELL`). The centre holds the deuterium of `CLOUD_DEUT_PEAK` for its
+/// own ring, and each hex from it is `CLOUD_FALLOFF_LEVELS` levels thinner,
+/// down to Sparse; a ring whose row is `Density::None` has no clouds, so the
+/// Wandering holds none and a deep fleet is carried by relays and hubs. No
+/// cloud touches a sector nearer the hub than `CLOUD_MIN_DIST` or a home
+/// seat's ground. Provisional.
+pub const CLOUD_CELL: i32 = 5;
+pub const CLOUD_PCT: u64 = 50;
+pub const CLOUD_RADIUS: u32 = 1;
 pub const CLOUD_MIN_DIST: u16 = 2;
+pub const CLOUD_FALLOFF_LEVELS: usize = 2;
 /// The richest density at a cloud's centre, by the ring of the centre: the
-/// first row whose ring is not below it. Each hex from the centre is one
-/// level thinner, down to Sparse.
-pub const CLOUD_DEUT_PEAK: [(u16, Density); 2] =
-    [(8, Density::Sparse), (u16::MAX, Density::Moderate)];
+/// first row whose ring is not below it.
+pub const CLOUD_DEUT_PEAK: [(u16, Density); 4] =
+    [(10, Density::Rich), (13, Density::Moderate), (20, Density::Sparse), (u16::MAX, Density::None)];
 /// Ticks a boarding takes, at every pace.
 pub const EXPLORE_DURATION_TICKS: u16 = 20;
 /// An Espionage Probe aboard reads the hulk before breaching (ambush chance
@@ -856,8 +855,14 @@ pub const RELAY_BASE_MAX: u32 = 1;
 /// Levels of Hyperspace Technology that add one relay to the limit.
 pub const RELAY_LEVELS_PER_STEP: u32 = 2;
 /// Deuterium a relay holds. Not scaled by pace: it is a small depot, about
-/// four jumps for ten Cruisers.
-pub const RELAY_STORE: f64 = 1_000.0;
+/// three jumps for ten Cruisers at their base burn.
+pub const RELAY_STORE: f64 = 800.0;
+/// A relay or a roaming hub fills a tank to at most this many jumps of the
+/// fleet's own burn, and `DEPOT_FILL_JUMPS_PER_LEVEL` more for every level of
+/// Hyperspace Technology of the fleet's owner: a heavy fleet draws a store
+/// down faster, and research is what lets a long tank be topped up in the deep.
+pub const DEPOT_FILL_JUMPS_BASE: u32 = 10;
+pub const DEPOT_FILL_JUMPS_PER_LEVEL: u32 = 3;
 /// Pace-1 ticks a relay stands with no fleet of its owner in its sector
 /// before it is gone with its store (attention class).
 pub const RELAY_DECAY_TICKS: u64 = 172_800;

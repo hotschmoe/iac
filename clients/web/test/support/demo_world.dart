@@ -1084,9 +1084,14 @@ class DemoWorld {
 
   double get _relayStore => _book.constant('RELAY_STORE');
 
+  int get _fillJumps =>
+      _book.constant('DEPOT_FILL_JUMPS_BASE').round() +
+      (_researchLevels[ResearchType.hyperspaceTechnology] ?? 0) * _book.constant('DEPOT_FILL_JUMPS_PER_LEVEL').round();
+
   RelaysState _relaysState() => RelaysState(
         limit: _relayLimit,
         level: _researchLevels[ResearchType.hyperspaceTechnology] ?? 0,
+        fillJumps: _fillJumps,
         relays: [
           for (final r in _relays)
             RelayState(
