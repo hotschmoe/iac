@@ -11,6 +11,11 @@
 // not in a cloud, paying the founding cost from a hold the probe tops up for
 // the purpose, and a convoy that is not counted has stocked each with its whole
 // store: half is spent on the way out and half on the way back, as a cloud's.
+//
+// The planner is a greedy search, so a ring it reports is a lower bound; the
+// fight-reach tables walk only lanes into sectors whose group is at most so
+// many times the fleet's own power, and a looser guard is never reported
+// below a tighter one nor below the unguarded plan.
 
 #[allow(dead_code)]
 mod common;
@@ -18,15 +23,23 @@ mod common;
 use std::collections::{BTreeMap, VecDeque};
 
 use common::*;
-use iac_shared::constants::{ShipClass, TerrainType, FUEL_DEUT_PER_UNIT, RELAY_MIN_RING, RELAY_STORE};
+use iac_shared::constants::{Density, ShipClass, TerrainType, FUEL_DEUT_PER_UNIT, RELAY_MIN_RING, RELAY_STORE};
+use iac_shared::pace::Pace;
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{Command, HarvestResource};
-use iac_shared::scaling::{refined_fuel_per_deuterium, ship_tank, tank_modifier};
+use iac_shared::scaling::{refined_fuel_per_deuterium, ship_tank, tank_modifier, Arms, Refit, NPC_MAX_SHIPS};
 use iac_shared::world;
 use iac_sim::engine::{FleetStatus, Ships};
 use iac_sim::GameEngine;
 
 const FLEET_SHIPS: u32 = 10;
+const SEED: u64 = 42;
+const SEEDS: [u64; 8] = [42, 7, 101, 2024, 31337, 555, 9001, 1234];
+const LEVELS: [u8; 5] = [0, 3, 6, 10, 13];
+const CLASSES: [ShipClass; 2] = [ShipClass::LightFighter, ShipClass::Cruiser];
+const FIGHT_MULTIPLES: [f32; 3] = [1.0, 2.0, 4.0];
+const CENSUS_HOPS: u32 = 60;
+const WORKERS: usize = 4;
 const HOME_RING: u16 = 4;
 const SEARCH_HOPS: u32 = 120;
 const MAP_LIMIT: u16 = 40;
@@ -50,7 +63,14 @@ struct Walk {
     parent: Option<Hex>,
 }
 
-fn walk_from(engine: &GameEngine, origin: Hex, depth: u32) -> BTreeMap<u32, Walk> {
+fn lair_power(engine: &GameEngine, at: Hex) -> f32 {
+    engine.world_gen.generate_sector(at).npc_template.map_or(0.0, |npc| {
+        let count = u32::from(npc.count).min(NPC_MAX_SHIPS as u32);
+        Ships::of(&[(npc.ship_class, count)]).power(Arms::of_grade(npc.stat_multiplier))
+    })
+}
+
+fn walk_from(engine: &GameEngine, origin: Hex, depth: u32, limit: Option<f32>) -> BTreeMap<u32, Walk> {
     let mut seen = BTreeMap::new();
     seen.insert(origin.to_key(), Walk { hops: 0, parent: None });
     let mut queue = VecDeque::from([origin]);
@@ -60,7 +80,7 @@ fn walk_from(engine: &GameEngine, origin: Hex, depth: u32) -> BTreeMap<u32, Walk
             continue;
         }
         for &next in engine.world_gen.connected_neighbors(at).slice() {
-            if seen.contains_key(&next.to_key()) {
+            if seen.contains_key(&next.to_key()) || limit.is_some_and(|cap| lair_power(engine, next) > cap) {
                 continue;
             }
             seen.insert(next.to_key(), Walk { hops: hops + 1, parent: Some(at) });
@@ -70,8 +90,8 @@ fn walk_from(engine: &GameEngine, origin: Hex, depth: u32) -> BTreeMap<u32, Walk
     seen
 }
 
-fn path_between(engine: &GameEngine, from: Hex, to: Hex) -> Vec<Hex> {
-    let walk = walk_from(engine, from, SEARCH_HOPS);
+fn path_between(engine: &GameEngine, from: Hex, to: Hex, limit: Option<f32>) -> Vec<Hex> {
+    let walk = walk_from(engine, from, SEARCH_HOPS, limit);
     let mut path = Vec::new();
     let mut at = to;
     while at != from {
@@ -149,7 +169,7 @@ fn relay_ground(engine: &GameEngine, at: Hex) -> bool {
     template.npc_template.is_none() && !template.has_derelict && template.terrain != TerrainType::Anomaly
 }
 
-fn plan(engine: &GameEngine, home: Hex, jump_fuel: f64, jumps: f64, tier: Tier, relay_limit: usize) -> Plan {
+fn plan(engine: &GameEngine, home: Hex, jump_fuel: f64, jumps: f64, tier: Tier, relay_limit: usize, limit: Option<f32>) -> Plan {
     let mut best = Plan {
         nodes: vec![home],
         relay: vec![false],
@@ -169,7 +189,7 @@ fn plan(engine: &GameEngine, home: Hex, jump_fuel: f64, jumps: f64, tier: Tier, 
     while let Some(node) = queue.pop_front() {
         let here = *node.chain.last().unwrap();
         let reach = node.out.floor() as u32;
-        let near = walk_from(engine, here, reach);
+        let near = walk_from(engine, here, reach, limit);
         let mut targets: Vec<(u16, u32, Hex)> = Vec::new();
         let mut depots: Vec<(u16, u32, Hex)> = Vec::new();
         for (&key, walk) in &near {
@@ -318,7 +338,7 @@ fn play(engine: GameEngine, pid: u64, fid: u64, chosen: &Plan, jump_fuel: f64, t
     let start = e.engine.current_tick();
     let legs = chosen.nodes.len();
     for i in 1..legs {
-        let path = path_between(&e.engine, chosen.nodes[i - 1], chosen.nodes[i]);
+        let path = path_between(&e.engine, chosen.nodes[i - 1], chosen.nodes[i], None);
         fly(&mut e, &path)?;
         if use_clouds {
             top_up(&mut e, chosen.nodes[i], chosen.out_fuel[i] * jump_fuel);
@@ -330,9 +350,9 @@ fn play(engine: GameEngine, pid: u64, fid: u64, chosen: &Plan, jump_fuel: f64, t
         }
     }
     if chosen.target != chosen.nodes[legs - 1] {
-        let path = path_between(&e.engine, chosen.nodes[legs - 1], chosen.target);
+        let path = path_between(&e.engine, chosen.nodes[legs - 1], chosen.target, None);
         fly(&mut e, &path)?;
-        let path = path_between(&e.engine, chosen.target, chosen.nodes[legs - 1]);
+        let path = path_between(&e.engine, chosen.target, chosen.nodes[legs - 1], None);
         fly(&mut e, &path)?;
     }
     for i in (0..legs).rev() {
@@ -340,7 +360,7 @@ fn play(engine: GameEngine, pid: u64, fid: u64, chosen: &Plan, jump_fuel: f64, t
             top_up(&mut e, chosen.nodes[i], chosen.back_fuel[i] * jump_fuel);
         }
         if i > 0 {
-            let path = path_between(&e.engine, chosen.nodes[i], chosen.nodes[i - 1]);
+            let path = path_between(&e.engine, chosen.nodes[i], chosen.nodes[i - 1], None);
             fly(&mut e, &path)?;
         }
     }
@@ -354,8 +374,18 @@ struct Reading {
     played: Result<u64, String>,
 }
 
-fn measure(class: ShipClass, level: u8, tier: Tier) -> Reading {
-    let mut engine = world("season");
+struct Setup {
+    engine: GameEngine,
+    pid: u64,
+    fid: u64,
+    home: Hex,
+    jump_fuel: f64,
+    jumps: f64,
+    limit: usize,
+}
+
+fn setup(seed: u64, class: ShipClass, level: u8) -> Setup {
+    let mut engine = GameEngine::new(seed, Pace::parse("season").expect("known pace"));
     let (pid, fid) = join(&mut engine, "Prober");
     let home = world::home_seats().find(|at| at.dist_from_origin() == HOME_RING).expect("a ring-4 seat");
     edit(&mut engine, |s| {
@@ -376,9 +406,14 @@ fn measure(class: ShipClass, level: u8, tier: Tier) -> Reading {
     let state = probe.fleet();
     let jumps = (state.fuel_max / state.jump_fuel).floor();
     let limit = probe.engine.relay_limit(pid) as usize;
-    let chosen = plan(&probe.engine, home, state.jump_fuel, jumps, tier, limit);
-    let played = play(probe.engine, pid, fid, &chosen, state.jump_fuel, tier);
-    Reading { jumps: jumps as u32, ring: chosen.ring, stops: chosen.nodes.len() - 1, played }
+    Setup { jump_fuel: state.jump_fuel, engine: probe.engine, pid, fid, home, jumps, limit }
+}
+
+fn measure(class: ShipClass, level: u8, tier: Tier) -> Reading {
+    let s = setup(SEED, class, level);
+    let chosen = plan(&s.engine, s.home, s.jump_fuel, s.jumps, tier, s.limit, None);
+    let played = play(s.engine, s.pid, s.fid, &chosen, s.jump_fuel, tier);
+    Reading { jumps: s.jumps as u32, ring: chosen.ring, stops: chosen.nodes.len() - 1, played }
 }
 
 #[test]
@@ -437,6 +472,187 @@ fn cloud_census() {
             "{lo:>3}..{hi:<3}     {all:>7} {clouded:>11} {:>5.1}%  {}",
             100.0 * f64::from(clouded) / f64::from(all),
             1 + 3 * depth * (depth + 1),
+        );
+    }
+}
+
+struct Cell {
+    seed: u64,
+    class: ShipClass,
+    level: u8,
+    fuel: [u16; 4],
+    fight: [u16; 3],
+    lairs: usize,
+    strongest: f32,
+    own: f32,
+}
+
+fn route_danger(engine: &GameEngine, chosen: &Plan) -> (usize, f32) {
+    let mut crossed: BTreeMap<u32, f32> = BTreeMap::new();
+    let mut leg = |from: Hex, to: Hex| {
+        for at in path_between(engine, from, to, None) {
+            let power = lair_power(engine, at);
+            if power > 0.0 {
+                crossed.insert(at.to_key(), power);
+            }
+        }
+    };
+    for pair in chosen.nodes.windows(2) {
+        leg(pair[0], pair[1]);
+    }
+    let last = *chosen.nodes.last().unwrap();
+    if chosen.target != last {
+        leg(last, chosen.target);
+    }
+    (crossed.len(), crossed.values().copied().fold(0.0, f32::max))
+}
+
+fn cell(seed: u64, class: ShipClass, level: u8) -> Cell {
+    let s = setup(seed, class, level);
+    let own = Ships::of(&[(class, FLEET_SHIPS)]).power(Refit { weapons: level, shielding: level, armour: level }.arms());
+    let ring = |tier: Tier, limit: Option<f32>| plan(&s.engine, s.home, s.jump_fuel, s.jumps, tier, s.limit, limit);
+    let both = ring(BOTH, None);
+    let (lairs, strongest) = route_danger(&s.engine, &both);
+    let mut fight = FIGHT_MULTIPLES.map(|k| ring(BOTH, Some(own * k)).ring);
+    for i in 1..fight.len() {
+        fight[i] = fight[i].max(fight[i - 1]);
+    }
+    let both_ring = both.ring.max(fight[fight.len() - 1]);
+    Cell {
+        seed,
+        class,
+        level,
+        fuel: [ring(OFF, None).ring, ring(CLOUDS, None).ring, ring(RELAYS, None).ring, both_ring],
+        fight,
+        lairs,
+        strongest,
+        own,
+    }
+}
+
+fn median(values: &[u16]) -> f64 {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let mid = sorted.len() / 2;
+    if sorted.len() % 2 == 1 {
+        f64::from(sorted[mid])
+    } else {
+        f64::from(sorted[mid - 1] + sorted[mid]) / 2.0
+    }
+}
+
+fn spread(values: &[u16]) -> String {
+    format!("{} ({}-{})", median(values), values.iter().min().unwrap(), values.iter().max().unwrap())
+}
+
+fn median_f(values: &mut [f64]) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let mid = values.len() / 2;
+    if values.len() % 2 == 1 {
+        values[mid]
+    } else {
+        (values[mid - 1] + values[mid]) / 2.0
+    }
+}
+
+#[test]
+fn reach_across_seeds_and_danger() {
+    let jobs: Vec<(u64, ShipClass, u8)> = SEEDS
+        .iter()
+        .flat_map(|&seed| CLASSES.iter().flat_map(move |&class| LEVELS.iter().map(move |&level| (seed, class, level))))
+        .collect();
+    let cells: Vec<Cell> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..WORKERS)
+            .map(|worker| {
+                let mine: Vec<_> = jobs.iter().copied().skip(worker).step_by(WORKERS).collect();
+                scope.spawn(move || mine.into_iter().map(|(seed, class, level)| cell(seed, class, level)).collect::<Vec<_>>())
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().expect("worker")).collect()
+    });
+    println!("seeds: {SEEDS:?}; {FLEET_SHIPS} ships; cells are median (min-max) farthest ring\n");
+    println!("| class | level | off | clouds | relays | both |");
+    println!("|---|---|---|---|---|---|");
+    for class in CLASSES {
+        for level in LEVELS {
+            let rows: Vec<&Cell> = cells.iter().filter(|c| c.class == class && c.level == level).collect();
+            let col = |i: usize| spread(&rows.iter().map(|c| c.fuel[i]).collect::<Vec<_>>());
+            println!("| {} | {level} | {} | {} | {} | {} |", class.label(), col(0), col(1), col(2), col(3));
+            for c in &rows {
+                assert!(c.fuel[1] >= c.fuel[0], "clouds never shorten the reach (seed {})", c.seed);
+                assert!(c.fuel[2] >= c.fuel[0], "relays never shorten the reach (seed {})", c.seed);
+                assert!(c.fuel[3] >= c.fuel[1].max(c.fuel[2]), "both reach at least either (seed {})", c.seed);
+            }
+        }
+    }
+    println!("\n| class | level | fleet power | fuel ring (both) | fight 1x | fight 2x | fight 4x | lairs on route | strongest on route, x fleet |");
+    println!("|---|---|---|---|---|---|---|---|---|");
+    for class in CLASSES {
+        for level in LEVELS {
+            let rows: Vec<&Cell> = cells.iter().filter(|c| c.class == class && c.level == level).collect();
+            let col = |i: usize| spread(&rows.iter().map(|c| c.fight[i]).collect::<Vec<_>>());
+            let lairs: Vec<u16> = rows.iter().map(|c| c.lairs as u16).collect();
+            let mut ratios: Vec<f64> = rows.iter().map(|c| f64::from(c.strongest / c.own)).collect();
+            let top = ratios.iter().copied().fold(0.0, f64::max);
+            println!(
+                "| {} | {level} | {:.0} | {} | {} | {} | {} | {} | {:.2} (max {:.2}) |",
+                class.label(),
+                rows[0].own,
+                spread(&rows.iter().map(|c| c.fuel[3]).collect::<Vec<_>>()),
+                col(0),
+                col(1),
+                col(2),
+                spread(&lairs),
+                median_f(&mut ratios),
+                top,
+            );
+            for c in &rows {
+                assert!(c.fight[0] <= c.fight[1] && c.fight[1] <= c.fight[2], "a looser guard never reaches less (seed {})", c.seed);
+                assert!(c.fight[2] <= c.fuel[3], "the fight never reaches past the fuel (seed {})", c.seed);
+            }
+        }
+    }
+}
+
+#[test]
+fn cloud_distance_census() {
+    let per_seed: Vec<(u64, [Option<u32>; 3], [u32; 3])> = std::thread::scope(|scope| {
+        let handles: Vec<_> = SEEDS
+            .iter()
+            .map(|&seed| {
+                scope.spawn(move || {
+                    let s = setup(seed, ShipClass::LightFighter, 0);
+                    let walk = walk_from(&s.engine, s.home, CENSUS_HOPS, None);
+                    let nearest = |keep: &dyn Fn(Hex) -> bool| {
+                        walk.iter().filter(|(_, w)| w.hops > 0).filter(|&(&k, _)| keep(Hex::from_key(k))).map(|(_, w)| w.hops).min()
+                    };
+                    let cloud = nearest(&|at| is_cloud(&s.engine, at));
+                    let deut = nearest(&|at| s.engine.world_gen.generate_sector(at).deut_density as u8 >= Density::Moderate as u8);
+                    let lair = nearest(&|at| lair_power(&s.engine, at) > 0.0);
+                    let tanks = [0u8, 3, 6].map(|level| setup(seed, ShipClass::LightFighter, level).jumps as u32);
+                    (seed, [cloud, deut, lair], tanks)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("worker")).collect()
+    });
+    println!("| seed | nearest cloud | nearest deuterium Moderate+ | nearest lair | LF tank, jumps, levels 0/3/6 |");
+    println!("|---|---|---|---|---|");
+    let show = |v: Option<u32>| v.map_or("none".to_string(), |h| h.to_string());
+    for (seed, near, tanks) in &per_seed {
+        println!("| {seed} | {} | {} | {} | {}/{}/{} |", show(near[0]), show(near[1]), show(near[2]), tanks[0], tanks[1], tanks[2]);
+    }
+    for (i, name) in ["cloud", "deuterium Moderate+", "lair"].iter().enumerate() {
+        let mut hops: Vec<f64> = per_seed.iter().map(|(_, n, _)| n[i].map_or(f64::from(CENSUS_HOPS + 1), f64::from)).collect();
+        println!("median hops to nearest {name}: {}", median_f(&mut hops));
+    }
+    for (li, level) in [0u8, 3, 6].iter().enumerate() {
+        let within_tank = per_seed.iter().filter(|(_, n, t)| n[0].is_some_and(|h| h <= t[li])).count();
+        let within_round_trip = per_seed.iter().filter(|(_, n, t)| n[0].is_some_and(|h| 2 * h <= t[li])).count();
+        println!(
+            "level {level}: a cloud within a full tank of home in {within_tank}/{} seeds, within a round trip on one tank in {within_round_trip}/{}",
+            SEEDS.len(),
+            SEEDS.len()
         );
     }
 }
