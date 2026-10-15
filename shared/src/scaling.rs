@@ -1646,18 +1646,23 @@ pub fn ore_density_odds(dist: u16) -> [f32; 4] {
 
 // ── Loot ─────────────────────────────────────────────────────────
 
+/// Loot paid P^0.5 times its constants before it followed production; the
+/// constants carry that factor at the season preset, `sqrt(FIND_ANCHOR)`, so
+/// a season find pays what it always did and `Pace::find_mult` is 1 there.
+pub const SEASON_LOOT_LIFT: f64 = 3.1622776601683795;
+
 /// A destroyed group leaves `WRECK_VALUE_K * power^WRECK_VALUE_EXPONENT`
 /// units: three times 1.2 * `MAP_PAYS` / 10^0.8, the 10 being what a
 /// group's power grew by with `NPC_POWER_BASE`. A kill scores nothing and
 /// pays in its wreckage, so the wreckage is three times what it was when a
 /// kill also scored. Provisional.
-pub const WRECK_VALUE_K: f64 = 1.71;
+pub const WRECK_VALUE_K: f64 = 1.71 * SEASON_LOOT_LIFT;
 pub const WRECK_VALUE_EXPONENT: f64 = 0.8;
 /// Metal, crystal and deuterium shares of any loot value.
 pub const LOOT_SPLIT: [f64; 3] = [0.55, 0.30, 0.15];
 /// A derelict in ring `DERELICT_VALUE_RING` is worth `DERELICT_VALUE_BASE`;
 /// each ring further out multiplies that by `DERELICT_VALUE_GROWTH`.
-pub const DERELICT_VALUE_BASE: f64 = 240.0 * MAP_PAYS;
+pub const DERELICT_VALUE_BASE: f64 = 240.0 * MAP_PAYS * SEASON_LOOT_LIFT;
 pub const DERELICT_VALUE_GROWTH: f64 = 1.14;
 pub const DERELICT_VALUE_RING: u16 = 4;
 /// A site pays between these shares of its value, uniformly.

@@ -81,6 +81,9 @@ pub const PRESETS: &[Preset] = &[
     Preset { name: "test", pace: 8000.0, first_cruiser_s: 252, endgame_s: 642 },
 ];
 
+/// The pace the map's finds are balanced at: the season preset.
+pub const FIND_ANCHOR: f64 = PRESETS[2].pace;
+
 /// A named pace with the simulation's milestone estimates for a competent
 /// player: the estimates table of `docs/design/economy/sim.py --tables`,
 /// whose endgame is the kit that file names.
@@ -175,11 +178,11 @@ impl Pace {
         }
     }
 
-    /// What a find is worth, in units, against pace 1: loot, wreckage,
-    /// derelict and chart value follow production, so a find is worth the same
-    /// minutes of income at every pace.
+    /// What a find is worth against the season preset, which is where the
+    /// map is balanced: loot, wreckage, derelict, chart and ore value follow
+    /// production, so a find is worth the same minutes of income at every pace.
     pub fn find_mult(&self) -> f64 {
-        self.0
+        self.0 / FIND_ANCHOR
     }
 
     /// Ship holds and outpost stores scale like finds' timers (P^0.5), not
