@@ -1816,8 +1816,7 @@
           "q": 12,
           "r": -3
         },
-        "store": 640.0,
-        "store_cap": 1000.0
+        "store": 640.0
       }
     ],
     "technology": "HyperspaceTechnology"

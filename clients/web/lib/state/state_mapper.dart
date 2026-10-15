@@ -717,7 +717,7 @@ class StateMapper {
       scanRange: f.scanRange,
       outpostFuel: f.outpostFuel?.round(),
       atOutpost: f.atOutpost,
-      atRelay: f.atRelay,
+      relay: f.relay,
       cooldown: f.cooldownRemaining,
       power: f.power,
       rangeHops: f.rangeHops,

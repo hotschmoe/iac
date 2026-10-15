@@ -1,6 +1,6 @@
 import '../protocol/hex.dart';
 import '../protocol/protocol.dart' as proto
-    show Fleeing, FlightQuote, Pursuit, Refining, RefuelQuote, Refit, RepairQuote, ShipGroupState, StandingOrders, scanBaseRange;
+    show Fleeing, FlightQuote, Pursuit, Refining, RefuelQuote, Refit, RelayQuote, RepairQuote, ShipGroupState, StandingOrders, scanBaseRange;
 
 enum FleetStatus {
   docked('DOCKED'),
@@ -96,8 +96,10 @@ class FleetState {
   /// In the sector of the player's outpost, whatever state it is in.
   final bool atOutpost;
 
-  /// In the sector of one of the player's relays.
-  final bool atRelay;
+  /// What loading and unloading deuterium would do now, while the fleet is
+  /// in the sector of one of the player's relays.
+  final proto.RelayQuote? relay;
+  bool get atRelay => relay != null;
   final int cooldown;
   final double power;
   final int rangeHops;
@@ -167,7 +169,7 @@ class FleetState {
     this.scanRange = proto.scanBaseRange,
     this.outpostFuel,
     this.atOutpost = false,
-    this.atRelay = false,
+    this.relay,
     this.cooldown = 0,
     this.power = 0,
     this.rangeHops = 0,

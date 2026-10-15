@@ -12,6 +12,28 @@
 
 use std::ops::{Div, Mul};
 
+/// `f64::sqrt` for a constant, which the std method cannot be: the square
+/// root of a positive normal number, rounded to nearest and to even as IEEE
+/// 754 rounds it, from the integer square root of its mantissa.
+pub const fn sqrt(x: f64) -> f64 {
+    let bits = x.to_bits();
+    let mut exponent = ((bits >> 52) & 0x7ff) as i32 - 1075;
+    let mut mantissa = (bits & ((1 << 52) - 1)) | (1 << 52);
+    if exponent & 1 != 0 {
+        mantissa <<= 1;
+        exponent -= 1;
+    }
+    let scaled = (mantissa as u128) << 54;
+    let root = scaled.isqrt();
+    let inexact = root * root != scaled;
+    let mut kept = (root >> 1) as u64;
+    if root & 1 == 1 && (inexact || kept & 1 == 1) {
+        kept += 1;
+    }
+    let power = f64::from_bits(((exponent / 2 - 26 + 1023) as u64) << 52);
+    kept as f64 * power
+}
+
 pub trait Float: Copy + Mul<Output = Self> + Div<Output = Self> {
     const ONE: Self;
     fn powf(self, exponent: Self) -> Self;

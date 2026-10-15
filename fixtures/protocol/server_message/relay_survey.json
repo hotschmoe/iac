@@ -13,7 +13,6 @@
     "q": 12,
     "r": -3
   },
-  "store_cap": 1000.0,
   "technology": "HyperspaceTechnology",
   "type": "relay_survey"
 }

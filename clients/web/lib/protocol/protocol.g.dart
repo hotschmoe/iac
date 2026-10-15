@@ -684,7 +684,7 @@ class RefineCommand extends Command {
 }
 
 /// Turn what is in the hold of `fleet_id` into fuel at a roaming hub
-/// (`HubState.services` has `refuel`), until the tank is full or holds
+/// (a roaming hub offers `exchange` and `refuel`), until the tank is full or holds
 /// `RelaysState.fill_jumps` jumps of the fleet's own burn: deuterium
 /// at the dock's rate with no loss, any other resource first through the
 /// exchange, at the player's meter and its fee, so the hub never returns
@@ -1085,8 +1085,9 @@ class EventMessage extends ServerMessage {
   Json toJson() => {'type': 'event', ...event.toJson()};
 }
 
-/// Answer to `relay_survey`: what a relay in `sector` would cost and hold,
-/// and why it cannot be founded now. `refusal` depends on the asking fleet
+/// Answer to `relay_survey`: what a relay in `sector` would cost, and why it
+/// cannot be founded now. Of a sector the player has never seen it says what
+/// the ring decides and that the sector is not on the chart. `refusal` depends on the asking fleet
 /// and on the moment; the rest follows from the sector's ring and the
 /// player's research.
 class RelaySurvey extends ServerMessage {
@@ -1099,11 +1100,8 @@ class RelaySurvey extends ServerMessage {
   /// What founding takes from the hold.
   final Resources cost;
 
-  /// Deuterium the store holds.
-  final double storeCap;
-
-  /// Ticks the relay stands with no fleet of its owner in its sector
-  /// before it is gone.
+  /// Ticks the relay stands with no fleet of its owner landing at it and no
+  /// deposit or withdrawal before it is gone.
   final int decayTicks;
 
   /// Relays the player has now.
@@ -1122,7 +1120,6 @@ class RelaySurvey extends ServerMessage {
     required this.sector,
     required this.ring,
     required this.cost,
-    required this.storeCap,
     required this.decayTicks,
     required this.count,
     required this.limit,
@@ -1137,7 +1134,6 @@ class RelaySurvey extends ServerMessage {
       sector: Hex.fromJson(m['sector']),
       ring: _int(m['ring']),
       cost: Resources.fromJson(m['cost']),
-      storeCap: _double(m['store_cap']),
       decayTicks: _int(m['decay_ticks']),
       count: _int(m['count']),
       limit: _int(m['limit']),
@@ -1153,7 +1149,6 @@ class RelaySurvey extends ServerMessage {
     'sector': sector.toJson(),
     'ring': ring,
     'cost': cost.toJson(),
-    'store_cap': storeCap,
     'decay_ticks': decayTicks,
     'count': count,
     'limit': limit,
@@ -1171,11 +1166,10 @@ class RelayState {
 
   /// Deuterium in the store.
   final double store;
-  final double storeCap;
 
-  /// Ticks until the relay is gone unless a fleet of the owner stands in
-  /// its sector: a visit sets it back to the full span, and it stays there
-  /// while a fleet stands in the sector.
+  /// Ticks until the relay is gone unless a fleet of the owner lands in
+  /// its sector or moves a deposit there: either sets it back to the full
+  /// span, and a fleet that merely stands there does not.
   final int decayIn;
   final int foundedTick;
 
@@ -1183,7 +1177,6 @@ class RelayState {
     required this.sector,
     required this.ring,
     required this.store,
-    required this.storeCap,
     required this.decayIn,
     required this.foundedTick,
   });
@@ -1194,7 +1187,6 @@ class RelayState {
       sector: Hex.fromJson(m['sector']),
       ring: _int(m['ring']),
       store: _double(m['store']),
-      storeCap: _double(m['store_cap']),
       decayIn: _int(m['decay_in']),
       foundedTick: _int(m['founded_tick']),
     );
@@ -1204,14 +1196,13 @@ class RelayState {
     'sector': sector.toJson(),
     'ring': ring,
     'store': store,
-    'store_cap': storeCap,
     'decay_in': decayIn,
     'founded_tick': foundedTick,
   };
 }
 
 /// The player's relays and how many they may keep. `limit` is the base
-/// plus a step for each `levels_per_step` levels of `technology`.
+/// plus a step for each `RELAY_LEVELS_PER_STEP` levels of `technology`.
 class RelaysState {
   final int limit;
   final ResearchType technology;
@@ -2942,10 +2933,10 @@ class FleetState {
   /// here, and a raid on it finds the fleet in its fight.
   final bool atOutpost;
 
-  /// The fleet is in the sector of one of its owner's relays: `load` and
-  /// `unload` use the relay's deuterium store here, and a fleet flown by
-  /// hand has its tank filled from it.
-  final bool atRelay;
+  /// Present while the fleet is in the sector of one of its owner's
+  /// relays: `load` and `unload` use the relay's deuterium store here, and
+  /// a fleet flown by hand has its tank filled from it.
+  final RelayQuote? relay;
 
   /// Fuel the way to the owner's outpost costs: the fewest lane hops
   /// there times `jump_fuel`, 0 at the outpost. Present while that
@@ -2996,7 +2987,7 @@ class FleetState {
     this.cargoBlocked = false,
     this.laden = false,
     this.atOutpost = false,
-    this.atRelay = false,
+    this.relay,
     this.outpostFuel,
     this.refine,
     this.refuel,
@@ -3036,7 +3027,7 @@ class FleetState {
       cargoBlocked: _opt(m['cargo_blocked'], _bool) ?? false,
       laden: _opt(m['laden'], _bool) ?? false,
       atOutpost: _opt(m['at_outpost'], _bool) ?? false,
-      atRelay: _opt(m['at_relay'], _bool) ?? false,
+      relay: _opt(m['relay'], RelayQuote.fromJson),
       outpostFuel: _opt(m['outpost_fuel'], _double),
       refine: _opt(m['refine'], Refining.fromJson),
       refuel: _opt(m['refuel'], RefuelQuote.fromJson),
@@ -3075,12 +3066,41 @@ class FleetState {
     'cargo_blocked': cargoBlocked,
     'laden': laden,
     'at_outpost': atOutpost,
-    'at_relay': atRelay,
+    'relay': ?relay?.toJson(),
     'outpost_fuel': ?outpostFuel,
     'refine': ?refine?.toJson(),
     'refuel': ?refuel?.toJson(),
     'policy': ?policy?.toJson(),
   };
+}
+
+/// What `load` and `unload` of deuterium would do for a fleet standing at
+/// its owner's relay right now, each with the engine's sentence when it would
+/// be refused.
+class RelayQuote {
+  /// Deuterium a `load` of deuterium with no `amount` would put aboard;
+  /// 0 when it would be refused.
+  final double load;
+
+  /// Deuterium an `unload` would move into the store; 0 when it would be
+  /// refused.
+  final double unload;
+  final String? loadRefusal;
+  final String? unloadRefusal;
+
+  const RelayQuote({required this.load, required this.unload, this.loadRefusal, this.unloadRefusal});
+
+  factory RelayQuote.fromJson(Object? json) {
+    final m = _obj(json);
+    return RelayQuote(
+      load: _double(m['load']),
+      unload: _double(m['unload']),
+      loadRefusal: _opt(m['load_refusal'], _string),
+      unloadRefusal: _opt(m['unload_refusal'], _string),
+    );
+  }
+
+  Json toJson() => {'load': load, 'unload': unload, 'load_refusal': ?loadRefusal, 'unload_refusal': ?unloadRefusal};
 }
 
 /// What leaving a fight costs a fleet, as things stand this tick. The price

@@ -9,7 +9,6 @@ import '../console/services.dart';
 import '../design/gauges.dart';
 import '../design/panel.dart';
 import '../design/tokens.dart';
-import '../models/fleet.dart' show FleetStatus;
 import '../protocol/protocol.dart' as proto;
 import '../state/game_controller.dart';
 import '../state/state_mapper.dart' show amountsOf, shortBy;
@@ -410,40 +409,26 @@ class RelayPanel extends StatelessWidget {
     final st = c.state;
     final fleet = c.currentFleet;
     final relays = st.relays;
-    final here = st.relayAt(fleet.sector);
+    final quote = fleet.relay;
+    final here = quote == null ? null : st.relayAt(fleet.sector);
     final hold = st.holds[fleet.id] ?? const proto.Resources();
     final body = <Widget>[
       Kv('Relays kept', key: const Key('relay-count'), v: '${relays.relays.length} OF ${relays.limit} - ${relays.technology.label.toUpperCase()} L${relays.level}'),
       Kv('Fills tanks to', key: const Key('relay-fill'), v: '${relays.fillJumps} JUMPS'),
       const SizedBox(height: 6),
     ];
-    if (here != null) {
-      final free = fleet.status == FleetStatus.idle || fleet.status == FleetStatus.docked;
-      final fits = math.min(here.store, math.max(0.0, fleet.holdCapacity - hold.total));
-      final room = math.max(0.0, here.storeCap - here.store);
-      final loadWhy = fleet.policy != null
-          ? '${fleet.name} is under standing orders (${fleet.policy}), which do not use the relay. Set it to manual to load it by hand.'
-          : !free
-              ? '${fleet.name} is busy.'
-              : fits < 1
-                  ? (here.store < 1 ? 'The relay\'s store holds no deuterium.' : 'The hold of ${fleet.name} is full.')
-                  : null;
-      final unloadWhy = !free
-          ? '${fleet.name} is busy.'
-          : hold.deuterium < 1
-              ? 'The hold carries no deuterium.'
-              : room < 1
-                  ? 'The relay\'s store is full.'
-                  : null;
+    if (here != null && quote != null) {
+      final loadWhy = quote.loadRefusal;
+      final unloadWhy = quote.unloadRefusal;
       body.addAll([
-        Kv('Store', key: const Key('relay-store'), v: '${_whole(here.store)} OF ${_whole(here.storeCap)} DEUTERIUM'),
+        Kv('Store', key: const Key('relay-store'), v: '${_whole(here.store)} OF ${_whole(proto.relayStore)} DEUTERIUM'),
         const SizedBox(height: 4),
-        LedBar(here.storeCap > 0 ? here.store / here.storeCap : 0, color: C.ore('deuterium')),
+        LedBar(here.store / proto.relayStore, color: C.ore('deuterium')),
         const SizedBox(height: 6),
         Kv('Gone in', key: const Key('relay-decay'), v: clockFmt(here.decayIn)),
         const SizedBox(height: 10),
         Wrap(spacing: 8, runSpacing: 6, children: [
-          ConsoleButton(loadWhy == null ? 'Load ${_whole(fits)} De' : 'Load',
+          ConsoleButton(loadWhy == null ? 'Load ${_whole(quote.load)} De' : 'Load',
               key: const ValueKey('relay-load'),
               small: true,
               primary: loadWhy == null,
@@ -466,7 +451,7 @@ class RelayPanel extends StatelessWidget {
           ? Text('ASKING FOR THE SURVEY', key: const Key('relay-pending'), style: T.mono(size: 11, color: C.text3))
           : Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               Kv('Site', v: '${survey.sector.q}, ${survey.sector.r} - RING ${survey.ring}'),
-              Kv('Store', v: '${_whole(survey.storeCap)} DEUTERIUM'),
+              Kv('Store', v: '${_whole(proto.relayStore)} DEUTERIUM'),
               Kv('Gone after', v: '${clockFmt(survey.decayTicks)} UNVISITED'),
               const SizedBox(height: 6),
               const Lbl('Costs, from this hold'),

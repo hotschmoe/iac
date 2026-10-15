@@ -28,7 +28,7 @@ use iac_shared::pace::{Pace, preset_named};
 use iac_shared::protocol::*;
 use iac_shared::scaling::{
     Arms, BuildingLevels, BuildingType, DefenceKind, MAX_BUILDING_LEVEL, RatioLabel, Refit, ResearchLevels,
-    ResearchType, ShipyardItem, research_max_level, ship_figures, unit_figures,
+    ResearchType, ShipyardItem, home_power, research_max_level, ship_figures, unit_figures,
 };
 use iac_shared::world::HubService;
 
@@ -153,7 +153,7 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<StandingOr
         cargo_blocked: false,
         laden: false,
         at_outpost: false,
-        at_relay: false,
+        relay: None,
         outpost_fuel: None,
         refine: None,
         refuel: None,
@@ -546,7 +546,6 @@ fn sample_relays() -> RelaysState {
             sector: h(12, -3),
             ring: 12,
             store: 640.0,
-            store_cap: 1000.0,
             decay_in: 150_000,
             founded_tick: 900,
         }],
@@ -593,7 +592,6 @@ fn sample_relay_survey() -> RelaySurvey {
         sector: h(12, -3),
         ring: 12,
         cost: res(650.0, 325.0, 130.0),
-        store_cap: 1000.0,
         decay_ticks: 15_361,
         count: 1,
         limit: 3,
@@ -900,6 +898,7 @@ fn sample_homeworld() -> HomeworldState {
             &[14, 0, 0, 3, 0, 0, 1, 1],
             6,
             true,
+            &home_power(&levels, &researched, 6, true, &Pace::PERSISTENT),
             &Pace::PERSISTENT,
         ),
     }
@@ -951,6 +950,7 @@ fn idle_homeworld() -> HomeworldState {
             &[0; DefenceKind::COUNT],
             0,
             false,
+            &home_power(&BuildingLevels::default(), &ResearchLevels::default(), 0, false, &Pace::PERSISTENT),
             &Pace::PERSISTENT,
         ),
     }
@@ -1466,7 +1466,12 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 player: None,
                 fleets: vec![FleetState {
                     at_outpost: true,
-                    at_relay: false,
+                    relay: Some(RelayQuote {
+                        load: 0.0,
+                        unload: 120.5,
+                        load_refusal: Some("the relay's store holds no deuterium to load".into()),
+                        unload_refusal: None,
+                    }),
                     home_fuel: 220.5,
                     ..sample_fleet(7, h(10, -2), FleetStatus::Idle, None)
                 }],
@@ -1633,7 +1638,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 fleets: vec![
                     FleetState {
                         at_outpost: true,
-                        at_relay: false,
+                        relay: None,
                         outpost_fuel: Some(0.0),
                         home_fuel: 220.5,
                         ..sample_fleet(7, h(10, -2), FleetStatus::Idle, None)
@@ -2674,7 +2679,8 @@ fn catalog_levels(files: &mut Files) {
                 research.set(t, level.min(research_max_level(t)));
             }
             let none = [0; DefenceKind::COUNT];
-            let catalog = HomeworldCatalog::new(&buildings, &research, &none, &none, 0, true, &pace);
+            let power = home_power(&buildings, &research, 0, true, &pace);
+            let catalog = HomeworldCatalog::new(&buildings, &research, &none, &none, 0, true, &power, &pace);
             serde_json::to_string(&catalog).unwrap()
         })
         .collect();

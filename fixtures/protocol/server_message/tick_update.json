@@ -64,7 +64,6 @@
   "fleets": [
     {
       "at_outpost": false,
-      "at_relay": false,
       "attack": 20610,
       "cargo": {
         "crystal": 3.0,
@@ -163,7 +162,6 @@
     },
     {
       "at_outpost": false,
-      "at_relay": false,
       "attack": 20610,
       "cargo": {
         "crystal": 3.0,
@@ -2408,8 +2406,7 @@
           "q": 12,
           "r": -3
         },
-        "store": 640.0,
-        "store_cap": 1000.0
+        "store": 640.0
       }
     ],
     "technology": "HyperspaceTechnology"

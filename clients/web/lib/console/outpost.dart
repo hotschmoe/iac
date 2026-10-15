@@ -21,14 +21,14 @@ const relayDockVoice = 'A FLEET FLOWN BY HAND IS REFUELLED HERE FROM THE STORE, 
 
 /// "RELAY 12,-3 STORE 640 OF 1000 GONE IN 4:10:00".
 String relayLine(proto.RelayState r) =>
-    'RELAY ${r.sector.q},${r.sector.r} STORE ${r.store.round()} OF ${r.storeCap.round()} GONE IN ${clockFmt(r.decayIn)}';
+    'RELAY ${r.sector.q},${r.sector.r} STORE ${r.store.round()} OF ${proto.relayStore.round()} GONE IN ${clockFmt(r.decayIn)}';
 
 /// A relay survey in its lines: the ring and the cost, the store and the
 /// span it stands unvisited, and how many the player keeps of how many the
 /// technology allows.
 List<String> relaySurveyLines(proto.RelaySurvey s) => [
       'Relay site ${s.sector}, ring ${s.ring}: costs ${amountsOf(s.cost)} from the founding hold',
-      'It holds ${s.storeCap.round()} deuterium and is gone with it after ${clockFmt(s.decayTicks)} with none of your fleets there',
+      'It holds ${proto.relayStore.round()} deuterium and is gone with it after ${clockFmt(s.decayTicks)} unless a fleet of yours lands there or moves a deposit',
       'You keep ${s.count} of ${s.limit} relays, raised by ${s.technology.label}',
     ];
 

@@ -410,6 +410,24 @@ fn a_hub_never_lands_on_a_relay_or_a_group_and_the_choice_is_kept() {
 }
 
 #[test]
+fn a_hub_does_not_land_where_a_group_is_on_its_way_to_land() {
+    let mut engine = world("blitz");
+    let pace = engine.pace();
+    let map = engine.world_gen.clone();
+    let next = |id: u8| scaling::hub_epoch(id, 0, &pace) + 1;
+    let wanted = map.hub_site(0, next(0));
+    horde(&mut engine, 900_002, Hex::ORIGIN, &[(ShipClass::LightFighter, 3)], 1.0);
+    edit(&mut engine, |s| {
+        s.npc_fleets.get_mut(&900_002).unwrap().errand =
+            Some(iac_sim::engine::Errand { quarry: None, to: wanted, arrives: u64::MAX });
+    });
+    let end0 = scaling::hub_departs_at(0, scaling::hub_epoch(0, 0, &pace), &pace);
+    run(&mut engine, end0 + 1);
+    assert_ne!(engine.hubs[0].sector, wanted);
+    assert_eq!(engine.hubs[0].sector, map.hub_sites(0, next(0)).find(|s| *s != wanted).unwrap());
+}
+
+#[test]
 fn nothing_hostile_enters_a_hub_and_no_station_is_founded_in_one() {
     let mut e = Empire::join(world("season"), "Visitor");
     let (pid, fid) = (e.pid, e.fid);

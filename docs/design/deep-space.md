@@ -156,10 +156,11 @@ logistics and not a gift.
   could not do both jobs: a store that carries ten Cruisers refills ten Light
   Fighters from empty to a full 85-jump tank at level 13 and takes them to
   ring 78; the fill cap holds that at ring 63.
-- Decay: a relay no fleet of its owner has stood at for `RELAY_DECAY_TICKS`
-  172,800 pace-1 ticks (an `Attention` timer: two days at pace 1, 4.3 hours at
-  season, 24 minutes at blitz) is gone with its store. A fleet in the sector
-  every tick holds it off; a visit sets the clock back. `RelayDecayed` and an
+- Decay: a relay no fleet of its owner has landed at, or moved a deposit
+  into or out of, for `RELAY_DECAY_TICKS` 172,800 pace-1 ticks (an
+  `Attention` timer: two days at pace 1, 4.3 hours at season, 24 minutes at
+  blitz) is gone with its store. A fleet parked there holds nothing off: a
+  landing, a `load` or an `unload` sets the clock back. `RelayDecayed` and an
   alert say so.
 - A fleet flown by hand that arrives at a relay, or stands there as its store
   is stocked, has its tank filled from it at the dock's rate; one under
@@ -170,8 +171,8 @@ logistics and not a gift.
   lair template can respawn into one.
 - Wire: `found_relay`, `relay_survey` (a query); `RelaySurvey`; `relays`
   (`RelaysState`: `limit`, `technology`, `level`, and a `RelayState` each with
-  `sector`, `ring`, `store`, `store_cap`, `decay_in`) in the full state and in
-  every tick update; `FleetState.at_relay`; events `RelayFounded` and
+  `sector`, `ring`, `store`, `decay_in`) in the full state and in
+  every tick update; `FleetState.relay`, the quote of a `load` and an `unload`; events `RelayFounded` and
   `RelayDecayed`. The web client has a dock tile (Y) with the founding survey
   and, at a relay, the store, its decay and load and unload; the map draws a
   mark.

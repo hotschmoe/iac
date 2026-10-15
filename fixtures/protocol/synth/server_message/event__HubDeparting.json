@@ -1,3 +1,3 @@
 [
-{"canonical":{"departs_at":11,"id":8,"kind":"HubDeparting","player_id":7,"sector":{"q":9,"r":-10},"tick":39,"type":"event"},"input":{"departs_at":11,"id":8,"kind":"HubDeparting","player_id":7,"sector":{"q":9,"r":-10},"tick":39,"type":"event"}}
+{"canonical":{"departs_at":17,"id":14,"kind":"HubDeparting","player_id":13,"sector":{"q":15,"r":-16},"tick":45,"type":"event"},"input":{"departs_at":17,"id":14,"kind":"HubDeparting","player_id":13,"sector":{"q":15,"r":-16},"tick":45,"type":"event"}}
 ]

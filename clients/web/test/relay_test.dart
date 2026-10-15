@@ -11,7 +11,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:iac_client/console/services.dart';
 import 'package:iac_client/design/panel.dart';
 import 'package:iac_client/protocol/protocol.dart' as proto;
-import 'package:iac_client/views/rail.dart';
 
 import 'fixtures_util.dart';
 import 'support/demo_controller.dart';
@@ -107,7 +106,7 @@ void main() {
   testWidgets('where a relay stands the panel shows its store and how long it has, and Load and Unload move deuterium', (tester) async {
     final json = _bare();
     final fleet = (json['fleets'] as List).first as Map<String, dynamic>;
-    fleet['at_relay'] = true;
+    fleet['relay'] = {'load': 300.0, 'unload': 300.0};
     fleet['cargo'] = {'metal': 0.0, 'crystal': 0.0, 'deuterium': 300.0};
     fleet['cargo_capacity'] = 5000.0;
     json['relays'] = {
@@ -120,7 +119,6 @@ void main() {
           'sector': fleet['location'],
           'ring': 10,
           'store': 640.0,
-          'store_cap': 1000.0,
           'decay_in': 15000,
           'founded_tick': 900,
         },
@@ -130,7 +128,7 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.keyY, character: 'y');
     await tester.pump(const Duration(milliseconds: 50));
     expect(textUnder(tester, find.byKey(const Key('relay-count'))), contains('1 OF 3 - HYPERSPACE TECHNOLOGY L4'));
-    expect(textUnder(tester, find.byKey(const Key('relay-store'))), contains('640 OF 1,000 DEUTERIUM'));
+    expect(textUnder(tester, find.byKey(const Key('relay-store'))), contains('640 OF 800 DEUTERIUM'));
     expect(textUnder(tester, find.byKey(const Key('relay-decay'))), contains('4:10:00'));
     await _press(tester, 'relay-load');
     expect(c.commands.whereType<proto.LoadCommand>().single.resource, proto.ResourceKind.deuterium);

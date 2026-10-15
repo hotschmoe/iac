@@ -1,3 +1,3 @@
 [
-{"canonical":{"kind":"SalvageDespawned","resources":{"crystal":48.25,"deuterium":49.25,"metal":47.25},"sector":{"q":45,"r":-46},"tick":39,"type":"event"},"input":{"kind":"SalvageDespawned","resources":{"crystal":48.25,"deuterium":49.25,"metal":47.25},"sector":{"q":45,"r":-46},"tick":39,"type":"event"}}
+{"canonical":{"kind":"SalvageDespawned","resources":{"crystal":54.25,"deuterium":55.25,"metal":53.25},"sector":{"q":51,"r":-52},"tick":45,"type":"event"},"input":{"kind":"SalvageDespawned","resources":{"crystal":54.25,"deuterium":55.25,"metal":53.25},"sector":{"q":51,"r":-52},"tick":45,"type":"event"}}
 ]

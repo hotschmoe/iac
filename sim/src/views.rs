@@ -2,9 +2,10 @@
 // views of the engine, and which events reach whom.
 
 use iac_shared::constants::{
-    ResourceKind, Resources, LANE_SEARCH_HOPS, OUTPOST_MAX_LEVEL, RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN, RELAY_STORE,
+    ResourceKind, Resources, LANE_SEARCH_HOPS, OUTPOST_MAX_LEVEL, RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN,
 };
 use iac_shared::hex::Hex;
+use iac_shared::world::ROAMING_HUB;
 use iac_shared::protocol::{
     BattleState, BuildQueueItem, BuildingState, DefenceState, EnergyState, FleetState, GameEvent, GameState, HomeworldState,
     OutpostLevel, OutpostState, OutpostWork, OutpostWorkState, PlayerState, QueuedBuild, QueuedResearch, RelayState,
@@ -13,7 +14,6 @@ use iac_shared::protocol::{
     TickUpdate, WorldInfo,
 };
 use iac_shared::scaling::{self, BuildingType, DefenceKind, Refit, ResearchType};
-use iac_shared::world::ROAMING_HUB;
 
 use crate::engine::{
     fleet_broadside, fleet_cargo_capacity, fleet_power, outpost_raid_range, platform_units, FleetStatus, GameEngine,
@@ -99,7 +99,6 @@ fn relays_state(engine: &GameEngine, player_id: u64) -> RelaysState {
                     sector: relay.sector,
                     ring: relay.sector.dist_from_origin(),
                     store: relay.store,
-                    store_cap: RELAY_STORE,
                     decay_in: span.saturating_sub(tick.saturating_sub(relay.visited_tick)),
                     founded_tick: relay.founded_tick,
                 })
@@ -264,7 +263,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
                 && engine.players.get(&player_id).is_some_and(|p| p.homeworld == fleet.location),
             laden: fleet.laden,
             at_outpost: engine.outposts.get(&player_id).is_some_and(|o| o.sector == fleet.location),
-            at_relay: engine.relays.get(&player_id).is_some_and(|list| list.iter().any(|r| r.sector == fleet.location)),
+            relay: engine.relay_quote(fleet),
             outpost_fuel: engine.outpost_route_cost(fleet, bound_for),
             refine: engine.refining(fleet),
             refuel: engine.refuel_quote(fleet),
@@ -426,7 +425,8 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
             &player.defences.count,
             &DefenceKind::ALL.map(|kind| GameEngine::defences_owned_and_ordered(player, kind)),
             player.satellites,
-            player.resources.deuterium > 0.0,
+            player.fusion_fed(),
+            &power,
             &pace,
         ),
     }

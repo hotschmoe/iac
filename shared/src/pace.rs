@@ -73,11 +73,14 @@ pub fn timer_class(name: &str) -> Option<PaceClass> {
     TIMER_CLASSES.iter().find(|(n, _)| *n == name).map(|(_, c)| *c)
 }
 
+/// The pace of the season preset, which the map's finds are balanced at.
+pub const SEASON_PACE: f64 = 10.0;
+
 /// Named multipliers; any positive number in range is also accepted.
 pub const PRESETS: &[Preset] = &[
     Preset { name: "persistent", pace: 1.0, first_cruiser_s: 1_779_300, endgame_s: 4_806_300 },
     Preset { name: "fortnight", pace: 5.0, first_cruiser_s: 414_780, endgame_s: 1_062_480 },
-    Preset { name: "season", pace: 10.0, first_cruiser_s: 204_420, endgame_s: 544_920 },
+    Preset { name: "season", pace: SEASON_PACE, first_cruiser_s: 204_420, endgame_s: 544_920 },
     Preset { name: "sprint", pace: 70.0, first_cruiser_s: 25_685, endgame_s: 72_630 },
     Preset { name: "dev", pace: 100.0, first_cruiser_s: 18_150, endgame_s: 46_340 },
     Preset { name: "blitz", pace: 600.0, first_cruiser_s: 3_236, endgame_s: 8_355 },
@@ -85,7 +88,7 @@ pub const PRESETS: &[Preset] = &[
 ];
 
 /// The pace the map's finds are balanced at: the season preset.
-pub const FIND_ANCHOR: f64 = PRESETS[2].pace;
+pub const FIND_ANCHOR: f64 = SEASON_PACE;
 
 /// A named pace with the simulation's milestone estimates for a competent
 /// player: the estimates table of `docs/design/economy/sim.py --tables`,

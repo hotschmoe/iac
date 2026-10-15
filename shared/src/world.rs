@@ -9,7 +9,7 @@ use std::sync::Arc;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::constants::{
-    cloud_band, HUB_ATTEMPTS, HUB_BAND_RINGS, HUB_FIRST_RING, CLOUD_CELL, CLOUD_FALLOFF_LEVELS, CLOUD_MIN_DIST,
+    cloud_band, CloudBand, HUB_ATTEMPTS, HUB_BAND_RINGS, HUB_FIRST_RING, CLOUD_CELL, CLOUD_FALLOFF_LEVELS, CLOUD_MIN_DIST,
     Density, ShipClass, TerrainType, Zone, HOMEWORLD_MAX_DIST, HOMEWORLD_MIN_DIST};
 use crate::scaling::{
     npc_composition, npc_passive_share, npc_presence_pct, ore_density_odds, ore_reserve_units, ship_power,
@@ -161,8 +161,7 @@ impl WorldGen {
         let cloud = self.cloud_depth(coord);
         let terrain = if cloud.is_some() { TerrainType::Nebula } else { self.roll_terrain(&mut rng, zone) };
         let mut resources = self.roll_resources(&mut rng, zone, terrain, dist);
-        if let Some((depth, centre_ring)) = cloud {
-            let peak = cloud_band(centre_ring).peak;
+        if let Some((depth, peak)) = cloud {
             resources.deut = (0..depth * CLOUD_FALLOFF_LEVELS).fold(peak, |level, _| match level.downgrade() {
                 Density::None => Density::Sparse,
                 thinner => thinner,
@@ -458,28 +457,29 @@ impl WorldGen {
     }
 
     /// How many hexes `coord` stands from the centre of the deuterium cloud
-    /// that holds it, if one does. Decided from the sector's own cell and the
-    /// eight around it, so no neighbour state is read.
-    pub fn cloud_depth(&self, coord: Hex) -> Option<(usize, u16)> {
+    /// that holds it, and the density at that centre, if one does. Decided
+    /// from the sector's own cell and the eight around it, so no neighbour
+    /// state is read.
+    pub fn cloud_depth(&self, coord: Hex) -> Option<(usize, Density)> {
         if coord.dist_from_origin() < CLOUD_MIN_DIST || is_home_ground(coord) {
             return None;
         }
         let (cell_q, cell_r) = (i32::from(coord.q).div_euclid(CLOUD_CELL), i32::from(coord.r).div_euclid(CLOUD_CELL));
-        let mut found: Option<(usize, u16)> = None;
+        let mut found: Option<(usize, u16, Density)> = None;
         for cq in cell_q - 1..=cell_q + 1 {
             for cr in cell_r - 1..=cell_r + 1 {
-                let Some(centre) = self.cloud_centre(cq, cr) else { continue };
+                let Some((centre, band)) = self.cloud_centre(cq, cr) else { continue };
                 let depth = u32::from(Hex::distance(&centre, &coord));
-                if depth <= cloud_band(centre.dist_from_origin()).radius {
-                    let here = (depth as usize, centre.dist_from_origin());
-                    found = Some(found.map_or(here, |best| best.min(here)));
+                if depth <= band.radius {
+                    let here = (depth as usize, centre.dist_from_origin(), band.peak);
+                    found = Some(found.map_or(here, |best| if (here.0, here.1) < (best.0, best.1) { here } else { best }));
                 }
             }
         }
-        found
+        found.map(|(depth, _, peak)| (depth, peak))
     }
 
-    fn cloud_centre(&self, cell_q: i32, cell_r: i32) -> Option<Hex> {
+    fn cloud_centre(&self, cell_q: i32, cell_r: i32) -> Option<(Hex, CloudBand)> {
         let cell = (u64::from(cell_q as u32) << 32) | u64::from(cell_r as u32);
         let h = self.hash_two(cell, self.world_seed ^ CLOUD_SALT);
         let cell_size = CLOUD_CELL as u64;
@@ -487,44 +487,46 @@ impl WorldGen {
         let r = cell_r * CLOUD_CELL + ((h >> 32) % cell_size) as i32;
         let centre = Hex { q: i16::try_from(q).ok()?, r: i16::try_from(r).ok()? };
         let ring = centre.dist_from_origin();
-        (h % 100 < cloud_band(ring).pct && ring >= CLOUD_MIN_DIST && !is_home_ground(centre)).then_some(centre)
+        let band = cloud_band(ring);
+        (h % 100 < band.pct && ring >= CLOUD_MIN_DIST && !is_home_ground(centre)).then_some((centre, band))
     }
 
     /// Whether a roaming hub may stand in `coord` as far as the seed says:
     /// a sector with no lair template, no derelict, no Anomaly, off home
-    /// ground, and joined to the centre by open lanes.
+    /// ground, and joined to the centre by open lanes: one search from the
+    /// centre, kept, answers for every candidate.
     pub fn hub_legal(&self, coord: Hex) -> bool {
         let template = self.generate_sector(coord);
         template.npc_template.is_none()
             && !template.has_derelict
             && template.terrain != TerrainType::Anomaly
             && !is_home_ground(coord)
-            && self.lane_hops(Hex::ORIGIN, coord, u8::MAX).is_some()
+            && self.reachable_within(Hex::ORIGIN, u8::MAX).contains(&coord)
     }
 
     /// The sectors hub `id` may take in stay `epoch`, in the order it prefers
-    /// them: hashed positions in its band that `hub_legal` accepts.
+    /// them: `HUB_ATTEMPTS` hashed positions in its band, then the band in
+    /// ring order, those that `hub_legal` accepts. Every placement of a hub
+    /// takes the first of these that nothing else stands in.
     pub fn hub_sites(&self, id: u8, epoch: u64) -> impl Iterator<Item = Hex> + '_ {
         let (first, last) = hub_band(id);
         let width = u64::from(last - first + 1);
         let base = self.hash_two(self.world_seed ^ HUB_SALT, u64::from(id));
-        (0..HUB_ATTEMPTS)
-            .map(move |attempt| {
-                let h = self.hash_two(self.hash_two(base, epoch), u64::from(attempt));
-                let ring = first + (h % width) as u16;
-                let at = (h >> 24) % (6 * u64::from(ring));
-                hex_ring(Hex::ORIGIN, ring).nth(at as usize).unwrap_or(Hex::ORIGIN)
-            })
+        let hashed = (0..HUB_ATTEMPTS).map(move |attempt| {
+            let h = self.hash_two(self.hash_two(base, epoch), u64::from(attempt));
+            let ring = first + (h % width) as u16;
+            let at = (h >> 24) % (6 * u64::from(ring));
+            hex_ring(Hex::ORIGIN, ring).nth(at as usize).unwrap_or(Hex::ORIGIN)
+        });
+        hashed
+            .chain((first..=last).flat_map(|ring| hex_ring(Hex::ORIGIN, ring)))
             .filter(move |coord| self.hub_legal(*coord))
     }
 
     /// Where hub `id` stands in stay `epoch` when nothing but the seed
     /// decides: the first of `hub_sites`.
     pub fn hub_site(&self, id: u8, epoch: u64) -> Hex {
-        self.hub_sites(id, epoch).next().unwrap_or_else(|| {
-            let (first, _) = hub_band(id);
-            hex_ring(Hex::ORIGIN, first).next().unwrap_or(Hex::ORIGIN)
-        })
+        self.hub_sites(id, epoch).next().expect("a hub's band holds a sector it may take")
     }
 
     /// The seed every roll about `coord` in this world starts from.
