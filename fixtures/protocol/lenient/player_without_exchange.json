@@ -22,6 +22,7 @@
       "ship_count": 4
     },
     "relays": {
+      "fill_jumps": 0,
       "level": 0,
       "limit": 0,
       "relays": [],

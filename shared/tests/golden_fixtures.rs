@@ -541,6 +541,7 @@ fn sample_relays() -> RelaysState {
         limit: 3,
         technology: ResearchType::HyperspaceTechnology,
         level: 4,
+        fill_jumps: 22,
         relays: vec![RelayState {
             sector: h(12, -3),
             ring: 12,

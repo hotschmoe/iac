@@ -92,6 +92,7 @@ fn relays_state(engine: &GameEngine, player_id: u64) -> RelaysState {
         limit: engine.relay_limit(player_id),
         technology: ResearchType::HyperspaceTechnology,
         level: engine.players.get(&player_id).map_or(0, |p| p.research.hyperspace_technology),
+        fill_jumps: engine.players.get(&player_id).map_or(0, |p| scaling::depot_fill_jumps(&p.research)),
         relays: engine.relays.get(&player_id).map_or_else(Vec::new, |list| {
             list.iter()
                 .map(|relay| RelayState {

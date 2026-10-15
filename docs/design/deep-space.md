@@ -64,32 +64,40 @@ fleet that goes deep is a large one.
 ### 3.1 Deuterium clouds (slice 2)
 
 A cloud is a seeded cluster of sectors with deuterium density that falls off from
-its centre, built in worldgen from a coarse hash cell of the world seed. Size
-grows with the ring: a cloud in the Inner Ring is a sector or two, one at ring 30
-a dozen or more. Terrain of a cloud sector is Nebula.
+its centre, built in worldgen from a coarse hash cell of the world seed: seven
+sectors, in rings 2 to 20. Terrain of a cloud sector is Nebula.
 
 A fleet harvests it (`harvest_power`: Recycler 5, cargo 1, others 0.5), refines the
 hold into fuel at the usual 15% loss, and sits still in a sector that a pirate
 pack of the ring guards. A cloud buys a few jumps and not a crossing.
 
-- *Built.* `WORLDGEN_VERSION` is 6; no stored state is added. The map is cut in
-  `CLOUD_CELL` 8 by 8 cells; a cell holds a cloud with `CLOUD_PCT` 25 percent, its
-  centre at a hashed offset. A cloud reaches `CLOUD_RADIUS_BASE` 20 +
-  `CLOUD_RADIUS_PER_RING` 7 x the centre's ring, in hundredths of a hex, at most
-  `CLOUD_RADIUS_MAX` 300. No cloud touches a sector nearer the hub than
-  `CLOUD_MIN_DIST` 2 or a home seat's ground. A sector's deuterium is the peak of
-  `CLOUD_DEUT_PEAK` for the centre's ring (Sparse to ring 8, Moderate beyond),
-  one level thinner each hex out, never below Sparse. Constants are in
+- *Built.* `WORLDGEN_VERSION` is 7; no stored state is added. The map is cut in
+  `CLOUD_CELL` 5 by 5 cells; a cell holds a cloud with `CLOUD_PCT` 50 percent,
+  its centre at a hashed offset. A cloud is its centre and the sectors within
+  `CLOUD_RADIUS` 1 hex of it: seven sectors. The centre holds the deuterium of
+  `CLOUD_DEUT_PEAK` for its ring (Rich to ring 10, Moderate to 13, Sparse to
+  20, and no cloud beyond: a row of `Density::None` is a ring without clouds),
+  and each hex from it is `CLOUD_FALLOFF_LEVELS` 2 levels thinner, so the six
+  around a centre are Sparse (never below it). No cloud touches a sector nearer
+  the hub than `CLOUD_MIN_DIST` 2 or a home seat's ground. Constants are in
   `shared/src/constants.rs`; `WorldGen::cloud_depth` in `shared/src/world.rs`.
-- Cloud size by ring: rings up to 11 one sector, 12 to 25 seven, 26 to 39
-  nineteen, 40 and beyond thirty-seven. Share of sectors in a cloud on seed 42:
-  rings 2-8 0%, 9-20 1%, 21-30 5.8%, 31-45 10%, 46-60 11%.
+- Why the Wandering holds none (measured, 2026-10-15): with clouds there, a
+  Light Fighter fleet at Energy Technology 10 chained deep Sparse sectors one
+  hop apart (a Sparse sector at ring 30 is 4.8 jumps of a level-10 Light
+  Fighter) and a cloud was a crossing, +20 rings at levels 10 and 13. Ore rises
+  with the ring and a jump gets cheaper with Energy Technology, so no density
+  makes a deep cloud a top-up for a big tank and still worth a small one's
+  trip. Clouds are the early fleets' tier, in rings 9 to 20 where an
+  outpost-less fleet first ventures; relays and hubs carry the deep ones.
+- Share of sectors in a cloud on seed 42: rings 2-8 5%, 9-20 13%, 21-30 0.4%
+  (the edge of ring 20's), none beyond.
 - A cloud sector's yield is the ore the density has at its ring (`ore_regen_per_tick`
-  refills it as ore refills). One Sparse sector is under a jump of fuel for a
-  fleet of ten; Moderate is a few. `sim/tests/reach_probe.rs` measures it: with
-  clouds, ten Light Fighters gain about 1.2 times the ring at Energy, Impulse and
-  Tank level 10 and 13 and nothing below it on that seed; a ten-ship Cruiser fleet
-  gains nothing, because its tank is larger than the deposits.
+  refills it as ore refills). Measured by `reach_probe.rs` for ten Light
+  Fighters over eight seeds: the nearest cloud is a median 4.5 hops from the
+  ring-4 home (8 of 8 within a full tank at level 0) and clouds add +3.5 rings
+  at level 0 (a gain in 7 of 8 seeds), +6 at level 3, +9 at level 6 and about
+  +12 at levels 10 and 13, which is a top-up of a reach of 39 to 57. Ten Cruisers
+  gain nothing: their jump burns more than a deposit holds.
 - Pace: the ore regenerates as ore does now (`ore_regen_per_tick`); the fuel it
   makes is real time.
 
@@ -103,8 +111,7 @@ logistics and not a gift.
 
 - *Built.* `Relay` is `{sector, store, founded_tick, visited_tick,
   dry_tanks}`; `GameEngine::relays` and `Snapshot::relays` are a list per
-  owner in the order founded, in the one stored document (`SAVE_FORMAT` 16,
-  `ECONOMY_VERSION` 18). A world in which nobody founds one plays as it did.
+  owner in the order founded, in the one stored document (`SAVE_FORMAT` 16). A world in which nobody founds one plays as it did.
 - Founded by a fleet standing on a sector of ring `RELAY_MIN_RING` 9 or deeper
   (the Wandering included) with no hub, Anomaly, derelict, lair, group,
   outpost or relay (`relay_site`, the one place it is refused and worded;
@@ -119,10 +126,19 @@ logistics and not a gift.
   the Hyperspace Drive and the heavy ships and carry `RecallRisk`, which is
   why it carries this. The refusal names the
   limit and the technology.
-- Store: `RELAY_STORE` 1,000 units of deuterium, not pace-scaled. A jump of
-  ten Cruisers burns 3,000 fuel, 240 deuterium at a dock's 12.5 fuel to the
-  deuterium: one relay fills about four jumps for a fleet of that size, and a
-  third of a tank. Deuterium only; `load` of anything else is refused.
+- Store: `RELAY_STORE` 800 units of deuterium, not pace-scaled. Deuterium
+  only; `load` of anything else is refused. How much of it a fleet may draw
+  is not flat: a relay (and a roaming hub, 3.3) fills a tank to at most
+  `scaling::depot_fill_jumps` jumps of the fleet's own burn, which is
+  `DEPOT_FILL_JUMPS_BASE` 10 and `DEPOT_FILL_JUMPS_PER_LEVEL` 3 for every level
+  of Hyperspace Technology (10, 19, 28, 40 and 49 jumps at levels 0, 3, 6, 10
+  and 13; `RelaysState.fill_jumps`, `GameEngine::depot_room`). So the fill is
+  the fleet's own measure: it is a tank for ten Light Fighters (a jump of them
+  is 200 fuel) and a few jumps for ten Cruisers (a jump is 3,000 fuel), and
+  research is what lets a long tank be topped up in the deep. A flat store
+  could not do both jobs: a store that carries ten Cruisers refills ten Light
+  Fighters from empty to a full 85-jump tank at level 13 and takes them to
+  ring 78; the fill cap holds that at ring 63.
 - Decay: a relay no fleet of its owner has stood at for `RELAY_DECAY_TICKS`
   172,800 pace-1 ticks (an `Attention` timer: two days at pace 1, 4.3 hours at
   season, 24 minutes at blitz) is gone with its store. A fleet in the sector
@@ -144,34 +160,15 @@ logistics and not a gift.
   mark.
 - *Measured.* `sim/tests/relays.rs` hauls 600 deuterium to a relay with a cargo
   fleet, brings ten Light Fighters to it, refuels them there and has them fly
-  to a ring they could not have returned from, and back. The probe
-  (`reach_probe.rs`, ring-4 home, ten ships, Hyperspace Technology and the
-  other three at the row's level, relays stocked with their whole store by a
-  convoy that is not counted, half spent each way, the limit of the row):
-
-```
-class          level  jumps  relays  off  clouds  relays_on  both
-Light Fighter      0     10       1    9       9         19    20
-Light Fighter      3     20       2   14      14         49    49
-Light Fighter      6     35       4   21      21         55    57
-Light Fighter     10     70       6   38      45         69    72
-Light Fighter     13     85       7   45      52         75    79
-Cruiser            0      8       1    8       8          8     8
-Cruiser            3     16       2   12      12         12    12
-Cruiser            6     28       4   18      18         18    18
-Cruiser           10     56       6   32      32         32    32
-Cruiser           13     68       7   38      38         38    38
-```
-
-  A fleet of cheap-burning ships (a Light Fighter burns 20 fuel a jump)
-  is carried deep by one depot of 1,000 deuterium, which is 62 jumps of them;
-  ten Cruisers get about two jumps of a half-store and nothing from it. That
-  is the tier doing what it says, but ten Light Fighters at Hyperspace
-  Technology 3 reaching ring 49 is the Wandering made easy by a hauler's
-  single trip: `RELAY_STORE` is the knob to turn down first (a store of 300
-  makes it 25 jumps), or the limit's step. The cruiser rows say the store is
-  too small to matter to a fleet that burns what Cruisers do; that is by
-  design for now (the haul that matters is a convoy of cargo ships).
+  to a ring they could not have returned from, and back; one more checks the
+  fill cap at two levels of research. The probe (3.5) has the relays column.
+  Before the cap and with the store at 1,000, and with the planner as it is
+  now (the first probe's planner left heavy fleets' relay chains unfound and
+  reported "nothing" for ten Cruisers, which was its own limit and not the
+  tier's): relays took ten Light Fighters to 47 at level 3 and 78.5 at level 13
+  and ten Cruisers to 16 and 60.5. The cap and the 800 store make those 47 and
+  63 for the Light Fighter, and 14 and 46 for the Cruiser; level 13 is where
+  the cap bites a fleet whose tank outruns it.
 
 ### 3.3 Roaming neutral hubs (slice 4)
 
@@ -227,8 +224,12 @@ A rare neutral post in the Wandering that refuels and trades and moves.
   centre. A hub sector keeps the ore its seed rolled.
 - Bots do not use a roaming hub and the centre hub plays as before; no
   bot reads `hubs`. The play tool lists the hubs and the `refuel` quote.
-- *Not done:* the `reach_probe` column (the next slice), a hub in the
-  chart's remembered sectors, and any sign on the sector view of a hub.
+- A hub's refuel is held to the same `depot_fill_jumps` as a relay's (the
+  quote says what it would add, the refusal the jumps and the level). Without
+  it a hold of deuterium (ten Light Fighters carry 1,581 at season) refilled a
+  tank twice at a hub in rings 22 to 61 and took a fleet to ring 86.
+- *Not done:* a hub in the chart's remembered sectors, and any sign on the
+  sector view of a hub.
 
 ### 3.4 Where the reach could break
 
@@ -240,112 +241,128 @@ next ships.
 
 ### 3.5 Measured reach
 
-`sim/tests/reach_probe.rs`, three tests that print these tables (`cargo test -p
-iac-sim --release --test reach_probe -- --nocapture`; about 4.5 minutes wall on
-four threads). The pace is season, the home is the ring-4 seat, the fleet is ten
+`sim/tests/reach_probe.rs`, four tests that print these tables (`cargo test -p
+iac-sim --release --test reach_probe -- --nocapture`; about ten minutes wall on
+six threads). The pace is season, the home is the ring-4 seat, the fleet is ten
 ships of one class, and the level is Energy Technology, Impulse Drive, Deuterium
 Tank and Hyperspace Technology all at once (and Weapons, Shielding and Armour for
 the fleet's power). Seeds: 42, 7, 101, 2024, 31337, 555, 9001, 1234. The planner
-is greedy, so every ring is a lower bound. Only `reach_with_and_without_clouds_and_relays`
-(seed 42) flies its plans in the engine; the multi-seed tables are plans only. What
-was cut: no flight of the multi-seed plans, two classes, five levels.
+is greedy (relay chains by three kinds of next stop, every ring tried as a
+target), so every ring is a lower bound. Only
+`reach_with_and_without_clouds_and_relays` (seed 42) flies its plans in the
+engine, and relays there are stocked with a quarter held back; the multi-seed
+tables are plans only. The hubs column is a plan: a hold of deuterium (the
+best case: what a fleet carries from its stockpile) refuels at the hub at the
+position the world gives it at tick 0, half on the way out and half on the way
+back, filled to `depot_fill_jumps`, at most one hub on a route. A hub stays
+hours of ticks and a plan is flown in a few hundred (the first hub leaves at
+tick 3,842 and a Light Fighter jump takes 2), so a hub that moves is not
+modelled; a fleet that arrives to find it gone is stranded, which is what the
+warning is for.
 
-Farthest ring, median (min-max) over the eight seeds:
+What changed since the first version of this section: the target search used to
+try only the eight deepest sectors, which hid every relay chain of a heavy fleet
+(its ten Cruisers "gained nothing"), and a heavy fleet's relays are now also
+tried at the first sector that wastes none of the fill. The old constants (store
+1,000, no cap, clouds at 8 by 8 and 25 percent, Moderate to the Wandering) with
+this planner:
 
-| class | level | off | clouds | relays | both |
+| class | level | off | clouds | relays | clouds+relays |
 |---|---|---|---|---|---|
-| Light Fighter | 0 | 9 (9-9) | 9 (9-9) | 19 (19-19) | 20 (19-27) |
-| Light Fighter | 3 | 14 (14-14) | 14 (14-14) | 49 (47-50) | 50 (49-50) |
-| Light Fighter | 6 | 21 (21-21) | 21 (21-21) | 56.5 (55-57) | 57 (57-57) |
-| Light Fighter | 10 | 39 (38-39) | 56.5 (45-61) | 72 (69-74) | 72 (72-74) |
-| Light Fighter | 13 | 45 (44-46) | 64.5 (52-69) | 78 (74-79) | 78.5 (78-79) |
-| Cruiser | 0 | 8 (8-8) | 8 (8-8) | 8 (8-8) | 8 (8-8) |
-| Cruiser | 3 | 12 (12-12) | 12 (12-12) | 12 (12-12) | 12 (12-12) |
-| Cruiser | 6 | 18 (18-18) | 18 (18-18) | 18 (18-18) | 18 (18-18) |
-| Cruiser | 10 | 32 (31-32) | 32 (31-32) | 32 (31-32) | 36 (34-38) |
-| Cruiser | 13 | 38 (37-38) | 38 (37-38) | 38 (37-38) | 39 (38-41) |
+| Light Fighter | 0 | 9 | 9 (9-9) | 19 (19-19) | 19.5 (19-25) |
+| Light Fighter | 3 | 14 | 18 (14-22) | 47.5 (43-49) | 49.5 (49-50) |
+| Light Fighter | 6 | 21 | 36 (34-40) | 55 (53-57) | 57 (57-57) |
+| Light Fighter | 10 | 39 | 59.5 (58-62) | 72 (72-74) | 72 (72-74) |
+| Light Fighter | 13 | 45 | 65.5 (65-69) | 78.5 (78-79) | 79 (78-79) |
+| Cruiser | 3 | 12 | 12 (12-12) | 16 (15-16) | 16 (15-17) |
+| Cruiser | 10 | 32 | 32 (31-33) | 52 (49-53) | 52.5 (51-54) |
+| Cruiser | 13 | 38 | 38 (38-38) | 60.5 (57-63) | 61 (59-63) |
+| Battleship | 3 | 10 | 10 (10-10) | 12 (11-12) | 12 (11-12) |
+| Battleship | 10 | 25 | 25 (25-25) | 37.5 (36-39) | 38 (36-39) |
+| Battleship | 13 | 29 | 29 (29-30) | 43 (42-45) | 43 (42-45) |
 
-Fuel-reach against fight-reach, with both tiers allowed. A fight-reach of Nx is the
-farthest ring a plan holds when it only enters sectors whose lair group (the
-engine's `Ships::of(class, count).power(Arms::of_grade(multiplier))`, the group
-the template rolls) is at most N times the fleet's own power. "Lairs on route" and
-"strongest on route" are for the unguarded plan, passive groups included:
+Now (store 800, fill 10 + 3 a level, the clouds of 3.1). Farthest ring, median
+(min-max) over the eight seeds:
+
+| class | level | off | clouds | relays | hubs | clouds+relays | all three |
+|---|---|---|---|---|---|---|---|
+| Light Fighter | 0 | 9 (9-9) | 12.5 (9-14) | 19 (18-19) | 9 (9-9) | 22 (21-24) | 23.5 (21-28) |
+| Light Fighter | 3 | 14 (14-14) | 20 (19-22) | 47 (43-48) | 14 (14-14) | 48 (46-49) | 48 (47-58) |
+| Light Fighter | 6 | 21 (21-21) | 30 (28-32) | 53 (52-54) | 35 (21-42) | 53 (52-54) | 53.5 (52-54) |
+| Light Fighter | 10 | 39 (38-39) | 51 (49-53) | 59.5 (59-60) | 52 (42-56) | 60 (59-61) | 60 (59-61) |
+| Light Fighter | 13 | 45 (44-46) | 57 (56-60) | 63 (62-64) | 61.5 (59-66) | 65.5 (64-67) | 65.5 (64-67) |
+| Cruiser | 0 | 8 (8-8) | 8 (8-8) | 9 (8-9) | 8 (8-8) | 9 (8-9) | 9 (8-9) |
+| Cruiser | 3 | 12 (12-12) | 12 (12-12) | 14 (13-14) | 12 (12-12) | 14.5 (13-15) | 14.5 (13-15) |
+| Cruiser | 6 | 18 (18-18) | 18 (18-18) | 24 (23-25) | 35 (18-42) | 25 (24-25) | 39 (36-47) |
+| Cruiser | 10 | 32 (31-32) | 32 (31-32) | 40 (37-42) | 52 (40-56) | 42 (40-45) | 54 (47-60) |
+| Cruiser | 13 | 38 (37-38) | 38 (37-38) | 46 (42-49) | 61.5 (57-66) | 47.5 (46-51) | 62 (59-66) |
+| Battleship | 3 | 10 (10-10) | 10 (10-10) | 11 (10-11) | 10 (10-10) | 11 (10-11) | 11 (10-11) |
+| Battleship | 10 | 25 (25-25) | 25 (25-25) | 31 (29-34) | 52 (40-56) | 32.5 (30-34) | 52.5 (40-56) |
+| Battleship | 13 | 29 (29-29) | 29 (29-29) | 36.5 (35-39) | 61.5 (57-66) | 37.5 (35-39) | 61.5 (57-66) |
+
+Fuel-reach against fight-reach, with all three allowed. A fight-reach of Nx is
+the farthest ring a plan holds when it only enters sectors whose lair group is at
+most N times the fleet's own power:
 
 | class | level | fleet power | fuel ring | fight 1x | fight 2x | fight 4x | lairs on route | strongest, x fleet |
 |---|---|---|---|---|---|---|---|---|
-| Light Fighter | 0 | 910 | 20 (19-27) | 18 (17-20) | 20 (19-22) | 20 (19-23) | 9 (8-13) | 1.92 (max 7.73) |
-| Light Fighter | 3 | 1183 | 50 (49-50) | 22 (20-24) | 24 (23-25) | 27 (27-28) | 37.5 (33-44) | 56.97 |
-| Light Fighter | 6 | 1456 | 57 (57-57) | 22 (22-24) | 24 (23-25) | 29 (28-30) | 48.5 (39-67) | 46.29 |
-| Light Fighter | 10 | 1820 | 72 (72-74) | 23 (22-25) | 25.5 (25-27) | 29 (29-32) | 63 (53-86) | 37.03 |
-| Light Fighter | 13 | 2093 | 78.5 (78-79) | 23 (22-25) | 26 (26-27) | 29 (29-32) | 66.5 (58-79) | 32.20 |
-| Cruiser | 0 | 6750 | 8 (8-8) | 8 (8-8) | 8 (8-8) | 8 (8-8) | 1 (0-2) | 0.02 |
-| Cruiser | 3 | 8775 | 12 (12-12) | 12 (12-12) | 12 (12-12) | 12 (12-12) | 3.5 (1-5) | 0.04 |
-| Cruiser | 6 | 10800 | 18 (18-18) | 18 (18-18) | 18 (18-18) | 18 (18-18) | 6.5 (3-9) | 0.10 (max 0.11) |
-| Cruiser | 10 | 13500 | 36 (34-38) | 32.5 (31-34) | 35 (34-36) | 36 (34-38) | 17 (13-23) | 1.41 |
-| Cruiser | 13 | 15525 | 39 (38-41) | 33 (32-34) | 36 (36-37) | 39 (38-41) | 24 (20-31) | 4.04 |
+| Light Fighter | 0 | 910 | 23.5 (21-28) | 19 (17-21) | 21 (21-22) | 23 (21-24) | 11.5 (8-16) | 3.17 (max 9.44) |
+| Light Fighter | 3 | 1183 | 48 (47-58) | 22 (20-24) | 24 (23-24) | 27 (27-28) | 36.5 (31-41) | 56.97 |
+| Light Fighter | 6 | 1456 | 53.5 (52-54) | 22 (22-24) | 24 (23-25) | 28 (27-29) | 42.5 (34-57) | 46.29 |
+| Light Fighter | 10 | 1820 | 60 (59-61) | 23 (22-24) | 25 (25-27) | 29 (29-32) | 52 (42-106) | 37.03 |
+| Light Fighter | 13 | 2093 | 65.5 (64-67) | 23 (22-24) | 26 (26-27) | 29 (29-32) | 52.5 (48-63) | 32.20 |
+| Cruiser | 3 | 8775 | 14.5 (13-15) | 14.5 (13-15) | 14.5 (13-15) | 14.5 (13-15) | 5 (2-6) | 0.06 |
+| Cruiser | 6 | 10800 | 39 (36-47) | 30 (24-31) | 33 (32-34) | 36.5 (34-38) | 26 (23-31) | 6.02 |
+| Cruiser | 10 | 13500 | 54 (47-60) | 33 (32-35) | 35 (35-36) | 38.5 (38-39) | 39.5 (32-51) | 4.99 |
+| Cruiser | 13 | 15525 | 62 (59-66) | 33 (32-35) | 36 (36-38) | 39 (39-41) | 50 (42-54) | 4.34 |
+| Battleship | 10 | 32400 | 52.5 (40-56) | 36 (35-38) | 39 (38-40) | 52.5 (40-56) | 36.5 (27-48) | 2.08 |
+| Battleship | 13 | 37260 | 61.5 (57-66) | 36 (36-38) | 61.5 (57-66) | 61.5 (57-66) | 48 (43-54) | 1.81 |
 
-Cloud distance from the ring-4 home, in lane hops, with a Light Fighter's tank at
-levels 0, 3 and 6 (10, 20 and 35 jumps):
+Cloud distance from the ring-4 home, in lane hops, and the rings clouds add for a
+Light Fighter at levels 0, 3 and 6 (tank 10, 20 and 35 jumps):
 
-| seed | nearest cloud | nearest deuterium Moderate+ | nearest lair |
-|---|---|---|---|
-| 42 | 8 | 1 | 2 |
-| 7 | 7 | 1 | 1 |
-| 101 | 6 | 1 | 1 |
-| 2024 | 4 | 2 | 1 |
-| 31337 | 13 | 1 | 1 |
-| 555 | 6 | 2 | 1 |
-| 9001 | 10 | 2 | 1 |
-| 1234 | 9 | 1 | 1 |
-
-Medians: cloud 7.5 hops, Moderate-or-better deuterium 1, lair 1. A cloud lies within
-a Light Fighter's full tank of home in 7 of 8 seeds at level 0 and 8 of 8 at 3 and
-6, and within a round trip on one tank in 1, 7 and 8 of 8.
+| seed | nearest cloud | rings added, levels 0/3/6 |
+|---|---|---|
+| 42 | 5 | +4/+6/+9 |
+| 7 | 2 | +3/+6/+9 |
+| 101 | 6 | +5/+8/+11 |
+| 2024 | 4 | +1/+8/+10 |
+| 31337 | 4 | +4/+8/+10 |
+| 555 | 6 | +0/+5/+7 |
+| 9001 | 4 | +2/+5/+7 |
+| 1234 | 6 | +4/+6/+9 |
 
 Reading:
 
-- Seed 42 was typical. Clouds change nothing at levels 0 to 6 in any of the eight
-  seeds (min equals max), for the Light Fighter and the Cruiser alike. The cloud
-  nearest home is 4 to 13 hops away, a round trip beyond a level-0 tank, and the
-  fuel to reach it is the fuel the cloud would give back. Clouds start to matter at
-  level 10 (Light Fighter 39 to 56.5, with a wide spread of 45 to 61 by seed) and
-  not at all for a Cruiser until both tiers stack. The cloud tier is too thin where
-  a new commander lives and is seed-dependent where it works.
-- The relay tier is far too generous for a light fleet and does nothing for a
-  heavy one. A Light Fighter at level 3 (two relays) goes from ring 14 to ring 49;
-  at level 6, ring 57, which is deep Wandering for a fleet that cannot pass a
-  group there. Even at level 0 (one relay) it doubles the reach. The Cruiser's
-  fleet burns more per jump than the flat store holds, and the same relays add
-  nothing at any level. The store is the same for ten ships and for a hundred, so
-  it scales against the fleet that needs it least.
-- Danger gates the light fleet, not the fuel. A Light Fighter fleet of ten at 1x to
-  4x its own power reaches ring 18 to 29 whatever its level, while its fuel reaches
-  50 to 78; the route past ring 21 holds groups 30 to 57 times its power. The
-  Wandering is guarded, not empty, for a fleet that is not built for it. A Cruiser
-  fleet's fuel and fight reach agree below level 10 (it does not out-range its
-  fuel), and meets groups of its own weight only from level 10, 1.4x, to 4x at
-  level 13.
-- Fight-reach moves little with research (Light Fighter 18 to 23 at 1x across all
-  levels): power per ring grows faster than ten ships' power does, so the guard,
-  not the tank, sets how deep a small fleet goes.
-
-Recommendations (nothing is changed here):
-
-- `RELAY_STORE`: make it per ship or per ring rather than flat, or lower it so a
-  Light Fighter fleet of ten at level 3 stops at ring 25 or so; a store that
-  scales with fleet size would also let a Cruiser fleet use the tier. Keep
-  `RELAY_LEVELS_PER_STEP` at 2 only if the store is cut: levels 3 to 6 are where
-  the tier jumps from ring 14 to ring 49. Raising it to 3 delays the second and
-  third relay to level 6 and 9 and is the smaller lever.
-- `CLOUD_PCT` and `CLOUD_DEUT_PEAK`: the nearest cloud should sit within about half
-  a level-0 tank (5 hops) in most seeds. At 25 percent the median is 7.5 hops with
-  a worst seed at 13; raising `CLOUD_PCT` to 35 to 40 should bring the median
-  near 5. A cloud must pay more than the way to it costs: raise the Sparse peak of
-  the rings below 8 to Moderate, or the clouds will go on doing nothing at levels
-  0 to 6.
-- Re-run the probe after either change and watch the Light Fighter at level 3 to 6
-  (a ring-20 to ring-30 target) and the Cruiser at levels 0 to 6, which should
-  leave their fuel rings and gain from relays.
+- Relays now gain more for a heavy fleet than for a light one by what it cannot
+  do for itself: ten Cruisers go +2 (level 3), +8 (10) and +8 (13) rings, ten
+  Battleships +1, +6 and +7.5, and ten Light Fighters are no further than they
+  were at levels up to 6 and held at ring 63 at level 13 (78.5 before). Level 3
+  is the weak row: the two relays of Hyperspace Technology 3 fill a Cruiser's
+  tank by 14 jumps in all, and the store's 800 deuterium is under three jumps of
+  it; a store of 1,000 gave +4 there and +16 at level 10 (the relays double with
+  the level, so the gain does too). The store was set where level 10 is about +8.
+- No column is past ring 66 at level 13 (before the hub's cap it was 86 for a
+  Light Fighter fleet). Light Fighter at 65.5 with clouds and relays is the
+  deepest.
+- Danger still gates the light fleet, not the fuel: 1x to 4x its power a Light
+  Fighter fleet of ten reaches ring 17 to 32 at every level while its fuel is
+  at 23 to 65. A Cruiser fleet's fight-reach is 30 to 41 from level 6 on, and
+  its fuel is what reaches there; the heavy fleet is the one the tiers carry
+  as far as the guard lets it (level 13: fuel 62, 4x fight 39).
+- Hubs are the deepest tier for a heavy fleet at levels 6 to 13 (Cruiser 35,
+  52, 61.5; Battleship 52, 61.5 at levels 10 and 13) and do nothing for the
+  fleet at levels 0 and 3, whose tank never reaches the Wandering's first hub
+  (ring 22). For a Light Fighter at level 13 a hub alone (61.5) is within four
+  rings of all three together (65.5): the tiers do not stack, because each
+  fills the same capped tank.
+- Not reached: level 3 for ten Cruisers is +2, not +4 to +10, with the store at
+  800 and the quarter held back in the plan; the flown plan on seed 42 is one
+  ring better (13 against 12 off). Clouds at levels 6 to 13 add +9 to +12 rather
+  than a top-up of a few rings: a Rich centre in rings 9 to 10 is what gives a
+  level-0 fleet something to reach, and a Moderate centre there moved level 0
+  from +3.5 to +0 in six of eight seeds; the same clouds are what a bigger
+  tank passes on its way.
 
 ## 4. Fading relics (slice 5)
 

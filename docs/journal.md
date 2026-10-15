@@ -10349,3 +10349,26 @@ none) and its sector view still shows the ring's threat estimate, because the
 incremental chart of `intel.rs` does not look at a hub and a threat of 0
 there would have made it stale. A fleet at a hub counts as deployed, as at
 the centre.
+
+## 2026-10-15: tuning the reach, with the planner fixed first
+
+The first probe had understated every relay chain of a heavy fleet: it tried
+only the eight deepest target sectors, so ten Cruisers "gained nothing" from
+relays when, with every ring tried, they gain 4 at level 3 and 20 at level 10
+on the old store. The probe now tries each ring, picks relays at three kinds
+of stop, and has a hubs column and a Battleship row. With it the owner's goals
+could be tuned. A relay, and a roaming hub, fill a tank to
+`depot_fill_jumps` of the fleet's own burn (10 + 3 for each level of
+Hyperspace Technology, `DEPOT_FILL_JUMPS_*`), `RELAY_STORE` is 800 (was
+1,000), and the fill is on the wire as `RelaysState.fill_jumps`; a flat store
+could not hold ten Light Fighters at level 13 to ring 63 (it was 78.5) and
+still carry ten Cruisers, so the cap is in the fleet's own jumps. The clouds
+are in the band that a fleet that has not founded anything first ventures
+into: 5 by 5 cells at half, seven sectors, Rich to ring 10, Moderate to 13,
+Sparse to 20, none beyond (deep Sparse sectors were a chain of free fuel at
+Energy Technology 10: +20 rings). `ECONOMY_VERSION` is 20 and
+`WORLDGEN_VERSION` 7; `SAVE_FORMAT` is unchanged. The chart recording of
+`chart_equivalence.rs` was recorded again, as the world under it changed.
+Unmet, and said in `deep-space.md` 3.5: Cruisers at level 3 gain +2 from
+relays (target +4 to +10), and clouds add +9 to +12 at levels 6 to 13 (target
+a top-up).

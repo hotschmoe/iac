@@ -2,7 +2,7 @@
 // it: bytes in, bytes out, the wire protocol inside. The real engine and
 // the real bots run behind it; time is whatever the test says it is.
 
-use iac_shared::constants::ECONOMY_VERSION;
+use iac_shared::constants::{ECONOMY_VERSION, WORLDGEN_VERSION};
 use iac_sim::store::SAVE_FORMAT;
 use iac_solo::{Machine, CATCH_UP_LIMIT};
 use serde_json::{json, Value};
@@ -541,9 +541,9 @@ fn a_save_this_build_cannot_read_is_refused_with_the_reason() {
         format!("this save is economy version 4, this build runs version {ECONOMY_VERSION}; start a new game"),
     );
 
-    let other_generator = text.replacen("\"worldgen_version\":6", "\"worldgen_version\":2", 1);
+    let other_generator = text.replacen(&format!("\"worldgen_version\":{WORLDGEN_VERSION}"), "\"worldgen_version\":2", 1);
     let (_, reply) = load(T0, other_generator.as_bytes());
-    assert!(reply["refused"].as_str().unwrap().contains("worldgen version 2, this build runs version 6"), "{reply}");
+    assert!(reply["refused"].as_str().unwrap().contains(&format!("worldgen version 2, this build runs version {WORLDGEN_VERSION}")), "{reply}");
 
     assert_eq!(SAVE_FORMAT, 17);
     let before_hubs = text.replacen("\"format\":17", "\"format\":16", 1);

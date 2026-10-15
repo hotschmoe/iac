@@ -4115,24 +4115,38 @@ impl GameEngine {
         Ok(())
     }
 
+    /// Fuel a relay or a hub may add to `fleet`'s tank now: up to
+    /// `depot_fill_jumps` of its own burn at its owner's research, and no
+    /// more than the tank holds.
+    pub fn depot_room(&self, fleet: &Fleet) -> f64 {
+        let jumps = self.players.get(&fleet.owner_id).map_or(0, |p| scaling::depot_fill_jumps(&p.research));
+        let fills_to = (f64::from(jumps) * self.hop_fuel_cost(fleet)).min(fleet.fuel_max);
+        (fills_to - fleet.fuel).max(0.0)
+    }
+
     /// A fleet standing at its owner's relay, flown by hand, has its tank
-    /// filled from the store as far as the store pays; a tank it cannot
-    /// fill is reported once per stay.
+    /// filled from the store as far as `depot_room` allows and the store
+    /// pays; a tank it cannot fill that far is reported once per stay.
     fn refuel_at_relay(&mut self, fleet_id: u64) {
         if self.policies.contains_key(&fleet_id) { return; }
-        let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
         if fleet.state == FleetStatus::Moving || fleet.ships.is_empty() { return; }
         let owner = fleet.owner_id;
         let sector = fleet.location;
+        let missing = self.depot_room(fleet);
+        if missing <= 0.0 { return; }
+        let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
         let Some(relay) = self.relays.get_mut(&owner).and_then(|list| list.iter_mut().find(|r| r.sector == sector)) else {
             return;
         };
-        let missing = fleet.fuel_max - fleet.fuel;
-        if missing <= 0.0 { return; }
         let units = missing.min(relay.store / FUEL_DEUT_PER_UNIT);
         if units > 0.0 {
             relay.store = (relay.store - units * FUEL_DEUT_PER_UNIT).max(0.0);
-            fleet.fuel = if units >= missing { fleet.fuel_max } else { fleet.fuel + units };
+            fleet.fuel = if units >= missing && missing == fleet.fuel_max - fleet.fuel {
+                fleet.fuel_max
+            } else {
+                fleet.fuel + units.min(missing)
+            };
         }
         if units >= missing || relay.dry_tanks.contains(&fleet_id) { return; }
         relay.dry_tanks.push(fleet_id);
@@ -5874,11 +5888,19 @@ impl GameEngine {
         if !Self::fleet_is_free(fleet) {
             return Err(refuse(ErrorCode::OnCooldown, format!("fleet {fleet_id} is busy; it can refuel once it is idle")));
         }
-        let missing = fleet.fuel_max - fleet.fuel;
-        if missing <= 0.0 {
+        let missing = self.depot_room(fleet);
+        if fleet.fuel_max - fleet.fuel <= 0.0 {
             return Err(refuse(ErrorCode::InvalidCommand, format!(
                 "the tank of fleet {fleet_id} is full ({} of {} fuel); refuelling would add nothing",
                 fuel_words(fleet.fuel), fuel_words(fleet.fuel_max),
+            )));
+        }
+        if missing <= 0.0 {
+            let level = player.research.hyperspace_technology;
+            return Err(refuse(ErrorCode::InvalidCommand, format!(
+                "a hub fills a tank to {} jumps of its own burn at Hyperspace Technology level {level}; the tank of \
+                 fleet {fleet_id} stands at {} of {} fuel",
+                scaling::depot_fill_jumps(&player.research), fuel_words(fleet.fuel), fuel_words(fleet.fuel_max),
             )));
         }
         let held = fleet.cargo.get(give);
@@ -5953,7 +5975,7 @@ impl GameEngine {
         } else {
             None
         };
-        Some(RefuelQuote { missing: fleet.fuel_max - fleet.fuel, offers, refusal })
+        Some(RefuelQuote { missing: self.depot_room(fleet), offers, refusal })
     }
 
     /// Turn what is in the hold of `fleet_id` into fuel at the hub it

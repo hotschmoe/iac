@@ -226,6 +226,30 @@ fn a_fleet_far_past_its_tank_refuels_from_its_hold_at_a_hub_and_flies_on() {
 }
 
 #[test]
+fn a_hub_fills_a_tank_to_the_jumps_research_allows_and_no_further() {
+    let (mut e, _) = tanker("season", Resources { metal: 0.0, crystal: 0.0, deuterium: 5000.0 });
+    let fid = e.fid;
+    let jump = e.engine.hop_fuel_cost(&e.engine.fleets[&fid]);
+    edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().fuel_max = 40.0 * jump);
+    let jump = e.engine.hop_fuel_cost(&e.engine.fleets[&fid]);
+    let base = f64::from(scaling::depot_fill_jumps(&ResearchLevels::default()));
+
+    let quote = fleet_of(&e).refuel.expect("quoted at a hub");
+    assert!((quote.missing - base * jump).abs() < 1.5, "the quote is what the hub would add: {}", quote.missing);
+    e.order(Command::Refuel { fleet_id: fid, give: Deuterium, amount: None }).expect("refuelled");
+    assert!((e.engine.fleets[&fid].fuel - base * jump).abs() < 1e-6);
+    let (code, why) = e.refusal(Command::Refuel { fleet_id: fid, give: Deuterium, amount: None });
+    assert_eq!(code, ErrorCode::InvalidCommand);
+    assert!(why.contains("fills a tank to") && why.contains("Hyperspace Technology level 0"), "{why}");
+
+    let pid = e.pid;
+    edit(&mut e.engine, |s| s.players.get_mut(&pid).unwrap().research.hyperspace_technology = 4);
+    let more = f64::from(scaling::depot_fill_jumps(&e.engine.players[&pid].research));
+    e.order(Command::Refuel { fleet_id: fid, give: Deuterium, amount: None }).expect("and more with research");
+    assert!((e.engine.fleets[&fid].fuel - more * jump).abs() < 1e-6, "{} of {more} jumps", e.engine.fleets[&fid].fuel / jump);
+}
+
+#[test]
 fn the_warning_comes_before_the_departure_and_a_fleet_left_standing_is_unharmed() {
     let mut e = Empire::join(world("blitz"), "Sitter");
     let fid = e.fid;

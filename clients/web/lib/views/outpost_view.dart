@@ -414,6 +414,7 @@ class RelayPanel extends StatelessWidget {
     final hold = st.holds[fleet.id] ?? const proto.Resources();
     final body = <Widget>[
       Kv('Relays kept', key: const Key('relay-count'), v: '${relays.relays.length} OF ${relays.limit} - ${relays.technology.label.toUpperCase()} L${relays.level}'),
+      Kv('Fills tanks to', key: const Key('relay-fill'), v: '${relays.fillJumps} JUMPS'),
       const SizedBox(height: 6),
     ];
     if (here != null) {

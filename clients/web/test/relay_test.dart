@@ -67,7 +67,7 @@ Map<String, dynamic> _bare() {
       ..remove('outpost_fuel')
       ..['at_outpost'] = false;
   }
-  json['relays'] = {'limit': 1, 'technology': 'HyperspaceTechnology', 'level': 0, 'relays': []};
+  json['relays'] = {'limit': 1, 'technology': 'HyperspaceTechnology', 'level': 0, 'fill_jumps': 10, 'relays': []};
   return json;
 }
 
@@ -114,6 +114,7 @@ void main() {
       'limit': 3,
       'technology': 'HyperspaceTechnology',
       'level': 4,
+      'fill_jumps': 22,
       'relays': [
         {
           'sector': fleet['location'],
