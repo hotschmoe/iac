@@ -34,7 +34,7 @@ use iac_shared::constants::{ResourceKind, Resources, ShipClass};
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{Command, GameState, HomeworldState, RaidLabel};
 use iac_shared::scaling::{
-    self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, ResearchLevels, ResearchType, ShipyardItem,
+    self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, RelicBonus, ResearchLevels, ResearchType, ShipyardItem,
 };
 
 use super::Personality;
@@ -869,7 +869,7 @@ impl<'a> Planner<'a> {
             }
             if plant == BuildingType::FusionReactor {
                 let burn = self.pace.rate(f64::from(scaling::fusion_burn_per_hour(level + 1)) / 3600.0);
-                let made = scaling::production_per_tick(&self.plan.buildings, 1.0, &self.pace).deuterium;
+                let made = scaling::production_per_tick(&self.plan.buildings, 1.0, &RelicBonus::NONE, &self.pace).deuterium;
                 if burn > FUSION_SHARE * made {
                     continue;
                 }
@@ -1162,7 +1162,7 @@ impl<'a> Planner<'a> {
     /// Ticks until the planned mines have produced what `cost` lacks, per resource.
     fn wait(&self, cost: Resources, kind: ResourceKind) -> f64 {
         let short = cost.get(kind) - self.spare.get(kind);
-        let rate = scaling::production_per_tick(&self.plan.buildings, 1.0, &self.pace).get(kind);
+        let rate = scaling::production_per_tick(&self.plan.buildings, 1.0, &RelicBonus::NONE, &self.pace).get(kind);
         if cost.get(kind) <= 0.0 || short <= 0.0 {
             0.0
         } else if rate <= 0.0 {

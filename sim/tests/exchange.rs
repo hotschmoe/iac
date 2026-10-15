@@ -135,7 +135,7 @@ fn a_wing_flies_its_metal_to_the_hub_and_gets_the_quoted_deuterium() {
     assert!(world.hub.iter().any(|site| site.location == HUB && site.services == [HubService::Exchange]));
 
     let pace = e.engine.pace();
-    let production = e.engine.players[&pid].production_per_tick(&pace);
+    let production = e.engine.players[&pid].production_per_tick(&iac_shared::scaling::RelicBonus::NONE, &pace);
     let window = scaling::exchange_window(&pace);
     let span = EXCHANGE_METER_SHARE * weight(production) * window as f64;
     assert!((15_364..=15_365).contains(&window), "the window is 86400 s / 10^0.75: {window}");
@@ -316,7 +316,7 @@ fn the_meter_falls_one_span_per_window_and_survives_a_restart() {
     assert_eq!(again.receive, (scaling::exchange_return(0.0, 100.0, span) / 2.0).floor());
 
     let mut idle = trader("season", (0, 0, 0), 2, Resources { metal: 1000.0, ..Resources::default() });
-    let natural = idle.engine.players[&idle.pid].production_per_tick(&idle.engine.pace());
+    let natural = idle.engine.players[&idle.pid].production_per_tick(&iac_shared::scaling::RelicBonus::NONE, &idle.engine.pace());
     assert!(natural.metal > 0.0 && natural.crystal > 0.0 && natural.deuterium == 0.0, "{natural:?}");
     let flat = trade(&mut idle, Metal, Crystal, Some(600.0)).expect("an empire with no mines still trades");
     assert!(flat.meter.span > 0.0 && flat.meter.span < 600.0, "its span is its natural production's: {}", flat.meter.span);
@@ -728,7 +728,7 @@ fn a_hold_at_the_dock_hides_nothing_from_a_lost_raid() {
 
     let pace = laden.engine.pace();
     let protected = scaling::storage_protected(&stores_at_two(), &pace);
-    let made = laden.engine.players[&laden.pid].production_per_tick(&pace).scale(f64::from(laden_raid.rounds));
+    let made = laden.engine.players[&laden.pid].production_per_tick(&iac_shared::scaling::RelicBonus::NONE, &pace).scale(f64::from(laden_raid.rounds));
     let exposed = RAIDED_STOCK.add(made).sub(protected);
     let expected = stock(
         exposed.metal * RAID_LOSS_CAP_METAL,

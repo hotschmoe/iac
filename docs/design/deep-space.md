@@ -384,6 +384,69 @@ Reading:
 - Sites respawn on a long finds timer, as derelicts do, so the trip is a loop:
   go deep, spend the bonus, come back out.
 
+### 4.1 Built (slice 5)
+
+*Measured*, from the code. Every number is provisional and named in
+`shared/src/constants.rs`; `ECONOMY_VERSION` is 21 and `SAVE_FORMAT` 18
+(`Player.relics` is a list now, and `Fleet` gained `relic`). Generation is
+unchanged, so `WORLDGEN_VERSION` stays 7.
+
+**Site.** The carrier is the derelict that already rolled an ancient relic
+(`relic_chance`: 2% per threat point above 5, to 8%; threat 6 is ring 19, so
+the Outer Ring's last rings have them rarely and the Wandering more often).
+Its loot is still `RELIC_LOOT_MULT` times larger. The kind and the strength
+are rolled from the same dice as the boarding (seed, sector, tick and fleet),
+after every draw the boarding already made, so a world that finds no relic
+plays as it did. Sites come back on `DERELICT_RESPAWN_TICKS` as before.
+
+**Item.** `Fleet.relic: Option<RelicItem{kind, pct}>`. One a fleet. A second
+find is kept only when stronger. `merge` keeps the stronger of the two; `split`
+leaves it with the fleet that was split. It does not fade aboard, and a fleet
+destroyed loses it. It is claimed (`claim_relic`) at the arrival at, or the
+recall to, the owner's homeworld, finished outpost or relay.
+
+**Claim.** `Player.relics: Vec<ClaimedRelic{kind, pct, claimed_tick}>`, one a
+kind. A claim replaces a held relic of its kind only when its `pct` is above
+what the held one gives now (the fade clock of the winner is the claim's);
+otherwise the item is spent and `RelicClaimed.applied` is false. A relic is
+dropped, with a `RelicFaded` event, on the tick it reaches nothing.
+
+**Fade.** `pct * (1 - elapsed / RELIC_FADE_TICKS)`, on read, from the claim
+tick (`ClaimedRelic::now`); nothing ticks. `RELIC_FADE_TICKS` is 864,000, an
+`Economy` timer, so a day at the season preset (86,400 ticks at pace 10).
+
+**Kinds and where each is applied** (one input at the one place):
+
+| kind | effect | place |
+|---|---|---|
+| `metal_output`, `crystal_output`, `deuterium_output` | mine's output x (1 + b), natural production included | `scaling::production_per_tick` |
+| `fuel_burn` | every jump's burn x (1 - b), with Energy Technology | `scaling::fuel_rate_modifier` |
+| `research_time` | time of a research that starts now x (1 - b) | `scaling::research_time` |
+| `building_time` | time of a building that starts now x (1 - b) | `scaling::building_time` |
+
+`RelicBonus::of` sums the held relics at a tick. A family (the three outputs,
+the fuel burn alone, the two times) is held to `RELIC_TOTAL_CAP` (0.40): over
+it, each kind of the family is scaled down together. The exchange's span
+reads the mines without relics (its meter must not wobble as a relic fades),
+and the bots' planner plans without them.
+
+**Strength.** `relic_ceiling(ring)` is `RELIC_PCT_OUTER_MAX` (8%) to ring 20,
+then linear to `RELIC_PCT_DEEP_MAX` (25%) at `RELIC_DEEP_RING` (36); a roll
+is between `RELIC_PCT_FLOOR_SHARE` (half) of it and all of it.
+
+**Score.** `sim/src/score.rs` does not read relics; `sim/tests/relics.rs`
+plays two otherwise equal empires, one holding relics, and compares the board.
+
+**Wire.** `PlayerState.relics` (`RelicState`: `kind`, `pct`, `pct_now`,
+`claimed_tick`, `expires_at`), `FleetState.relic`, and the events
+`RelicFound`, `RelicClaimed`, `RelicFaded`. The web client lists the relics on
+the Overview (a bar from `claimed_tick` to `expires_at`) and marks a fleet
+that carries one.
+
+*Open.* Bots claim what they carry and do not plan a trip for one. Whether
+the item already running in a queue should speed up when a relic is claimed
+(it does not) is not decided.
+
 ## 5. Slices, in order
 
 | # | Slice | Engine | Wire | Web | Proof |

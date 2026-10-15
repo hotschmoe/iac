@@ -97,6 +97,9 @@ class _Book {
   Resources relayCost(int ring) => _amounts(_relay(ring)['cost']);
   int get relayDecayTicks => _relay(constant('RELAY_MIN_RING').round())['decay_ticks'] as int;
 
+  /// Ticks a relic takes to fade, at this pace.
+  int get relicFadeTicks => _row('relics', (r) => r['pace'] == pace)['fade_ticks'] as int;
+
   Resources outpostCost(int level) => _amounts(_outpost(level)['cost']);
   Resources outpostStoreCap(int level) => _amounts(_outpost(level)['store_cap']);
   int outpostTicks(int level) => _outpost(level)['ticks'] as int;
@@ -272,6 +275,14 @@ class _Explore {
   _Explore(this.fleetId, this.sector, this.endTick);
 }
 
+/// A relic the player has claimed and the tick it was claimed on.
+class _Relic {
+  final RelicKind kind;
+  final double pct;
+  final int claimedTick;
+  _Relic(this.kind, this.pct, this.claimedTick);
+}
+
 /// The player's outpost in the scripted world.
 class _Outpost {
   final Hex at;
@@ -412,6 +423,9 @@ class DemoWorld {
 
   final Map<int, _Combat> _combats = {};
   final Map<int, _Explore> _explores = {};
+
+  /// The relics the player has claimed, at most one for each kind.
+  final List<_Relic> _relics = [];
   final Map<int, HarvestResource> _harvest = {};
   final Map<int, List<Hex>> _recall = {};
   final Set<int> _provoked = {};
@@ -981,7 +995,64 @@ class DemoWorld {
       resources: _resources,
       homeworld: _home,
       shipCount: _fleets.fold(0, (n, f) => n + _shipsIn(_squads[f.id]!)),
-      exchange: _meter(_pressureNow));
+      exchange: _meter(_pressureNow),
+      relics: [
+        for (final r in _relics)
+          RelicState(kind: r.kind, pct: r.pct, pctNow: _relicNow(r), claimedTick: r.claimedTick, expiresAt: r.claimedTick + _book.relicFadeTicks),
+      ]);
+
+  /// The engine's `ClaimedRelic::now`: the bonus [r] gives this tick.
+  double _relicNow(_Relic r) => r.pct * (1 - min(_tick - r.claimedTick, _book.relicFadeTicks) / _book.relicFadeTicks);
+
+  /// The engine's `RelicBonus::of`: what the relics of [kind] give this tick,
+  /// the kinds of its family scaled together down to the total cap.
+  double _relicShare(RelicKind kind) {
+    double now(RelicKind k) => _relics.where((r) => r.kind == k).fold(0.0, (m, r) => max(m, _relicNow(r)));
+    final family = switch (kind) {
+      RelicKind.metalOutput || RelicKind.crystalOutput || RelicKind.deuteriumOutput => [RelicKind.metalOutput, RelicKind.crystalOutput, RelicKind.deuteriumOutput],
+      RelicKind.fuelBurn => [RelicKind.fuelBurn],
+      RelicKind.researchTime || RelicKind.buildingTime => [RelicKind.researchTime, RelicKind.buildingTime],
+    };
+    final sum = family.fold(0.0, (n, k) => n + now(k));
+    final cap = _book.constant('RELIC_TOTAL_CAP');
+    return now(kind) * (sum > cap ? cap / sum : 1.0);
+  }
+
+  /// The engine's `claim_relic`: a fleet at a dock hands over the relic it
+  /// carries. It replaces a held one of its kind only when it is stronger
+  /// than that one is now.
+  void _claimRelic(FleetState f) {
+    final item = f.relic;
+    if (item == null) return;
+    final held = _relics.indexWhere((r) => r.kind == item.kind);
+    final applied = held < 0 || item.pct > _relicNow(_relics[held]);
+    final claimed = _Relic(item.kind, item.pct, _tick);
+    if (applied) {
+      if (held < 0) {
+        _relics.add(claimed);
+      } else {
+        _relics[held] = claimed;
+      }
+    }
+    _setFleet(_copy(f, clearRelic: true));
+    _ev(RelicClaimedEvent(
+        playerId: _playerId, fleetId: f.id, relicKind: item.kind, pct: item.pct, expiresAt: _tick + _book.relicFadeTicks, applied: applied));
+  }
+
+  /// The engine's `process_relics`: a relic at nothing is dropped.
+  void _stepRelics() {
+    for (final r in _relics.where((r) => _tick >= r.claimedTick + _book.relicFadeTicks).toList()) {
+      _relics.remove(r);
+      _ev(RelicFadedEvent(playerId: _playerId, relicKind: r.kind));
+    }
+  }
+
+  /// Put a relic aboard fleet [fleetId], as a boarding in the deep does.
+  void carryRelic(int fleetId, RelicKind kind, double pct) {
+    final f = _find(fleetId)!;
+    _setFleet(_copy(f, relic: RelicItem(kind: kind, pct: pct)));
+  }
+
 
   // ── Exchange (the server's `exchange_span`, `exchange_fee` and `exchange_return`) ──
 
@@ -2339,6 +2410,7 @@ class DemoWorld {
     _stepOutpost();
     _stepRelays();
     _stepOrders();
+    _stepRelics();
 
     if (_tick % 120 == 0) {
       _ev(const AlertEvent(level: AlertLevel.info, message: 'Demo mode: no server connected'));
@@ -3101,6 +3173,8 @@ class DemoWorld {
   /// A fleet standing at the homeworld and not leaving it is at the home
   /// dock: it takes the empire's levels and its damaged ships are made
   /// whole, for nothing.
+  bool _atRelay(Hex at) => _relays.any((r) => r.at == at);
+
   bool _atHomeDock(FleetState f) => f.location == _home && f.state != FleetStatus.moving && f.state != FleetStatus.inCombat;
 
   /// The engine's `mending`: what a dock that charges [share] of a ship's
@@ -3164,6 +3238,11 @@ class DemoWorld {
     _tended.removeWhere((id) => _fleets.every((f) => f.id != id || !_atHomeDock(f)));
     for (final f in List.of(_fleets)) {
       final o = _outpost;
+      final docked = _atHomeDock(f) ||
+          (f.state != FleetStatus.moving &&
+              f.state != FleetStatus.inCombat &&
+              ((o != null && f.location == o.at && _inService) || _atRelay(f.location)));
+      if (docked) _claimRelic(f);
       if (_atHomeDock(f)) {
         final was = _refits[f.id]!, now = _levels;
         if (was != now) {
@@ -3287,6 +3366,7 @@ class DemoWorld {
         cargoBlocked: f.cargoBlocked,
         laden: f.laden,
         refine: _refining(f, tank),
+        relic: f.relic,
         policy: f.policy,
       );
   }
@@ -3348,6 +3428,8 @@ class DemoWorld {
     double? fuel,
     int? cooldown,
     bool? laden,
+    RelicItem? relic,
+    bool clearRelic = false,
   }) =>
       _norm(FleetState(
         id: f.id,
@@ -3369,6 +3451,7 @@ class DemoWorld {
         scanRange: f.scanRange,
         cooldownRemaining: cooldown ?? f.cooldownRemaining,
         laden: laden ?? f.laden,
+        relic: clearRelic ? null : (relic ?? f.relic),
         policy: clearPolicy ? null : (policy ?? f.policy),
       ));
 
@@ -3980,13 +4063,16 @@ class DemoWorld {
   /// The server's `production_per_tick`: each mine at the share of its
   /// output the energy allows, the natural production, less what the
   /// Fusion Reactor burns.
-  static Resources _production(List<BuildingState> buildings, EnergyState energy) {
+  Resources _production(List<BuildingState> buildings, EnergyState energy) {
     double natural(String name) => _book.constant(name) * _book.pace / 3600;
     double mined(BuildingType t, EffectKind kind) => _figure(buildings, t, kind) * energy.fraction;
     return Resources(
-      metal: mined(BuildingType.metalMine, EffectKind.metalPerTick) + natural('NATURAL_PER_HOUR_METAL'),
-      crystal: mined(BuildingType.crystalMine, EffectKind.crystalPerTick) + natural('NATURAL_PER_HOUR_CRYSTAL'),
-      deuterium: mined(BuildingType.deuteriumSynthesizer, EffectKind.deuteriumPerTick) - energy.fusionBurn,
+      metal: (mined(BuildingType.metalMine, EffectKind.metalPerTick) + natural('NATURAL_PER_HOUR_METAL')) *
+          (1 + _relicShare(RelicKind.metalOutput)),
+      crystal: (mined(BuildingType.crystalMine, EffectKind.crystalPerTick) + natural('NATURAL_PER_HOUR_CRYSTAL')) *
+          (1 + _relicShare(RelicKind.crystalOutput)),
+      deuterium: mined(BuildingType.deuteriumSynthesizer, EffectKind.deuteriumPerTick) * (1 + _relicShare(RelicKind.deuteriumOutput)) -
+          energy.fusionBurn,
     );
   }
 

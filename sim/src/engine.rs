@@ -12,7 +12,7 @@ use rand::rngs::StdRng;
 use iac_shared::hex::Hex;
 use iac_shared::keymap::{KeyMap, KeySet};
 use iac_shared::constants::{
-    Resources, ResourceKind, ShipClass, Density,
+    Resources, ResourceKind, ShipClass, Density, RelicKind, RELIC_PCT_FLOOR_SHARE,
     STARTING_RESOURCES, STARTING_SHIPS, MAX_FLEETS_PER_PLAYER, MAX_FLEETS_TOTAL, MAX_FLEET_SHIPS,
     STRANDED_RECOVERY_TICKS, HARVEST_COOLDOWN, EXPLODE_BELOW_PCT, STANDOFF_ROUNDS,
     REPAIR_COST_SHARE_HOME, REPAIR_COST_SHARE_OUTPOST, REPAIR_TICKS,
@@ -41,7 +41,7 @@ use iac_shared::constants::{
 use iac_shared::pace::Pace;
 use iac_shared::world::{self, HubService, WorldGen, ROAMING_HUB};
 use iac_shared::scaling::{
-    self, Arms, BuildingType, ResearchType, BuildingLevels, ResearchLevels, Refit,
+    self, Arms, BuildingType, ResearchType, BuildingLevels, ResearchLevels, Refit, ClaimedRelic, RelicBonus, RelicItem,
     MAX_BUILDING_LEVEL, CANCEL_REFUND_FRACTION, DefenceKind, RatioLabel, ShipyardItem,
 };
 use iac_shared::protocol::{
@@ -50,7 +50,7 @@ use iac_shared::protocol::{
     StockpileCause, StockpileEvent, StorageFullEvent, StorageNearCapEvent, StorageState,
     ExchangeMeter, ExchangeTerms, ExchangedEvent,
     OutpostCompletedEvent, OutpostSurvey, PowerRange, SectorResources, SurveySite,
-    RelayDecayedEvent, RelayFoundedEvent, RelaySurvey, HubArrivedEvent, HubDepartingEvent, RefuelOffer, RefuelQuote,
+    RelayDecayedEvent, RelayFoundedEvent, RelicClaimedEvent, RelicFadedEvent, RelicFoundEvent, RelaySurvey, HubArrivedEvent, HubDepartingEvent, RefuelOffer, RefuelQuote,
     BattleGroup, BattleLosses, BattleOutcome, BattleRoundEvent, BattleSide, BattleState, BattleUnits,
     RaidBattle, RaidForecast, RaidLabel, RaidOdds,
     DockRepair, RepairQuote, ShipCount, ShipGroupState, ShipsLostEvent, UnitCount,
@@ -359,6 +359,9 @@ pub struct Fleet {
     /// the fleet's next jump, so cargo it brings home unloads as any does.
     /// Never set on a fleet under standing orders.
     pub laden: bool,
+    /// A relic taken from a derelict, claimed at the owner's next dock at
+    /// home, an outpost or a relay. At most one; it is lost with the fleet.
+    pub relic: Option<RelicItem>,
 }
 
 impl Fleet {
@@ -459,8 +462,8 @@ pub struct Player {
     /// Self-declared when the account was created; labels the leaderboard
     /// and nothing else.
     pub agent: bool,
-    /// Ancient relics found; reserved for the item system.
-    pub relics: u32,
+    /// Relics claimed and not yet faded, at most one for each kind.
+    pub relics: Vec<ClaimedRelic>,
     /// The exchange meter as it read at `exchange_tick`, in weight units. It
     /// falls between trades: read it through `GameEngine::exchange_meter`.
     pub exchange_pressure: f64,
@@ -558,15 +561,20 @@ impl Player {
 
     /// What the mines add to the stockpile each tick with the energy there
     /// is, before the Fusion Reactor's burn.
-    pub fn mined_per_tick(&self, pace: &Pace) -> Resources {
-        scaling::production_per_tick(&self.buildings, self.power(pace).fraction(), pace)
+    pub fn mined_per_tick(&self, relics: &RelicBonus, pace: &Pace) -> Resources {
+        scaling::production_per_tick(&self.buildings, self.power(pace).fraction(), relics, pace)
+    }
+
+    /// What this player's relics are worth at `tick`.
+    pub fn relic_bonus(&self, tick: u64, pace: &Pace) -> RelicBonus {
+        RelicBonus::of(&self.relics, tick, pace)
     }
 
     /// What the stockpile gains each tick: the mines less the Fusion
     /// Reactor's burn, so deuterium may be negative.
-    pub fn production_per_tick(&self, pace: &Pace) -> Resources {
+    pub fn production_per_tick(&self, relics: &RelicBonus, pace: &Pace) -> Resources {
         let power = self.power(pace);
-        let mined = scaling::production_per_tick(&self.buildings, power.fraction(), pace);
+        let mined = scaling::production_per_tick(&self.buildings, power.fraction(), relics, pace);
         Resources { deuterium: mined.deuterium - power.fusion_burn, ..mined }
     }
 }
@@ -1549,6 +1557,7 @@ impl GameEngine {
         self.process_home_salvage();
         self.process_salvage_despawn()?;
         self.process_derelict_respawn();
+        self.process_relics();
         self.process_cooldowns()?;
         self.prune_scan_reveals();
 
@@ -1573,7 +1582,8 @@ impl GameEngine {
             if fleet.ships.is_empty() || fleet.state != FleetStatus::Idle { continue; }
             let Some(player) = self.players.get(&fleet.owner_id) else { continue; };
             if fleet.location == player.homeworld { continue; }
-            let hop = fleet_fuel_cost(fleet, Some(&player.research)).min(fleet.fuel_max);
+            let relics = player.relic_bonus(self.current_tick, &self.world.pace);
+            let hop = fleet_fuel_cost(fleet, Some(&player.research), &relics).min(fleet.fuel_max);
             if hop <= 0.0 || fleet.fuel >= hop { continue; }
 
             let old = fleet.fuel;
@@ -1672,6 +1682,7 @@ impl GameEngine {
             self.check_homeworld_docking(fleet_id)?;
             self.check_outpost_docking(fleet_id);
             self.refuel_at_relay(fleet_id);
+            self.claim_relic(fleet_id);
             self.announce_if_stranded(fleet_id);
             self.check_npc_encounter(fleet_id)?;
         }
@@ -1683,7 +1694,8 @@ impl GameEngine {
         let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
         let Some(player) = self.players.get(&fleet.owner_id) else { return; };
         if fleet.ships.is_empty() || fleet.location == player.homeworld { return; }
-        let hop = fleet_fuel_cost(fleet, Some(&player.research));
+        let relics = player.relic_bonus(self.current_tick, &self.world.pace);
+        let hop = fleet_fuel_cost(fleet, Some(&player.research), &relics);
         if fleet.fuel >= hop { return; }
         let (location, fuel) = (fleet.location, fleet.fuel);
         let message = format!(
@@ -2899,10 +2911,12 @@ impl GameEngine {
 
     fn process_homeworlds(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let pace = self.world.pace;
+        let tick = self.current_tick;
         for (_, player) in self.players.iter_mut() {
             let cap = scaling::storage_cap(&player.buildings, &pace);
             let burn = player.power(&pace).fusion_burn;
-            player.resources = player.resources.add_capped(player.mined_per_tick(&pace), cap);
+            let relics = player.relic_bonus(tick, &pace);
+            player.resources = player.resources.add_capped(player.mined_per_tick(&relics, &pace), cap);
             player.resources.deuterium = (player.resources.deuterium - burn).max(0.0);
         }
         let docked: Vec<u64> = self.fleets.values()
@@ -3186,7 +3200,7 @@ impl GameEngine {
     pub fn storage_state(&self, player: &Player) -> StorageState {
         let pace = &self.world.pace;
         let cap = scaling::storage_cap(&player.buildings, pace);
-        let rate = player.production_per_tick(pace);
+        let rate = player.production_per_tick(&self.relics_of(player.id), pace);
         let eta = |kind: ResourceKind| {
             let (stock, cap, rate) = (player.resources.get(kind), cap.get(kind), rate.get(kind));
             if stock >= cap { Some(0) } else if rate > 0.0 { Some(((cap - stock) / rate).ceil() as u64) } else { None }
@@ -3465,7 +3479,7 @@ impl GameEngine {
         let (b, target) = (order.building_type, order.target_level);
         let cost = scaling::building_cost(b, target);
         p.resources = p.resources.sub(cost);
-        let ticks = scaling::building_time(b, target, &p.buildings, &pace);
+        let ticks = scaling::building_time(b, target, &p.buildings, &p.relic_bonus(tick, &pace), &pace);
         p.building_queue.push(BuildQueueEntry { id: order.id, building_type: b, target_level: target, start_tick: tick, end_tick: tick + ticks });
         let mut event = self.queue_event(pid, QueueType::Building, order.id, format!("{} Lv.{target}", b.label()), QueueAction::Started);
         event.paid = cost;
@@ -3480,7 +3494,7 @@ impl GameEngine {
         let (tech, target) = (order.tech, order.target_level);
         let cost = scaling::research_cost(tech, target);
         p.resources = p.resources.sub(cost);
-        let ticks = scaling::research_time(tech, target, &p.buildings, &pace);
+        let ticks = scaling::research_time(tech, target, &p.buildings, &p.relic_bonus(tick, &pace), &pace);
         p.research_queue = Some(ResearchQueueEntry { id: order.id, tech, target_level: target, start_tick: tick, end_tick: tick + ticks });
         let mut event = self.queue_event(pid, QueueType::Research, order.id, format!("{} Lv.{target}", tech.label()), QueueAction::Started);
         event.paid = cost;
@@ -5064,7 +5078,7 @@ impl GameEngine {
             research_pending: Vec::new(),
             token_hash: None,
             agent: false,
-            relics: 0,
+            relics: Vec::new(),
             exchange_pressure: 0.0,
             exchange_tick: 0,
         };
@@ -5089,6 +5103,7 @@ impl GameEngine {
             harvest_target: HarvestResource::Auto,
             charts: Vec::new(),
             laden: false,
+            relic: None,
         };
 
         if let Some(player) = self.players.get(&player_id) {
@@ -5151,7 +5166,7 @@ impl GameEngine {
         }
 
         let research = self.players.get(&fleet.owner_id).map(|p| &p.research);
-        let fuel_cost = fleet_fuel_cost(fleet, research);
+        let fuel_cost = self.hop_fuel_cost(fleet);
         if fleet.fuel < fuel_cost { return Err(ErrorCode::InsufficientFuel); }
 
         // The charge: every tick of the jump but the one it lands on.
@@ -5526,7 +5541,12 @@ impl GameEngine {
     /// Fuel for one jump of this fleet.
     pub fn hop_fuel_cost(&self, fleet: &Fleet) -> f64 {
         let research = self.players.get(&fleet.owner_id).map(|p| &p.research);
-        fleet_fuel_cost(fleet, research)
+        fleet_fuel_cost(fleet, research, &self.relics_of(fleet.owner_id))
+    }
+
+    /// What `owner`'s relics are worth this tick.
+    pub fn relics_of(&self, owner: u64) -> RelicBonus {
+        self.players.get(&owner).map_or(RelicBonus::NONE, |p| p.relic_bonus(self.current_tick, &self.world.pace))
     }
 
     /// Ticks from a `move` order to the arrival: the charge `handle_move`
@@ -5723,7 +5743,7 @@ impl GameEngine {
     /// The exact reading, span and window of `player`'s exchange meter now.
     fn exchange_standing(&self, player: &Player) -> (f64, f64, u64) {
         let pace = self.world.pace;
-        let span = scaling::exchange_span(&player.mined_per_tick(&pace), &pace);
+        let span = scaling::exchange_span(&player.mined_per_tick(&RelicBonus::NONE, &pace), &pace);
         let window = scaling::exchange_window(&pace);
         let elapsed = self.current_tick.saturating_sub(player.exchange_tick);
         (scaling::exchange_pressure_after(player.exchange_pressure, elapsed, span, window), span, window)
@@ -6543,6 +6563,7 @@ impl GameEngine {
             harvest_target: fleet.harvest_target,
             charts: fleet.charts.clone(),
             laden: fleet.laden,
+            relic: None,
         };
         let mut rest = fleet.clone();
         rest.ships = kept;
@@ -6593,6 +6614,10 @@ impl GameEngine {
         joining.rearm(b.arms(), merged.arms());
         merged.ships.absorb(joining);
         merged.cargo = a.cargo.add(b.cargo);
+        merged.relic = match (a.relic, b.relic) {
+            (Some(x), Some(y)) => Some(if y.pct > x.pct { y } else { x }),
+            (x, y) => x.or(y),
+        };
         merged.fuel_max = fleet_fuel_max(&merged, player);
         merged.fuel = (a.fuel + b.fuel).min(merged.fuel_max);
         merged.move_cooldown = a.move_cooldown.max(b.move_cooldown);
@@ -7224,8 +7249,8 @@ impl GameEngine {
             self.grant_tech_level(owner_id, tech);
         }
 
-        if let Some(p) = self.players.get_mut(&owner_id) {
-            p.relics += u32::from(relic);
+        if relic {
+            self.take_relic_aboard(fleet_id, location, dist, &mut rng);
         }
 
         self.pending_events.push(GameEvent {
@@ -7248,6 +7273,88 @@ impl GameEngine {
             if relic { ", relic" } else { "" },
         );
         Ok(())
+    }
+
+    /// A relic comes aboard: its kind and its strength are rolled from the
+    /// boarding's own dice, the strength between `RELIC_PCT_FLOOR_SHARE` of the
+    /// ring's ceiling and the ceiling. A fleet carries one: a second find is
+    /// kept only when it is stronger than the one aboard.
+    fn take_relic_aboard(&mut self, fleet_id: u64, sector: Hex, dist: u16, rng: &mut StdRng) {
+        let kind = RelicKind::ALL[rng.random_range(0..RelicKind::ALL.len() as u32) as usize];
+        let roll: f64 = rng.random_range(0.0..1.0);
+        let pct = scaling::relic_ceiling(dist) * (RELIC_PCT_FLOOR_SHARE + (1.0 - RELIC_PCT_FLOOR_SHARE) * roll);
+        let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
+        let carried = fleet.relic.is_none_or(|aboard| pct > aboard.pct);
+        if carried {
+            fleet.relic = Some(RelicItem { kind, pct });
+        }
+        self.pending_events.push(GameEvent {
+            tick: self.current_tick,
+            kind: EventKind::RelicFound(RelicFoundEvent { fleet_id, sector, relic_kind: kind, pct, carried }),
+        });
+    }
+
+    /// A fleet standing at its owner's homeworld, finished outpost or relay
+    /// claims the relic it carries. The claim replaces a held relic of the
+    /// same kind when it is stronger than that one is now; otherwise the item
+    /// is spent for nothing. Either way the fade clock is the claim's.
+    fn claim_relic(&mut self, fleet_id: u64) {
+        let Some(fleet) = self.fleets.get(&fleet_id) else { return; };
+        let Some(item) = fleet.relic else { return; };
+        if fleet.state == FleetStatus::Moving { return; }
+        let owner = fleet.owner_id;
+        let Some(player) = self.players.get(&owner) else { return; };
+        let docked = fleet.location == player.homeworld
+            || self.docked_at_outpost(fleet)
+            || self.relay_at(fleet.location).is_some_and(|(holder, _)| holder == owner);
+        if !docked { return; }
+        let (tick, pace) = (self.current_tick, self.world.pace);
+        let player = self.players.get_mut(&owner).unwrap();
+        let held = player.relics.iter().position(|r| r.kind == item.kind);
+        let applied = held.is_none_or(|i| item.pct > player.relics[i].now(tick, &pace));
+        let claimed = ClaimedRelic { kind: item.kind, pct: item.pct, claimed_tick: tick };
+        if applied {
+            match held {
+                Some(i) => player.relics[i] = claimed,
+                None => player.relics.push(claimed),
+            }
+        }
+        if let Some(fleet) = self.fleets.get_mut(&fleet_id) {
+            fleet.relic = None;
+        }
+        self.pending_events.push(GameEvent {
+            tick,
+            kind: EventKind::RelicClaimed(RelicClaimedEvent {
+                player_id: owner,
+                fleet_id,
+                relic_kind: item.kind,
+                pct: item.pct,
+                expires_at: claimed.expires_at(&pace),
+                applied,
+            }),
+        });
+    }
+
+    /// A relic is dropped on the tick its bonus reaches nothing.
+    fn process_relics(&mut self) {
+        let (tick, pace) = (self.current_tick, self.world.pace);
+        let mut faded: Vec<(u64, RelicKind)> = Vec::new();
+        for player in self.players.values_mut() {
+            let id = player.id;
+            player.relics.retain(|r| {
+                let live = tick < r.expires_at(&pace);
+                if !live {
+                    faded.push((id, r.kind));
+                }
+                live
+            });
+        }
+        for (player_id, kind) in faded {
+            self.pending_events.push(GameEvent {
+                tick,
+                kind: EventKind::RelicFaded(RelicFadedEvent { player_id, relic_kind: kind }),
+            });
+        }
     }
 
     /// Wedge a battered-but-flyable ship into the fleet, if there's room. It
@@ -7453,7 +7560,8 @@ impl GameEngine {
     /// Deuterium per tick a doctrine's fuel budget grows by.
     fn fuel_income(&self, owner: u64, params: &PolicyParams) -> f64 {
         let Some(player) = self.players.get(&owner) else { return 0.0; };
-        player.production_per_tick(&self.world.pace).deuterium.max(0.0) * f64::from(params.fuel_budget_pct) / 100.0
+        player.production_per_tick(&self.relics_of(owner), &self.world.pace).deuterium.max(0.0)
+            * f64::from(params.fuel_budget_pct) / 100.0
     }
 
     /// Hull lost stays lost until a dock mends it, and a mauled fleet is
@@ -8373,6 +8481,7 @@ impl GameEngine {
         self.unload_cargo(fleet_id);
         self.report_unload(fleet_id, aboard);
         self.deliver_charts(fleet_id);
+        self.claim_relic(fleet_id);
 
         let player = self.players.get(&player_id).ok_or("Player not found")?;
         let fleet = self.fleets.get_mut(&fleet_id).unwrap();
@@ -8773,6 +8882,7 @@ impl GameEngine {
                 harvest_target: HarvestResource::Auto,
                 charts: Vec::new(),
                 laden: false,
+                relic: None,
             };
             self.fleets.insert(new_id, new_fleet);
             new_id
@@ -9029,12 +9139,12 @@ fn fleet_jump_ticks(fleet: &Fleet, research: Option<&ResearchLevels>) -> u16 {
 
 /// Fuel one jump burns: OGame's figure for each ship, less Energy
 /// Technology's saving.
-fn fleet_fuel_cost(fleet: &Fleet, research: Option<&ResearchLevels>) -> f64 {
+fn fleet_fuel_cost(fleet: &Fleet, research: Option<&ResearchLevels>, relics: &RelicBonus) -> f64 {
     let none = ResearchLevels::default();
     let research = research.unwrap_or(&none);
     let burn = fleet.ships.counts()
         .fold(0.0, |burn, (class, count)| burn + f64::from(count) * scaling::ship_burn(class, research));
-    burn * scaling::fuel_rate_modifier(research.energy_technology)
+    burn * scaling::fuel_rate_modifier(research.energy_technology, relics)
 }
 
 /// Raw units per tick the fleet can extract at density multiplier 1.

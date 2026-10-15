@@ -8,7 +8,7 @@ use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     BattleState, BuildQueueItem, BuildingState, DefenceState, EnergyState, FleetState, GameEvent, GameState, HomeworldState,
     OutpostLevel, OutpostState, OutpostWork, OutpostWorkState, PlayerState, QueuedBuild, QueuedResearch, RelayState,
-    RelaysState, HubState,
+    RelaysState, RelicState, HubState,
     QueuedShip, Requirement, ResearchItem, ResearchState, ShipGroupState, ShipyardQueueItem, StandingOrders,
     TickUpdate, WorldInfo,
 };
@@ -199,7 +199,19 @@ fn player_state(engine: &GameEngine, player: &Player) -> PlayerState {
         homeworld: player.homeworld,
         ship_count: engine.fleets.values().filter(|f| f.owner_id == player.id).map(|f| f.ships.total()).sum(),
         exchange: engine.exchange_meter(player),
+        relics: player_relics(engine, player),
     }
+}
+
+fn player_relics(engine: &GameEngine, player: &Player) -> Vec<RelicState> {
+    let (tick, pace) = (engine.current_tick(), engine.pace());
+    player.relics.iter().map(|r| RelicState {
+        kind: r.kind,
+        pct: r.pct,
+        pct_now: r.now(tick, &pace),
+        claimed_tick: r.claimed_tick,
+        expires_at: r.expires_at(&pace),
+    }).collect()
 }
 
 /// Outward hops that still leave the fuel to come back: each costs a jump
@@ -247,6 +259,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             flight: engine.flight_quote(fleet, None),
             fleeing: engine.fleeing(fleet),
             pursued_by: engine.pursuit_of(fleet),
+            relic: fleet.relic,
             cargo: fleet.cargo,
             cargo_capacity: fleet_cargo_capacity(fleet, &engine.pace()),
             fuel: fleet.fuel,
@@ -295,6 +308,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
         end_tick: q.end_tick,
     }).collect();
 
+    let relics = engine.relics_of(player.id);
     let waits = crate::queue::project(player, engine.current_tick(), &pace);
     let build_pending: Vec<QueuedBuild> = player.building_pending.iter().zip(&waits.buildings).map(|(q, w)| {
         let cost = iac_shared::scaling::building_cost(q.building_type, q.target_level);
@@ -304,7 +318,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
             target_level: q.target_level,
             reserve: q.reserve,
             cost,
-            ticks: iac_shared::scaling::building_time(q.building_type, q.target_level, &player.buildings, &pace),
+            ticks: iac_shared::scaling::building_time(q.building_type, q.target_level, &player.buildings, &relics, &pace),
             waiting_for: w.short,
             waiting_on: w.reason,
             start_in: w.start_in,
@@ -318,7 +332,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
             target_level: q.target_level,
             reserve: q.reserve,
             cost,
-            ticks: iac_shared::scaling::research_time(q.tech, q.target_level, &player.buildings, &pace),
+            ticks: iac_shared::scaling::research_time(q.tech, q.target_level, &player.buildings, &relics, &pace),
             waiting_for: w.short,
             waiting_on: w.reason,
             start_in: w.start_in,
@@ -376,7 +390,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
     let reactor = player.buildings.fusion_reactor;
     HomeworldState {
         location: player.homeworld,
-        production: player.production_per_tick(&pace),
+        production: player.production_per_tick(&relics, &pace),
         energy: EnergyState {
             made: power.made,
             needed: power.needed,
@@ -427,6 +441,7 @@ fn build_homeworld_state(engine: &GameEngine, player: &Player) -> HomeworldState
             &DefenceKind::ALL.map(|kind| GameEngine::defences_owned_and_ordered(player, kind)),
             player.satellites,
             player.resources.deuterium > 0.0,
+            &relics,
             &pace,
         ),
     }
@@ -517,6 +532,9 @@ pub fn event_for(event: &GameEvent, player: &Player, engine: &GameEngine) -> Opt
         K::RelayDecayed(e) => e.player_id == player.id,
         K::HubArrived(e) => e.player_id == player.id,
         K::HubDeparting(e) => e.player_id == player.id,
+        K::RelicFound(e) => own_fleet(e.fleet_id),
+        K::RelicClaimed(e) => e.player_id == player.id,
+        K::RelicFaded(e) => e.player_id == player.id,
     };
     relevant.then_some(out)
 }

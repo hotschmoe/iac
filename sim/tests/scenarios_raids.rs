@@ -276,7 +276,7 @@ fn a_defence_that_could_never_beat_the_raid_outlasts_it_for_six_rounds() {
     assert!(fell >= 15 && lost_of(&told, LargeShieldDome) == 0, "{fell} cannons fell and the dome stood");
     assert!((fell * 6 / 10..=fell * 8 / 10).contains(&back), "{back} of {fell} cannons rebuilt");
     assert_eq!((standing(&e, IonCannon), standing(&e, LargeShieldDome)), (30 - fell + back, 1));
-    let made = e.engine.players[&pid].production_per_tick(&e.engine.pace()).scale(f64::from(RAID_ROUNDS + 2));
+    let made = e.engine.players[&pid].production_per_tick(&iac_shared::scaling::RelicBonus::NONE, &e.engine.pace()).scale(f64::from(RAID_ROUNDS + 2));
     assert!((e.stockpile().metal - stock.metal - made.metal).abs() < 1e-6, "the stockpile only grew");
     assert_eq!(e.engine.snapshot().raid_states[&pid].suppress_until, 0, "a raid repelled buys no quiet");
 }
@@ -385,7 +385,7 @@ fn a_lost_raid_takes_everything_that_stayed_and_the_defences_and_satellites_come
     assert_eq!(outcome.structures_restored, launchers + rebuilt_of(&told, LightLaser), "the defences alone");
     assert!(outcome.rebuilt.iter().all(|u| u.unit != ShipyardItem::Ship(LightFighter)), "no ship is rebuilt");
 
-    let made = e.engine.players[&pid].production_per_tick(&pace).scale(f64::from(outcome.rounds));
+    let made = e.engine.players[&pid].production_per_tick(&iac_shared::scaling::RelicBonus::NONE, &pace).scale(f64::from(outcome.rounds));
     let exposed = before.add(made).sub(protected);
     let taken = Resources {
         metal: exposed.metal * RAID_LOSS_CAP_METAL,

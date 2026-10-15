@@ -125,7 +125,13 @@
       "HUB_BAND_RINGS": 10,
       "HUB_PERIOD_TICKS": 86400,
       "HUB_WARN_TICKS": 3456,
-      "HUB_ATTEMPTS": 64
+      "HUB_ATTEMPTS": 64,
+      "RELIC_FADE_TICKS": 864000,
+      "RELIC_TOTAL_CAP": 0.4,
+      "RELIC_PCT_OUTER_MAX": 0.08,
+      "RELIC_PCT_DEEP_MAX": 0.25,
+      "RELIC_DEEP_RING": 36,
+      "RELIC_PCT_FLOOR_SHARE": 0.5
     },
     "satellite_energy": 30,
     "synthesizer_factor": 1.2,
@@ -1519,6 +1525,45 @@
       {"pace": 1.0, "period_ticks": 86400, "warn_ticks": 3456},
       {"pace": 10.0, "period_ticks": 15365, "warn_ticks": 615},
       {"pace": 600.0, "period_ticks": 713, "warn_ticks": 29}
+    ],
+    "relics": [
+      {"pace": 1.0, "fade_ticks": 864000},
+      {"pace": 10.0, "fade_ticks": 86400},
+      {"pace": 600.0, "fade_ticks": 1440}
+    ],
+    "relic_rings": [
+      {"ring": 9, "ceiling": 0.08},
+      {"ring": 10, "ceiling": 0.08},
+      {"ring": 11, "ceiling": 0.08},
+      {"ring": 12, "ceiling": 0.08},
+      {"ring": 13, "ceiling": 0.08},
+      {"ring": 14, "ceiling": 0.08},
+      {"ring": 15, "ceiling": 0.08},
+      {"ring": 16, "ceiling": 0.08},
+      {"ring": 17, "ceiling": 0.08},
+      {"ring": 18, "ceiling": 0.08},
+      {"ring": 19, "ceiling": 0.08},
+      {"ring": 20, "ceiling": 0.08},
+      {"ring": 21, "ceiling": 0.090625},
+      {"ring": 22, "ceiling": 0.10125},
+      {"ring": 23, "ceiling": 0.111875},
+      {"ring": 24, "ceiling": 0.1225},
+      {"ring": 25, "ceiling": 0.133125},
+      {"ring": 26, "ceiling": 0.14375},
+      {"ring": 27, "ceiling": 0.15437499999999998},
+      {"ring": 28, "ceiling": 0.16499999999999998},
+      {"ring": 29, "ceiling": 0.17562499999999998},
+      {"ring": 30, "ceiling": 0.18624999999999997},
+      {"ring": 31, "ceiling": 0.196875},
+      {"ring": 32, "ceiling": 0.20750000000000002},
+      {"ring": 33, "ceiling": 0.218125},
+      {"ring": 34, "ceiling": 0.22875},
+      {"ring": 35, "ceiling": 0.239375},
+      {"ring": 36, "ceiling": 0.25},
+      {"ring": 37, "ceiling": 0.25},
+      {"ring": 38, "ceiling": 0.25},
+      {"ring": 39, "ceiling": 0.25},
+      {"ring": 40, "ceiling": 0.25}
     ]
   }
 }

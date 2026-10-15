@@ -94,6 +94,14 @@ String trimmed(double v, [int places = 2]) {
   return s.contains('.') ? s.replaceFirst(RegExp(r'\.?0+$'), '') : s;
 }
 
+/// A relic's share as a percentage: "12.5%", "8%".
+String relicPct(double share) => '${trimmed(share * 100, 1)}%';
+
+/// A relic's figure as the panel reads it: "+12.5% metal output" for a kind
+/// that raises a figure, "-8% fuel burn" for one that cuts it.
+String relicBonus(proto.RelicKind kind, double share) =>
+    '${kind.effect == 'raises' ? '+' : '-'}${relicPct(share)} ${kind.label}';
+
 /// "0:40", "1:02:05", "3d 4:10:22".
 String clockFmt(int t) {
   t = t < 0 ? 0 : t;

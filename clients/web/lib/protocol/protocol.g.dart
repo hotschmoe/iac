@@ -2801,6 +2801,10 @@ class PlayerState {
   /// Where the player's meter at the hub's exchange stands this tick.
   final ExchangeMeter exchange;
 
+  /// The relics the player holds, claimed and not yet faded, in the order
+  /// they were claimed.
+  final List<RelicState> relics;
+
   const PlayerState({
     required this.id,
     required this.name,
@@ -2808,6 +2812,7 @@ class PlayerState {
     required this.homeworld,
     required this.shipCount,
     this.exchange = const ExchangeMeter(),
+    this.relics = const [],
   });
 
   factory PlayerState.fromJson(Object? json) {
@@ -2819,6 +2824,7 @@ class PlayerState {
       homeworld: Hex.fromJson(m['homeworld']),
       shipCount: _int(m['ship_count']),
       exchange: _opt(m['exchange'], ExchangeMeter.fromJson) ?? const ExchangeMeter(),
+      relics: _opt(m['relics'], (v) => _list(v, RelicState.fromJson)) ?? const [],
     );
   }
 
@@ -2829,6 +2835,44 @@ class PlayerState {
     'homeworld': homeworld.toJson(),
     'ship_count': shipCount,
     'exchange': exchange.toJson(),
+    if (relics.isNotEmpty) 'relics': relics.map((e) => e.toJson()).toList(),
+  };
+}
+
+/// A claimed relic: the bonus it gave when claimed, what it gives this tick
+/// and when it is gone. The figures are shares (0.1 is ten percent).
+class RelicState {
+  final RelicKind kind;
+  final double pct;
+  final double pctNow;
+  final int claimedTick;
+  final int expiresAt;
+
+  const RelicState({
+    required this.kind,
+    required this.pct,
+    required this.pctNow,
+    required this.claimedTick,
+    required this.expiresAt,
+  });
+
+  factory RelicState.fromJson(Object? json) {
+    final m = _obj(json);
+    return RelicState(
+      kind: RelicKind.fromJson(m['kind']),
+      pct: _double(m['pct']),
+      pctNow: _double(m['pct_now']),
+      claimedTick: _int(m['claimed_tick']),
+      expiresAt: _int(m['expires_at']),
+    );
+  }
+
+  Json toJson() => {
+    'kind': kind.toJson(),
+    'pct': pct,
+    'pct_now': pctNow,
+    'claimed_tick': claimedTick,
+    'expires_at': expiresAt,
   };
 }
 
@@ -2877,6 +2921,10 @@ class FleetState {
 
   /// A hostile group is following the fleet and jumping to where it stands.
   final Pursuit? pursuedBy;
+
+  /// A relic aboard: claimed when the fleet docks at its owner's homeworld,
+  /// outpost or relay, lost with the fleet. At most one.
+  final RelicItem? relic;
   final Resources cargo;
 
   /// Hold size: the most `cargo` can total, as the server enforces it.
@@ -2981,6 +3029,7 @@ class FleetState {
     this.flight,
     this.fleeing,
     this.pursuedBy,
+    this.relic,
     required this.cargo,
     required this.cargoCapacity,
     required this.fuel,
@@ -3021,6 +3070,7 @@ class FleetState {
       flight: _opt(m['flight'], FlightQuote.fromJson),
       fleeing: _opt(m['fleeing'], Fleeing.fromJson),
       pursuedBy: _opt(m['pursued_by'], Pursuit.fromJson),
+      relic: _opt(m['relic'], RelicItem.fromJson),
       cargo: Resources.fromJson(m['cargo']),
       cargoCapacity: _double(m['cargo_capacity']),
       fuel: _double(m['fuel']),
@@ -3060,6 +3110,7 @@ class FleetState {
     'flight': ?flight?.toJson(),
     'fleeing': ?fleeing?.toJson(),
     'pursued_by': ?pursuedBy?.toJson(),
+    'relic': ?relic?.toJson(),
     'cargo': cargo.toJson(),
     'cargo_capacity': cargoCapacity,
     'fuel': fuel,
@@ -5045,6 +5096,9 @@ sealed class EventKind {
       'RelayDecayed' => RelayDecayedEvent.fromJson(json),
       'HubArrived' => HubArrivedEvent.fromJson(json),
       'HubDeparting' => HubDepartingEvent.fromJson(json),
+      'RelicFound' => RelicFoundEvent.fromJson(json),
+      'RelicClaimed' => RelicClaimedEvent.fromJson(json),
+      'RelicFaded' => RelicFadedEvent.fromJson(json),
       final tag => throw FormatException('unknown EventKind kind "$tag"'),
     };
   }
@@ -5061,6 +5115,104 @@ class BattleRoundKind extends EventKind {
 
   @override
   Json toJson() => {'kind': 'BattleRound', ...battleRound.toJson()};
+}
+
+/// A boarding found a relic. `carried` is false when the fleet already
+/// carried a stronger one and this one was left behind.
+class RelicFoundEvent extends EventKind {
+  final int fleetId;
+  final Hex sector;
+  final RelicKind relicKind;
+  final double pct;
+  final bool carried;
+
+  const RelicFoundEvent({
+    required this.fleetId,
+    required this.sector,
+    required this.relicKind,
+    required this.pct,
+    required this.carried,
+  });
+
+  factory RelicFoundEvent.fromJson(Object? json) {
+    final m = _obj(json);
+    return RelicFoundEvent(
+      fleetId: _int(m['fleet_id']),
+      sector: Hex.fromJson(m['sector']),
+      relicKind: RelicKind.fromJson(m['relic_kind']),
+      pct: _double(m['pct']),
+      carried: _bool(m['carried']),
+    );
+  }
+
+  @override
+  Json toJson() => {
+    'kind': 'RelicFound',
+    'fleet_id': fleetId,
+    'sector': sector.toJson(),
+    'relic_kind': relicKind.toJson(),
+    'pct': pct,
+    'carried': carried,
+  };
+}
+
+/// A fleet docked with a relic and it was claimed. `applied` is false when
+/// the owner held a relic of the same kind that was stronger now.
+class RelicClaimedEvent extends EventKind {
+  final int playerId;
+  final int fleetId;
+  final RelicKind relicKind;
+  final double pct;
+  final int expiresAt;
+  final bool applied;
+
+  const RelicClaimedEvent({
+    required this.playerId,
+    required this.fleetId,
+    required this.relicKind,
+    required this.pct,
+    required this.expiresAt,
+    required this.applied,
+  });
+
+  factory RelicClaimedEvent.fromJson(Object? json) {
+    final m = _obj(json);
+    return RelicClaimedEvent(
+      playerId: _int(m['player_id']),
+      fleetId: _int(m['fleet_id']),
+      relicKind: RelicKind.fromJson(m['relic_kind']),
+      pct: _double(m['pct']),
+      expiresAt: _int(m['expires_at']),
+      applied: _bool(m['applied']),
+    );
+  }
+
+  @override
+  Json toJson() => {
+    'kind': 'RelicClaimed',
+    'player_id': playerId,
+    'fleet_id': fleetId,
+    'relic_kind': relicKind.toJson(),
+    'pct': pct,
+    'expires_at': expiresAt,
+    'applied': applied,
+  };
+}
+
+/// A claimed relic ran out.
+class RelicFadedEvent extends EventKind {
+  final int playerId;
+  final RelicKind relicKind;
+
+  const RelicFadedEvent({required this.playerId, required this.relicKind});
+
+  factory RelicFadedEvent.fromJson(Object? json) {
+    final m = _obj(json);
+    return RelicFadedEvent(playerId: _int(m['player_id']), relicKind: RelicKind.fromJson(m['relic_kind']));
+  }
+
+  @override
+  Json toJson() => {'kind': 'RelicFaded', 'player_id': playerId, 'relic_kind': relicKind.toJson()};
 }
 
 /// The player has eyes on a roaming hub they did not know the stay of: it
@@ -7242,6 +7394,26 @@ enum ResourceKind {
   String toJson() => wire;
 }
 
+/// What a relic does while it stands.
+enum RelicKind {
+  metalOutput('metal_output', label: 'metal output', effect: 'raises'),
+  crystalOutput('crystal_output', label: 'crystal output', effect: 'raises'),
+  deuteriumOutput('deuterium_output', label: 'deuterium output', effect: 'raises'),
+  fuelBurn('fuel_burn', label: 'fuel burn', effect: 'cuts'),
+  researchTime('research_time', label: 'research time', effect: 'cuts'),
+  buildingTime('building_time', label: 'building time', effect: 'cuts');
+
+  const RelicKind(this.wire, {required this.label, required this.effect});
+
+  final String wire;
+  final String label;
+  final String effect;
+
+  static RelicKind fromJson(Object? json) => _named(values, (v) => v.wire, json);
+
+  String toJson() => wire;
+}
+
 enum BuildingType {
   metalMine('MetalMine', label: 'Metal Mine'),
   crystalMine('CrystalMine', label: 'Crystal Mine'),
@@ -7379,6 +7551,21 @@ class ShipyardItem {
 
   @override
   int get hashCode => Object.hashAll(_props);
+}
+
+/// A relic aboard a fleet, as found: it does not fade until it is claimed.
+class RelicItem {
+  final RelicKind kind;
+  final double pct;
+
+  const RelicItem({required this.kind, required this.pct});
+
+  factory RelicItem.fromJson(Object? json) {
+    final m = _obj(json);
+    return RelicItem(kind: RelicKind.fromJson(m['kind']), pct: _double(m['pct']));
+  }
+
+  Json toJson() => {'kind': kind.toJson(), 'pct': pct};
 }
 
 /// How a fleet is expected to fare against what waits in a sector. The ratio

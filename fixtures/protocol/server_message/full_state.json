@@ -195,6 +195,10 @@
         "weapons": 0
       },
       "refit_due": true,
+      "relic": {
+        "kind": "fuel_burn",
+        "pct": 0.125
+      },
       "repair": {
         "home": {
           "hull": 640,
@@ -282,6 +286,10 @@
         "weapons": 0
       },
       "refit_due": true,
+      "relic": {
+        "kind": "fuel_burn",
+        "pct": 0.125
+      },
       "repair": {
         "home": {
           "hull": 640,
@@ -376,6 +384,10 @@
         "weapons": 0
       },
       "refit_due": false,
+      "relic": {
+        "kind": "fuel_burn",
+        "pct": 0.125
+      },
       "scan_range": 1,
       "shield": 3000,
       "ship_count": 60,
@@ -447,6 +459,10 @@
         "weapons": 0
       },
       "refit_due": true,
+      "relic": {
+        "kind": "fuel_burn",
+        "pct": 0.125
+      },
       "repair": {
         "home": {
           "hull": 640,
@@ -2971,6 +2987,22 @@
     },
     "id": 42,
     "name": "Admiral",
+    "relics": [
+      {
+        "claimed_tick": 1000,
+        "expires_at": 11000,
+        "kind": "metal_output",
+        "pct": 0.1875,
+        "pct_now": 0.09375
+      },
+      {
+        "claimed_tick": 5500,
+        "expires_at": 15500,
+        "kind": "research_time",
+        "pct": 0.0625,
+        "pct_now": 0.0625
+      }
+    ],
     "resources": {
       "crystal": 600.0,
       "deuterium": 150.25,

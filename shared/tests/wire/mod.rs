@@ -25,7 +25,7 @@ use iac_shared::constants::{
     POLICY_DISENGAGE_RATIO_X10_MAX, POLICY_DISENGAGE_RATIO_X10_MIN, POLICY_ENGAGE_RATIO_X10_MAX,
     POLICY_ENGAGE_RATIO_X10_MIN, POLICY_FUEL_UNBOUNDED_PCT, POLICY_HULL_READY, POLICY_MIN_FUEL_PCT_MAX,
     POLICY_RANGE_MAX, POLICY_RANGE_MIN, RAID_ROUNDS, REFINE_LOSS, ResourceKind, SCAN_BASE_RANGE, SCAN_COOLDOWN,
-    SCAN_PROBE_RANGE, ShipClass, TerrainType, Zone,
+    RelicKind, SCAN_PROBE_RANGE, ShipClass, TerrainType, Zone,
 };
 use iac_shared::protocol::{
     BOT_NAME_PREFIX, ClientMessage, EffectKind, ErrorCode, ExchangeMeter, MAX_ODDS_SECTORS, NAME_MAX_LEN, RelaysState,
@@ -167,6 +167,8 @@ pub fn extras(model: &Model) -> Extras {
         column(model, "label", PolicyPreset::label),
         column(model, "label", SiteRisk::label),
         column(model, "label", SignalKind::label),
+        column(model, "label", RelicKind::label),
+        column(model, "effect", |kind: RelicKind| if kind.raises() { "raises" } else { "cuts" }),
         column(model, "code", |code: ErrorCode| code as u16),
     ];
     let constants = constants![

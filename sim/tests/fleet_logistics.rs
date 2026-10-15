@@ -542,7 +542,7 @@ fn docked_with_half_a_tank(budget: u8, deuterium: impl Fn(f64) -> f64) -> (Empir
         player.resources.deuterium = deuterium(cap);
         s.fleets.get_mut(&fid).unwrap().fuel = tank / 2.0;
     });
-    let income = e.engine.players[&pid].production_per_tick(&pace).deuterium;
+    let income = e.engine.players[&pid].production_per_tick(&iac_shared::scaling::RelicBonus::NONE, &pace).deuterium;
     assert!(income > 0.0);
     let params = PolicyParams { fuel_budget_pct: budget, ..PolicyParams::default() };
     e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, Some(params)).unwrap();
@@ -555,7 +555,7 @@ fn a_young_empire_with_no_deuterium_income_keeps_its_stock_from_a_fleet_under_or
     let (pid, fid) = (e.pid, e.fid);
     let home = e.engine.players[&pid].homeworld;
     let stock = e.engine.players[&pid].resources.deuterium;
-    assert_eq!(e.engine.players[&pid].production_per_tick(&e.engine.world.pace).deuterium, 0.0);
+    assert_eq!(e.engine.players[&pid].production_per_tick(&iac_shared::scaling::RelicBonus::NONE, &e.engine.world.pace).deuterium, 0.0);
     let tank = e.engine.fleets[&fid].fuel_max;
     edit(&mut e.engine, |s| s.fleets.get_mut(&fid).unwrap().fuel = tank / 2.0);
     e.engine.handle_policy_update(pid, fid, PolicyPreset::Prospect, None).unwrap();

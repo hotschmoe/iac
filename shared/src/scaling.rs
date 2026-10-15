@@ -15,7 +15,8 @@ use crate::constants::{
     MAP_PAYS, NPC_DRIVE_FREE_RINGS, NPC_DRIVE_RINGS_PER_LEVEL, NPC_HEAL_SHARE, NPC_HEAL_STEPS, OUTPOST_BUILD_RATE,
     OUTPOST_COST, OUTPOST_GROWTH, OUTPOST_RAID_FACTOR, OUTPOST_REPAIR_SHARE, OUTPOST_STORE_BASE,
     OUTPOST_YIELD_PER_HOUR, RECALL_SAVING_PER_LEVEL, REFINE_LOSS, RELAY_BASE_MAX, RELAY_COST_BASE, RELAY_COST_GROWTH,
-    DEPOT_FILL_JUMPS_BASE, DEPOT_FILL_JUMPS_PER_LEVEL, HUB_COUNT, HUB_PERIOD_TICKS, HUB_WARN_TICKS, RELAY_LEVELS_PER_STEP, RELAY_MIN_RING, SENSOR_HOPS_PER_LEVEL, TANK_PER_DEUT_TANK_LEVEL,
+    RelicFamily, RelicKind, RELIC_DEEP_RING, RELIC_FADE_TICKS, RELIC_PCT_DEEP_MAX, RELIC_PCT_OUTER_MAX,
+    RELIC_TOTAL_CAP, DEPOT_FILL_JUMPS_BASE, DEPOT_FILL_JUMPS_PER_LEVEL, HUB_COUNT, HUB_PERIOD_TICKS, HUB_WARN_TICKS, RELAY_LEVELS_PER_STEP, RELAY_MIN_RING, SENSOR_HOPS_PER_LEVEL, TANK_PER_DEUT_TANK_LEVEL,
 };
 use crate::maths;
 use crate::pace::Pace;
@@ -302,14 +303,20 @@ pub fn home_power(
 /// What the mines add to the stockpile each tick at `fraction` of their
 /// power, natural production included. The Fusion Reactor's burn is not
 /// taken off here.
-pub fn production_per_tick(buildings: &BuildingLevels, fraction: f64, pace: &Pace) -> Resources {
-    let mine = |building: BuildingType, natural: f64| {
+pub fn production_per_tick(
+    buildings: &BuildingLevels,
+    fraction: f64,
+    relics: &RelicBonus,
+    pace: &Pace,
+) -> Resources {
+    let mine = |building: BuildingType, natural: f64, relic: f64| {
         pace.rate((mine_output_per_hour(building, buildings.get(building)) * fraction + natural) / 3600.0)
+            * (1.0 + relic)
     };
     Resources {
-        metal: mine(BuildingType::MetalMine, NATURAL_PER_HOUR_METAL),
-        crystal: mine(BuildingType::CrystalMine, NATURAL_PER_HOUR_CRYSTAL),
-        deuterium: mine(BuildingType::DeuteriumSynthesizer, 0.0),
+        metal: mine(BuildingType::MetalMine, NATURAL_PER_HOUR_METAL, relics.metal),
+        crystal: mine(BuildingType::CrystalMine, NATURAL_PER_HOUR_CRYSTAL, relics.crystal),
+        deuterium: mine(BuildingType::DeuteriumSynthesizer, 0.0, relics.deuterium),
     }
 }
 
@@ -452,11 +459,18 @@ fn cost_seconds(cost: Resources, rate: f64, speed_divisor: f64) -> f64 {
 
 /// Ticks to build level N: derived from the cost, so time and cost share an
 /// exponent.
-pub fn building_time(building: BuildingType, level: u8, buildings: &BuildingLevels, pace: &Pace) -> u64 {
+pub fn building_time(
+    building: BuildingType,
+    level: u8,
+    buildings: &BuildingLevels,
+    relics: &RelicBonus,
+    pace: &Pace,
+) -> u64 {
     if level == 0 {
         return 0;
     }
-    pace.econ_ticks(cost_seconds(building_cost(building, level), BUILD_RATE, building_speed(buildings)))
+    let seconds = cost_seconds(building_cost(building, level), BUILD_RATE, building_speed(buildings));
+    pace.econ_ticks(seconds * (1.0 - relics.building))
 }
 
 // ── Requirements ─────────────────────────────────────────────────
@@ -685,11 +699,18 @@ pub fn research_energy(tech: ResearchType, level: u8) -> u32 {
     }
 }
 
-pub fn research_time(tech: ResearchType, level: u8, buildings: &BuildingLevels, pace: &Pace) -> u64 {
+pub fn research_time(
+    tech: ResearchType,
+    level: u8,
+    buildings: &BuildingLevels,
+    relics: &RelicBonus,
+    pace: &Pace,
+) -> u64 {
     if level == 0 {
         return 0;
     }
-    pace.econ_ticks(cost_seconds(research_cost(tech, level), RESEARCH_RATE, research_speed(buildings)))
+    let seconds = cost_seconds(research_cost(tech, level), RESEARCH_RATE, research_speed(buildings));
+    pace.econ_ticks(seconds * (1.0 - relics.research))
 }
 
 pub fn research_prerequisites(tech: ResearchType) -> Prereqs {
@@ -839,9 +860,9 @@ pub fn next_building_slot_level(research: &ResearchLevels) -> Option<u8> {
     BUILD_SLOT_LEVELS.into_iter().find(|&level| research.computer_technology < level)
 }
 
-/// The share of a jump's burn that Energy Technology leaves.
-pub fn fuel_rate_modifier(energy_technology: u8) -> f64 {
-    1.0 - (FUEL_SAVING_PER_LEVEL * f64::from(energy_technology)).min(FUEL_SAVING_MAX)
+/// The share of a jump's burn that Energy Technology and a fuel relic leave.
+pub fn fuel_rate_modifier(energy_technology: u8, relics: &RelicBonus) -> f64 {
+    (1.0 - (FUEL_SAVING_PER_LEVEL * f64::from(energy_technology)).min(FUEL_SAVING_MAX)) * (1.0 - relics.fuel)
 }
 
 /// What the Deuterium Tank multiplies every fleet's tank by.
@@ -1805,6 +1826,94 @@ pub fn data_core_chance(rating: u8) -> f32 {
 /// Chance of an ancient relic, from T6: 2 percent per rating point above 5.
 pub fn relic_chance(rating: u8) -> f32 {
     (0.02 * (f32::from(rating) - 5.0)).clamp(0.0, 0.08)
+}
+
+// ── Fading relics ────────────────────────────────────────────────
+
+/// Strongest a relic found `dist` rings out can be.
+pub fn relic_ceiling(dist: u16) -> f64 {
+    if dist <= 20 {
+        return RELIC_PCT_OUTER_MAX;
+    }
+    let deep = f64::from(dist.min(RELIC_DEEP_RING) - 20) / f64::from(RELIC_DEEP_RING - 20);
+    RELIC_PCT_OUTER_MAX + (RELIC_PCT_DEEP_MAX - RELIC_PCT_OUTER_MAX) * deep
+}
+
+/// A relic aboard a fleet, as found: it does not fade until it is claimed.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RelicItem {
+    pub kind: RelicKind,
+    pub pct: f64,
+}
+
+/// A relic as a player holds it: found at `pct`, claimed at `claimed_tick`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ClaimedRelic {
+    pub kind: RelicKind,
+    pub pct: f64,
+    pub claimed_tick: u64,
+}
+
+impl ClaimedRelic {
+    pub fn expires_at(&self, pace: &Pace) -> u64 {
+        self.claimed_tick + pace.econ_ticks(RELIC_FADE_TICKS as f64)
+    }
+
+    /// The bonus it gives at `tick`: `pct` less the share of the fade gone.
+    pub fn now(&self, tick: u64, pace: &Pace) -> f64 {
+        let span = pace.econ_ticks(RELIC_FADE_TICKS as f64);
+        let elapsed = tick.saturating_sub(self.claimed_tick).min(span);
+        self.pct * (1.0 - elapsed as f64 / span as f64)
+    }
+}
+
+/// What a player's relics add up to at one tick, as shares: the three mines'
+/// output up, fuel burn and the two kinds of time down.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RelicBonus {
+    pub metal: f64,
+    pub crystal: f64,
+    pub deuterium: f64,
+    pub fuel: f64,
+    pub research: f64,
+    pub building: f64,
+}
+
+impl RelicBonus {
+    pub const NONE: RelicBonus =
+        RelicBonus { metal: 0.0, crystal: 0.0, deuterium: 0.0, fuel: 0.0, research: 0.0, building: 0.0 };
+
+    /// The bonuses of `relics` at `tick`. A family whose kinds add up to more
+    /// than `RELIC_TOTAL_CAP` is scaled down together to the cap.
+    pub fn of(relics: &[ClaimedRelic], tick: u64, pace: &Pace) -> RelicBonus {
+        let now = |kind: RelicKind| {
+            relics.iter().filter(|r| r.kind == kind).map(|r| r.now(tick, pace)).fold(0.0, f64::max)
+        };
+        let family_scale = |family: RelicFamily| {
+            let sum: f64 = RelicKind::ALL.into_iter().filter(|k| k.family() == family).map(now).sum();
+            if sum > RELIC_TOTAL_CAP { RELIC_TOTAL_CAP / sum } else { 1.0 }
+        };
+        let share = |kind: RelicKind| now(kind) * family_scale(kind.family());
+        RelicBonus {
+            metal: share(RelicKind::MetalOutput),
+            crystal: share(RelicKind::CrystalOutput),
+            deuterium: share(RelicKind::DeuteriumOutput),
+            fuel: share(RelicKind::FuelBurn),
+            research: share(RelicKind::ResearchTime),
+            building: share(RelicKind::BuildingTime),
+        }
+    }
+
+    pub fn get(&self, kind: RelicKind) -> f64 {
+        match kind {
+            RelicKind::MetalOutput => self.metal,
+            RelicKind::CrystalOutput => self.crystal,
+            RelicKind::DeuteriumOutput => self.deuterium,
+            RelicKind::FuelBurn => self.fuel,
+            RelicKind::ResearchTime => self.research,
+            RelicKind::BuildingTime => self.building,
+        }
+    }
 }
 
 // ── Threat and the NPC gradient ──────────────────────────────────

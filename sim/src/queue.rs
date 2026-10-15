@@ -65,7 +65,8 @@ struct Item {
 }
 
 pub fn project(player: &Player, tick: u64, pace: &Pace) -> QueueWaits {
-    let rate = player.production_per_tick(pace);
+    let relics = player.relic_bonus(tick, pace);
+    let rate = player.production_per_tick(&relics, pace);
     let mut finishes: Vec<(u64, Done)> = Vec::new();
 
     let mut slots: Vec<u64> = player.building_queue.iter().map(|q| q.end_tick.saturating_sub(tick)).collect();
@@ -78,7 +79,7 @@ pub fn project(player: &Player, tick: u64, pace: &Pace) -> QueueWaits {
         Item {
             cost: scaling::building_cost(b, target),
             reserve: q.reserve,
-            duration: scaling::building_time(b, target, &player.buildings, pace),
+            duration: scaling::building_time(b, target, &player.buildings, &relics, pace),
             ready: Box::new(move |bl, rl| bl.get(b) + 1 == target && scaling::building_prerequisites_met(b, bl, rl)),
             finishes: Done::Building(b, target),
         }
@@ -95,7 +96,7 @@ pub fn project(player: &Player, tick: u64, pace: &Pace) -> QueueWaits {
         Item {
             cost: scaling::research_cost(t, target),
             reserve: q.reserve,
-            duration: scaling::research_time(t, target, &player.buildings, pace),
+            duration: scaling::research_time(t, target, &player.buildings, &relics, pace),
             ready: Box::new(move |bl, rl| {
                 bl.research_lab > 0
                     && rl.get(t) + 1 == target
