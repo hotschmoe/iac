@@ -8,11 +8,12 @@ use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     BattleState, BuildQueueItem, BuildingState, DefenceState, EnergyState, FleetState, GameEvent, GameState, HomeworldState,
     OutpostLevel, OutpostState, OutpostWork, OutpostWorkState, PlayerState, QueuedBuild, QueuedResearch, RelayState,
-    RelaysState,
+    RelaysState, HubState,
     QueuedShip, Requirement, ResearchItem, ResearchState, ShipGroupState, ShipyardQueueItem, StandingOrders,
     TickUpdate, WorldInfo,
 };
 use iac_shared::scaling::{self, BuildingType, DefenceKind, Refit, ResearchType};
+use iac_shared::world::ROAMING_HUB;
 
 use crate::engine::{
     fleet_broadside, fleet_cargo_capacity, fleet_power, outpost_raid_range, platform_units, FleetStatus, GameEngine,
@@ -29,6 +30,7 @@ pub fn full_state(engine: &GameEngine, player_id: u64) -> Option<GameState> {
         homeworld: build_homeworld_state(engine, player),
         outpost: outpost_state(engine, player),
         relays: relays_state(engine, player_id),
+        hubs: hubs_state(engine, player_id),
         known_sectors: engine.known.chart(engine, player_id),
         battles: battles(engine, player, true),
         world: WorldInfo::new(engine.pace(), engine.world.economy_version, engine.world.worldgen_version),
@@ -55,6 +57,7 @@ pub fn tick_update(engine: &GameEngine, player_id: u64, events: &[GameEvent]) ->
         homeworld_update,
         outpost: player_data.and_then(|p| outpost_state(engine, p)),
         relays: relays_state(engine, player_id),
+        hubs: hubs_state(engine, player_id),
         battles: player_data.map(|p| battles(engine, p, false)).unwrap_or_default(),
         events: if player_events.is_empty() { None } else { Some(player_events) },
     }
@@ -102,6 +105,29 @@ fn relays_state(engine: &GameEngine, player_id: u64) -> RelaysState {
                 .collect()
         }),
     }
+}
+
+fn hubs_state(engine: &GameEngine, player_id: u64) -> Vec<HubState> {
+    let tick = engine.current_tick();
+    let pace = engine.pace();
+    let warn = scaling::hub_warn_ticks(&pace);
+    let Some(seen) = engine.hub_sightings.get(&player_id) else { return Vec::new() };
+    seen.iter()
+        .filter_map(|(id, stay)| {
+            let standing = engine.hubs.iter().find(|hub| hub.id == *id)?;
+            let departs_at = scaling::hub_departs_at(*id, stay.epoch, &pace);
+            let stale = (standing.epoch, standing.sector) != (stay.epoch, stay.sector);
+            Some(HubState {
+                id: *id,
+                sector: stay.sector,
+                ring: stay.sector.dist_from_origin(),
+                services: ROAMING_HUB.to_vec(),
+                departs_at,
+                departing: !stale && tick + warn >= departs_at,
+                stale,
+            })
+        })
+        .collect()
 }
 
 fn outpost_state(engine: &GameEngine, player: &Player) -> Option<OutpostState> {
@@ -240,6 +266,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             at_relay: engine.relays.get(&player_id).is_some_and(|list| list.iter().any(|r| r.sector == fleet.location)),
             outpost_fuel: engine.outpost_route_cost(fleet, bound_for),
             refine: crate::engine::refining(fleet),
+            refuel: engine.refuel_quote(fleet),
             policy: engine.policies.get(&fleet.id).map(|p| StandingOrders { preset: p.preset, params: p.params }),
         });
     }
@@ -487,6 +514,8 @@ pub fn event_for(event: &GameEvent, player: &Player, engine: &GameEngine) -> Opt
         K::OutpostCompleted(e) => e.player_id == player.id,
         K::RelayFounded(e) => e.player_id == player.id,
         K::RelayDecayed(e) => e.player_id == player.id,
+        K::HubArrived(e) => e.player_id == player.id,
+        K::HubDeparting(e) => e.player_id == player.id,
     };
     relevant.then_some(out)
 }

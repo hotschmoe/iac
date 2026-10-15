@@ -1,0 +1,11 @@
+{
+  "departs_at": 61000,
+  "id": 2,
+  "kind": "HubDeparting",
+  "player_id": 42,
+  "sector": {
+    "q": -30,
+    "r": 14
+  },
+  "tick": 1234
+}

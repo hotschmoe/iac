@@ -128,6 +128,7 @@ def merge_view(fs, m):
         fs["fleets"] = m.get("fleets", fs.get("fleets"))
         fs["outpost"] = m.get("outpost")
         fs["relays"] = m.get("relays")
+        fs["hubs"] = m.get("hubs") or []
         if m.get("sector_updates"):
             idx = {(s["location"]["q"], s["location"]["r"]): i for i, s in enumerate(fs["known_sectors"])}
             for s in m["sector_updates"]:
@@ -363,6 +364,10 @@ def event_text(e):
         return f"fleet {e['fleet_id']} harvested {res(e.get('resources'))} in {e.get('ticks')}t"
     if k == "Exchanged":
         return f"fleet {e['fleet_id']} traded at the exchange: {trade_text(e)}; {meter_text(e['meter_after'])}"
+    if k == "HubArrived":
+        return f"HUB {e['id']} seen at {hexs(e['sector'])} ring {e['ring']}: it leaves at tick {e['departs_at']}"
+    if k == "HubDeparting":
+        return f"HUB {e['id']} at {hexs(e['sector'])} departs at tick {e['departs_at']}: leave its sector or it is gone"
     if k == "CombatEnded":
         lost = "; ".join(
             f"{l.get('owner') or l.get('label') or 'a group'}" + ("'s defences" if l.get("battery") else "") + " lost "
@@ -528,6 +533,28 @@ def relays_line(r, now):
                        for x in r.get("relays") or [])
     return (f"Relays {len(r.get('relays') or [])}/{r['limit']} ({r['technology']} level {r['level']})"
             + (": " + stands if stands else ""))
+
+
+def hubs_line(hubs, now):
+    """One line for the roaming hubs the player knows: where each stands and when it leaves."""
+    if not hubs:
+        return None
+    parts = []
+    for h in hubs:
+        left = h["departs_at"] - now
+        when = (f"left {age(-left)} ago, where it is now is unknown" if h.get("stale")
+                else f"DEPARTING in {age(left)}" if h.get("departing") else f"leaves in {age(left)}")
+        parts.append(f"hub {h['id']} at {hexs(h['sector'])} ring {h['ring']} ({'+'.join(h['services'])}; {when})")
+    return "Roaming hubs: " + "; ".join(parts)
+
+
+def refuel_text(q):
+    """What a refuel at the hub would buy with each resource in the hold, or why not."""
+    if q.get("refusal") and not q.get("offers"):
+        return f"CANNOT REFUEL: {q['refusal']}"
+    return ("REFUEL (tank lacks {:.0f} fuel): ".format(q["missing"])
+            + "; ".join(f"{o['amount']:.0f} {o['give']} buys {o['fuel']:.0f}" + (f" at fee {o['fee'] * 100:.0f}%" if o["fee"] else "")
+                        for o in q["offers"]))
 
 
 def raid_range(r):
@@ -930,6 +957,8 @@ def fleet_rows(fs):
             row["laden"] = True
         if f.get("refine"):
             row["refine"] = {k: round(v, 1) for k, v in f["refine"].items()}
+        if f.get("refuel"):
+            row["refuel"] = f["refuel"]
         if f.get("flight"):
             q = f["flight"]
             row["flight"] = {"odds": round(q["ratio"], 2), "label": q["label"], "fuel": round(q["fuel"]), "rounds": q["rounds"],
@@ -1080,6 +1109,8 @@ def build_state(fs, board=None, left=None, alerts=None):
         doc["outpost"] = fs["outpost"]
     if fs.get("relays") and fs["relays"].get("relays"):
         doc["relays"] = fs["relays"]
+    if fs.get("hubs"):
+        doc["hubs"] = fs["hubs"]
     return doc
 
 
@@ -1235,6 +1266,8 @@ def cmd_status(name, brief=False):
             print("  " + outpost_line(fs["outpost"], fs["tick"]))
         if relays_line(fs.get("relays"), fs["tick"]):
             print("  " + relays_line(fs["relays"], fs["tick"]))
+        if hubs_line(fs.get("hubs"), fs["tick"]):
+            print("  " + hubs_line(fs["hubs"], fs["tick"]))
         for f in doc["fleets"]:
             print("  " + fleet_line(f))
         for a in doc["alerts"]:
@@ -1303,6 +1336,8 @@ def summarize(fs, doc, odds):
         print(outpost_line(fs["outpost"], fs["tick"]))
     if relays_line(fs.get("relays"), fs["tick"]):
         print(relays_line(fs["relays"], fs["tick"]))
+    if hubs_line(fs.get("hubs"), fs["tick"]):
+        print(hubs_line(fs["hubs"], fs["tick"]))
     sectors = {(s["location"]["q"], s["location"]["r"]): s for s in fs.get("known_sectors") or []}
     live = sum(1 for s in sectors.values() if s.get("live"))
     print(f"Known sectors: {len(sectors)} ({live} live, {len(sectors) - live} remembered/stale)")
@@ -1315,7 +1350,8 @@ def summarize(fs, doc, odds):
               f"  power {f.get('power', 0):.0f}  range {f.get('range_hops', 0)} hops out and back"
               + ("  CARGO BLOCKED: stockpile full, spend something" if f.get("cargo_blocked") else "")
               + ("  LADEN: loaded by hand, stays aboard at the dock (unload puts it back)" if f.get("laden") else "")
-              + (f"  REFINE: {f['refine']['deuterium']:.1f} deuterium in the hold makes {f['refine']['fuel']:.1f} fuel" if f.get("refine") else ""))
+              + (f"  REFINE: {f['refine']['deuterium']:.1f} deuterium in the hold makes {f['refine']['fuel']:.1f} fuel" if f.get("refine") else "")
+              + (f"  AT A HUB. {refuel_text(f['refuel'])}" if f.get("refuel") else ""))
         print(f"  ships: " + ", ".join(f"{n}x {c}" for c, n in classes.items())
               + f"  hull {hull:.0f}/{hull_max:.0f}  fuel {f['fuel']:.0f}/{f['fuel_max']:.0f}"
               + f"  cargo {cargo:.0f}/{f['cargo_capacity']:.0f} ({res(f.get('cargo'))})")

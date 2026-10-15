@@ -206,7 +206,8 @@ pub enum Command {
     /// Sell `amount` units of `give` from the hold of `fleet_id` to the hub's
     /// exchange and take `want` into the hold; without `amount`, all of
     /// `give` the fleet carries. The fleet must stand idle on a hub sector
-    /// that offers the exchange (`WorldInfo.hub`). The answer is an
+    /// that offers the exchange (`WorldInfo.hub`, or a roaming hub of
+    /// `GameState.hubs`). The answer is an
     /// `Exchanged` event; see `ExchangeTerms` for the rate. Refused, with
     /// nothing changed, when the fleet is elsewhere (`NotInSector`) or busy
     /// (`OnCooldown`), holds less than `amount` or none (`NoResources`),
@@ -279,6 +280,27 @@ pub enum Command {
     /// (`NoResources`) or its tank is full (`InvalidCommand`).
     #[serde(rename = "refine")]
     Refine { fleet_id: u64 },
+    /// Turn what is in the hold of `fleet_id` into fuel at a roaming hub
+    /// (`HubState.services` has `refuel`), until the tank is full: deuterium
+    /// at the dock's rate with no loss, any other resource first through the
+    /// exchange, at the player's meter and its fee, so the hub never returns
+    /// more than it takes. `amount` of `give` at most; without it, as much
+    /// as fills the tank or the hold holds. Only the hold pays, never the
+    /// stockpile. `FleetState.refuel` says beforehand what each resource in
+    /// the hold would buy. The answer is an `Alert` (info) event, and an
+    /// `Exchanged` event when the exchange was used. Refused, with nothing
+    /// changed, when the fleet is not at a hub that refuels (`NotInSector`),
+    /// moving, in combat or busy (`OnCooldown`), when the hold has less than
+    /// `amount` or none of `give` (`NoResources`), or its tank is full, the
+    /// `amount` is not positive or would return less than one unit of
+    /// deuterium (`InvalidCommand`).
+    #[serde(rename = "refuel")]
+    Refuel {
+        fleet_id: u64,
+        give: ResourceKind,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        amount: Option<f64>,
+    },
     /// Found the player's outpost in the sector `fleet_id` stands in, paid
     /// from its hold (`OutpostSurvey.cost`). The fleet must stand idle
     /// there and fly no standing orders; the sector must lie in rings 9 to
@@ -581,6 +603,52 @@ impl Default for RelaysState {
     fn default() -> RelaysState {
         RelaysState { limit: 0, technology: ResearchType::HyperspaceTechnology, level: 0, relays: Vec::new() }
     }
+}
+
+/// A roaming hub the player knows (`docs/design/deep-space.md`, 3.3): a
+/// neutral post in the Wandering, learnt of by having eyes on its sector, that
+/// leaves for another sector at `departs_at`. The centre hub is always
+/// known and is `WorldInfo.hub`, not listed here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HubState {
+    pub id: u8,
+    pub sector: Hex,
+    pub ring: u16,
+    pub services: Vec<HubService>,
+    /// The tick the hub leaves `sector`, as known from the stay the player
+    /// saw; in the past when `stale`.
+    pub departs_at: u64,
+    /// The hub is within its warning: it leaves in a few ticks.
+    pub departing: bool,
+    /// The hub has left `sector` since the player saw it there; where it
+    /// stands now is not known until someone has eyes on it again.
+    pub stale: bool,
+}
+
+/// What one resource in a fleet's hold would buy at a hub that refuels, as
+/// `refuel` with that `give` and no `amount` would do it now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefuelOffer {
+    pub give: ResourceKind,
+    /// How much of `give` leaves the hold.
+    pub amount: f64,
+    /// The fuel the tank gains.
+    pub fuel: f64,
+    /// The share of `give`'s value the exchange keeps; 0 for deuterium,
+    /// which is not exchanged.
+    pub fee: f64,
+}
+
+/// What `refuel` would do for a fleet standing at a hub that refuels.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefuelQuote {
+    /// Fuel the tank lacks.
+    pub missing: f64,
+    /// One offer for each resource the hold carries that would be accepted.
+    pub offers: Vec<RefuelOffer>,
+    /// Why `refuel` would be refused now, absent when it would not.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub refusal: Option<String>,
 }
 
 /// Answer to `outpost_survey`: what an outpost in `sector` would cost, make
@@ -992,6 +1060,10 @@ pub struct TickUpdate {
     /// The player's relays and their limit, whole, every tick.
     #[serde(default)]
     pub relays: RelaysState,
+    /// The roaming hubs the player knows, whole, every tick; left out when
+    /// there are none, and a client replaces its list with this one.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub hubs: Vec<HubState>,
     /// Every fight under way that the player has a fleet in or is present
     /// at, whole, every tick, as in `GameState.battles` but without
     /// `last_round`: the round fought this tick is the `BattleRound` event
@@ -1020,6 +1092,9 @@ pub struct GameState {
     pub outpost: Option<OutpostState>,
     #[serde(default)]
     pub relays: RelaysState,
+    /// The roaming hubs the player knows; left out when there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub hubs: Vec<HubState>,
     pub known_sectors: Vec<SectorState>,
     /// The fights under way that the player has a fleet in or is present
     /// at, each with its last round: what a client that arrives in the
@@ -1417,6 +1492,11 @@ pub struct FleetState {
     /// refused.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub refine: Option<Refining>,
+    /// What `refuel` would buy right now with each resource in the hold.
+    /// Present while the fleet stands in a sector of a roaming hub that
+    /// refuels, `refusal` saying why an order would be refused.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub refuel: Option<RefuelQuote>,
     /// Standing orders currently flying this fleet, if any: the doctrine
     /// with its settings, so the two cannot be told apart or disagree.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -2610,6 +2690,29 @@ pub enum EventKind {
     OutpostCompleted(OutpostCompletedEvent),
     RelayFounded(RelayFoundedEvent),
     RelayDecayed(RelayDecayedEvent),
+    HubArrived(HubArrivedEvent),
+    HubDeparting(HubDepartingEvent),
+}
+
+/// The player has eyes on a roaming hub they did not know the stay of: it
+/// has just arrived in range, or something now sees it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubArrivedEvent {
+    pub player_id: u64,
+    pub id: u8,
+    pub sector: Hex,
+    pub ring: u16,
+    pub departs_at: u64,
+}
+
+/// A roaming hub the player knows the whereabouts of leaves `sector` at
+/// `departs_at`, the end of its warning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubDepartingEvent {
+    pub player_id: u64,
+    pub id: u8,
+    pub sector: Hex,
+    pub departs_at: u64,
 }
 
 /// A relay of the player's was founded.

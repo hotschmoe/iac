@@ -10322,3 +10322,30 @@ second, and the store is the knob to turn.
 Two refusals in `solo/tests/single_player.rs` and `server/tests/smoke.rs` still
 named generator version 5 after master's clouds made it 6; they are 6 now,
 and the format refusals name 15 and 16.
+
+## 2026-10-15: roaming hubs, the fourth tier of reach
+
+Slice 4 of `docs/design/deep-space.md`. Four neutral posts move about the
+Wandering, each in a band of rings of its own (22 to 61), and each stays
+`HUB_PERIOD_TICKS` before it goes elsewhere. They exchange as the centre does
+(one `exchange_terms` prices a trade for both) and refuel a fleet from its
+hold: `refuel` on the wire, `FleetState.refuel` for the quote, `GameState.hubs`
+for the hubs a player knows, `HubArrived` and `HubDeparting` among the events.
+
+The position is the seed's (`WorldGen::hub_sites`), and the first the engine
+does not find blocked by a relay, a group, a fight or an outpost is taken at
+the tick a stay begins and kept in the document, so `SAVE_FORMAT` is 17;
+`ECONOMY_VERSION` is 19. The note's preferred shape (a pure choice that skips
+what the seed fixes, and a check of state at the boundary) needed the result
+stored: a pure function of the state at the boundary is not a function of the
+state at any later tick. `sim/tests/hubs.rs` covers the position at
+every tick of three stays, the move at the end of each, a world stopped and
+started through its document at three intervals, the refuel from a hold and
+the flight it buys, the warning, a fleet left standing, a scan, every
+refusal, the avoidance of a relay and a group, and the neutral rules.
+
+Deliberate: a hub's sector keeps the ore its seed rolled (the centre has
+none) and its sector view still shows the ring's threat estimate, because the
+incremental chart of `intel.rs` does not look at a hub and a threat of 0
+there would have made it stale. A fleet at a hub counts as deployed, as at
+the centre.

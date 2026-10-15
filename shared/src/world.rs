@@ -9,7 +9,7 @@ use std::sync::Arc;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::constants::{
-    CLOUD_CELL, CLOUD_DEUT_PEAK, CLOUD_MIN_DIST, CLOUD_PCT, CLOUD_RADIUS_BASE, CLOUD_RADIUS_MAX,
+    HUB_ATTEMPTS, HUB_BAND_RINGS, HUB_FIRST_RING, CLOUD_CELL, CLOUD_DEUT_PEAK, CLOUD_MIN_DIST, CLOUD_PCT, CLOUD_RADIUS_BASE, CLOUD_RADIUS_MAX,
     CLOUD_RADIUS_PER_RING, Density, ShipClass, TerrainType, Zone, HOMEWORLD_MAX_DIST, HOMEWORLD_MIN_DIST};
 use crate::scaling::{
     npc_composition, npc_passive_share, npc_presence_pct, ore_density_odds, ore_reserve_units, ship_power,
@@ -46,7 +46,13 @@ pub fn is_home_ground(coord: Hex) -> bool {
 pub enum HubService {
     /// The NPC exchange: a fleet here trades one resource in its hold for another.
     Exchange,
+    /// A fleet here turns what is in its hold into fuel at the exchange's
+    /// value, less its fee.
+    Refuel,
 }
+
+/// What every roaming hub offers (`WorldGen::hub_site`).
+pub const ROAMING_HUB: &[HubService] = &[HubService::Exchange, HubService::Refuel];
 
 /// The neutral post at the centre: its sectors and what each offers. A hub
 /// sector is empty space with no ore, no hostile group and no derelict, and
@@ -88,6 +94,15 @@ type HopsKey = (u32, u32, u8);
 
 /// Keeps a cloud's cell hash apart from every other roll of the seed.
 const CLOUD_SALT: u64 = 0x636c_6f75_6400_0001;
+
+/// Keeps a roaming hub's hash apart from every other roll of the seed.
+const HUB_SALT: u64 = 0x6875_6200_0000_0001;
+
+/// The rings hub `id` stands in, both ends included.
+pub fn hub_band(id: u8) -> (u16, u16) {
+    let first = HUB_FIRST_RING + u16::from(id) * HUB_BAND_RINGS;
+    (first, first + HUB_BAND_RINGS - 1)
+}
 
 /// Entries kept per cache before it is emptied; far above any real play area.
 const CACHE_LIMIT: usize = 1 << 21;
@@ -477,6 +492,43 @@ impl WorldGen {
         let r = cell_r * CLOUD_CELL + ((h >> 32) % cell_size) as i32;
         let centre = Hex { q: i16::try_from(q).ok()?, r: i16::try_from(r).ok()? };
         (centre.dist_from_origin() >= CLOUD_MIN_DIST && !is_home_ground(centre)).then_some(centre)
+    }
+
+    /// Whether a roaming hub may stand in `coord` as far as the seed says:
+    /// a sector with no lair template, no derelict, no Anomaly, off home
+    /// ground, and joined to the centre by open lanes.
+    pub fn hub_legal(&self, coord: Hex) -> bool {
+        let template = self.generate_sector(coord);
+        template.npc_template.is_none()
+            && !template.has_derelict
+            && template.terrain != TerrainType::Anomaly
+            && !is_home_ground(coord)
+            && self.lane_hops(Hex::ORIGIN, coord, u8::MAX).is_some()
+    }
+
+    /// The sectors hub `id` may take in stay `epoch`, in the order it prefers
+    /// them: hashed positions in its band that `hub_legal` accepts.
+    pub fn hub_sites(&self, id: u8, epoch: u64) -> impl Iterator<Item = Hex> + '_ {
+        let (first, last) = hub_band(id);
+        let width = u64::from(last - first + 1);
+        let base = self.hash_two(self.world_seed ^ HUB_SALT, u64::from(id));
+        (0..HUB_ATTEMPTS)
+            .map(move |attempt| {
+                let h = self.hash_two(self.hash_two(base, epoch), u64::from(attempt));
+                let ring = first + (h % width) as u16;
+                let at = (h >> 24) % (6 * u64::from(ring));
+                hex_ring(Hex::ORIGIN, ring).nth(at as usize).unwrap_or(Hex::ORIGIN)
+            })
+            .filter(move |coord| self.hub_legal(*coord))
+    }
+
+    /// Where hub `id` stands in stay `epoch` when nothing but the seed
+    /// decides: the first of `hub_sites`.
+    pub fn hub_site(&self, id: u8, epoch: u64) -> Hex {
+        self.hub_sites(id, epoch).next().unwrap_or_else(|| {
+            let (first, _) = hub_band(id);
+            hex_ring(Hex::ORIGIN, first).next().unwrap_or(Hex::ORIGIN)
+        })
     }
 
     /// The seed every roll about `coord` in this world starts from.

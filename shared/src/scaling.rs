@@ -15,7 +15,7 @@ use crate::constants::{
     MAP_PAYS, NPC_DRIVE_FREE_RINGS, NPC_DRIVE_RINGS_PER_LEVEL, NPC_HEAL_SHARE, NPC_HEAL_STEPS, OUTPOST_BUILD_RATE,
     OUTPOST_COST, OUTPOST_GROWTH, OUTPOST_RAID_FACTOR, OUTPOST_REPAIR_SHARE, OUTPOST_STORE_BASE,
     OUTPOST_YIELD_PER_HOUR, RECALL_SAVING_PER_LEVEL, REFINE_LOSS, RELAY_BASE_MAX, RELAY_COST_BASE, RELAY_COST_GROWTH,
-    RELAY_LEVELS_PER_STEP, RELAY_MIN_RING, SENSOR_HOPS_PER_LEVEL, TANK_PER_DEUT_TANK_LEVEL,
+    HUB_COUNT, HUB_PERIOD_TICKS, HUB_WARN_TICKS, RELAY_LEVELS_PER_STEP, RELAY_MIN_RING, SENSOR_HOPS_PER_LEVEL, TANK_PER_DEUT_TANK_LEVEL,
 };
 use crate::maths;
 use crate::pace::Pace;
@@ -1585,6 +1585,31 @@ pub fn relay_cost(ring: u16) -> Resources {
 /// every `RELAY_LEVELS_PER_STEP` levels of Hyperspace Technology.
 pub fn relay_limit(research: &ResearchLevels) -> u32 {
     RELAY_BASE_MAX + u32::from(research.hyperspace_technology) / RELAY_LEVELS_PER_STEP
+}
+
+// ── Roaming hubs ─────────────────────────────────────────────────
+
+/// Ticks a roaming hub stays where it is, at this pace.
+pub fn hub_period_ticks(pace: &Pace) -> u64 {
+    pace.attention_ticks(HUB_PERIOD_TICKS as f64).max(u64::from(HUB_COUNT))
+}
+
+/// Ticks of warning before a hub departs, at this pace; always less than a stay.
+pub fn hub_warn_ticks(pace: &Pace) -> u64 {
+    pace.attention_ticks(HUB_WARN_TICKS as f64).min(hub_period_ticks(pace) - 1)
+}
+
+/// The stay of hub `id` that `tick` falls in. Each hub's stays are offset by
+/// its id's share of a period, so they do not all end at once.
+pub fn hub_epoch(id: u8, tick: u64, pace: &Pace) -> u64 {
+    let period = hub_period_ticks(pace);
+    (tick + u64::from(id) * period / u64::from(HUB_COUNT)) / period
+}
+
+/// The tick hub `id` leaves the place of stay `epoch`: the first tick of the next.
+pub fn hub_departs_at(id: u8, epoch: u64, pace: &Pace) -> u64 {
+    let period = hub_period_ticks(pace);
+    ((epoch + 1) * period).saturating_sub(u64::from(id) * period / u64::from(HUB_COUNT))
 }
 
 // ── Ore ──────────────────────────────────────────────────────────

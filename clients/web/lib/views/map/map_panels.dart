@@ -333,7 +333,8 @@ class Inspector extends StatelessWidget {
           KeyedSubtree(
             key: const Key('inspector-hub'),
             child: _box(
-                'THE HUB. A FLEET HERE TRADES CARGO FOR CARGO AT THE EXCHANGE. YOUR NEXT UNIT PAYS ${(st.exchange.fee * 100).round()}%; '
+                '${st.hubAt(h) == null ? 'THE HUB. A FLEET HERE TRADES CARGO FOR CARGO AT THE EXCHANGE.' : 'A ROAMING HUB. A FLEET HERE TRADES CARGO FOR CARGO AND REFUELS FROM ITS HOLD; IT LEAVES IN ${clockFmt(math.max(0, st.hubAt(h)!.departsAt - st.tick))}.'} '
+                'YOUR NEXT UNIT PAYS ${(st.exchange.fee * 100).round()}%; '
                 'METER ${st.exchange.pressure.round()} OF ${st.exchange.span.round()}.',
                 C.gold,
                 C.a700,

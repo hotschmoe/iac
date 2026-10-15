@@ -123,6 +123,9 @@ class MapData {
   /// The player's relays by sector key.
   final Map<int, proto.RelayState> relays;
 
+  /// The roaming hubs the player knows.
+  final List<proto.HubState> hubs;
+
   MapData({
     required this.sectors,
     required this.signals,
@@ -134,6 +137,7 @@ class MapData {
     required this.headings,
     this.hub = const [],
     this.relays = const {},
+    this.hubs = const [],
   }) : liveCount = sectors.values.where((s) => s.live).length;
 
   int get staticKey => Object.hash(sectors.length, tick ~/ 15, liveCount, signals.length);

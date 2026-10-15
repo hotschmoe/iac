@@ -177,21 +177,58 @@ Cruiser           13     68       7   38      38         38    38
 
 A rare neutral post in the Wandering that refuels and trades and moves.
 
-- A hub is a pure function of seed and tick: `position(id, epoch) =
-  hash(seed, id, tick / HUB_PERIOD_TICKS)` (rejection-sampled onto a legal
-  Wandering sector). Nothing is stored, so every host agrees.
-- A warning event `HUB_WARN_TICKS` before it departs, and charts or sensor range
-  show where it stands now. A fleet standing in it when it departs is unharmed:
-  the sector becomes an ordinary one.
-- *Decided defaults:* a move every few hours at season (`HUB_PERIOD_TICKS`,
-  `Attention`), a warning about ten minutes ahead (`HUB_WARN_TICKS`).
-- Services: `Exchange` as the centre hub's, plus `Refuel` bought from the hold by
-  the exchange's rate and fee, never from the stockpile, so a hub does not
-  replace tankers.
-- It stays neutral: no hostile group, no fight, no pursuit into it, no relay,
-  no derelict.
-- Protocol: `WorldInfo.hub` becomes a list, or the client is handed a function of
-  tick. The centre hub is entry zero. Bots and the headless client read the same.
+- *Built.* `HUB_COUNT` 4 hubs, ids 0 to 3, each in a band of its own:
+  `HUB_BAND_RINGS` 10 rings from `HUB_FIRST_RING` 22 (22-31, 32-41, 42-51,
+  52-61), so a deep hub always exists and two hubs can never meet. A hub
+  stays `HUB_PERIOD_TICKS` 86,400 pace-1 ticks (an `Attention` timer: a day at
+  pace 1, 4.3 hours at season, 12 minutes at blitz) and its stays are offset
+  by `id / HUB_COUNT` of a period, so they end a quarter-period apart.
+  `HUB_WARN_TICKS` 3,456 (also `Attention`, so the warning is the same share
+  of a stay at every pace: ten minutes at season, a twenty-fifth of a stay) comes
+  before the departure.
+- Position: `WorldGen::hub_sites(id, epoch)` hashes `(seed, id, epoch, attempt)`
+  to a ring in the hub's band and a place on it, and keeps those that
+  `hub_legal` accepts: no lair template, no derelict, no Anomaly, off home
+  ground, joined to the centre by open lanes. `hub_site` is the first of
+  them. That is a pure function of seed, id and epoch (`tick + id x period /
+  count` over the period), and it is the whole answer in a world where
+  nothing stands in the way.
+- *Collisions with state.* Something a player owns can stand on a sector the
+  seed offers, so the position is the first of `hub_sites` that
+  `GameEngine::hub_blocked` does not refuse (a relay, an outpost, a pirate
+  group, a fight, another hub), taken at the tick the stay begins, and kept
+  (`GameEngine::hubs`, `Snapshot::hubs`: `SAVE_FORMAT` 17) because the
+  state that decided it is gone by the time anybody asks again. Where every
+  candidate is blocked the hub stays another stay. The other direction
+  is refused outright: no relay is founded where a hub stands and no group
+  follows into one (`is_refuge`). A fleet standing in a sector when the hub
+  leaves is unharmed and the sector is ordinary.
+- Knowledge: nobody knows where a hub is until something of theirs has eyes
+  on its sector (a fleet there, an unexpired scan, the homeworld's sensors;
+  a chart delivered earlier does not carry it, because a hub is not part of
+  a sector's template). `GameEngine::hub_sightings` keeps, for each player
+  and hub, the stay and sector last seen; `GameState.hubs` and every tick
+  update list them (`HubState`: `sector`, `ring`, `services`, `departs_at`,
+  `departing`, `stale`). A stay that is over is `stale` and says where the
+  hub was, not where it is. `HubArrived` is sent once for each stay a player
+  first has eyes on, `HubDeparting` `HUB_WARN_TICKS` before the departure to
+  everyone who knows the stay. The centre hub stays in `WorldInfo.hub`.
+- Services (`ROAMING_HUB`): `Exchange`, the centre's, on the same meter and
+  through the same `exchange_terms`; and `Refuel`. `refuel` turns the hold
+  into fuel, never the stockpile: deuterium at the dock's rate with no loss
+  (`FUEL_DEUT_PER_UNIT`, better than `refine`'s 15% loss), metal and crystal
+  priced by `exchange_terms` into the deuterium the tank wants, at the
+  player's fee and meter, so the hub returns no more than it takes. It
+  finds the least amount that fills the tank. `FleetState.refuel` quotes
+  each resource in the hold at a hub that refuels, with the refusal.
+- Neutral: the sector has no lair template and no derelict, so no group is
+  generated there; `is_refuge` keeps pursuit out; no fight starts. A fleet
+  standing there counts among the fleets away from the docks, as at the
+  centre. A hub sector keeps the ore its seed rolled.
+- Bots do not use a roaming hub and the centre hub plays as before; no
+  bot reads `hubs`. The play tool lists the hubs and the `refuel` quote.
+- *Not done:* the `reach_probe` column (the next slice), a hub in the
+  chart's remembered sectors, and any sign on the sector view of a hub.
 
 ### 3.4 Where the reach could break
 
@@ -238,6 +275,7 @@ have it.
 ## 6. Not decided
 
 - Whether a relay may be raised by another empire's fleet (taken, destroyed).
-- How many hubs a world holds and whether two may stand within a ring.
+- How many hubs a world holds (four is a guess) and whether the exchange of a
+  roaming hub should have a meter of its own.
 - Whether deeper relic tiers exist at the very edge of the generated map or are
   bounded by ring 60 (where edge survival bottoms out).

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 18;
+pub const ECONOMY_VERSION: u32 = 19;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 6;
 
@@ -861,6 +861,24 @@ pub const RELAY_STORE: f64 = 1_000.0;
 /// Pace-1 ticks a relay stands with no fleet of its owner in its sector
 /// before it is gone with its store (attention class).
 pub const RELAY_DECAY_TICKS: u64 = 172_800;
+
+/// Roaming hubs (`docs/design/deep-space.md`, 3.3): neutral posts in the
+/// Wandering that exchange and refuel and move. Every number is provisional.
+pub const HUB_COUNT: u8 = 4;
+/// The shallowest ring a roaming hub stands in; it is the Wandering's first.
+pub const HUB_FIRST_RING: u16 = 22;
+/// Rings in the band of each hub: hub `i` stands in rings
+/// `HUB_FIRST_RING + i * HUB_BAND_RINGS` for this many, so the bands are
+/// disjoint and the deepest ends at ring 61.
+pub const HUB_BAND_RINGS: u16 = 10;
+/// Pace-1 ticks a hub stays where it is (attention class: a day at pace 1,
+/// 4.3 hours at season). Each hub's moves are offset by its id's share of it.
+pub const HUB_PERIOD_TICKS: u64 = 86_400;
+/// Pace-1 ticks of warning before a hub departs (attention class, so the
+/// warning is the same share of a stay at every pace: ten minutes at season).
+pub const HUB_WARN_TICKS: u64 = 3_456;
+/// Hashed sectors tried for a hub's epoch before the last is taken as it is.
+pub const HUB_ATTEMPTS: u32 = 64;
 
 /// WebSocket server defaults.
 pub const DEFAULT_PORT: u16 = 7777;

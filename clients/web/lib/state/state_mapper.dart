@@ -121,6 +121,9 @@ class StateMapper {
   /// The player's relays as the server last sent them.
   proto.RelaysState relays = const proto.RelaysState();
 
+  /// The roaming hubs the player knows, as the server last sent them.
+  List<proto.HubState> hubs = const [];
+
   /// `relay_survey` answers by (fleet id, sector key).
   final Map<(int, int), RelaySurveyEntry> relaySurveys = {};
 
@@ -192,6 +195,7 @@ class StateMapper {
     outpost = null;
     surveys.clear();
     relays = const proto.RelaysState();
+    hubs = const [];
     relaySurveys.clear();
     lastRaid = null;
     lastOutpostRaid = null;
@@ -254,6 +258,7 @@ class StateMapper {
     homeworld = s.homeworld;
     outpost = s.outpost;
     relays = s.relays;
+    hubs = s.hubs;
     world = s.world;
     sectors.clear();
     for (final sec in s.knownSectors) {
@@ -285,6 +290,7 @@ class StateMapper {
     if (u.homeworldUpdate != null) homeworld = u.homeworldUpdate;
     outpost = u.outpost;
     relays = u.relays;
+    hubs = u.hubs;
     for (final sec in u.sectorUpdates ?? const <proto.SectorState>[]) {
       final key = sec.location.toKey();
       sectors[key] = sec;
@@ -481,6 +487,12 @@ class StateMapper {
       case proto.RelayDecayedEvent():
         msg = '! Relay at ${k.sector} stood unvisited and is gone, with ${k.lost.round()} deuterium';
         level = EventLevel.bright;
+      case proto.HubArrivedEvent():
+        msg = 'Hub ${k.id + 1} sighted at ${k.sector}, ring ${k.ring}: it leaves in ${clockFmt(math.max(0, k.departsAt - tick))}';
+        level = EventLevel.bright;
+      case proto.HubDepartingEvent():
+        msg = '! Hub ${k.id + 1} at ${k.sector} departs in ${clockFmt(math.max(0, k.departsAt - tick))}';
+        level = EventLevel.bright;
       case proto.RaidIncomingEvent():
         final where = switch (k.outpost) { null => '', final at => ' on your outpost at $at' };
         final forecast = switch (k.odds) { null => '', final odds => ', forecast ${raidVerdict(odds)}' };
@@ -649,6 +661,7 @@ class StateMapper {
       outpost: outpost,
       surveys: {for (final e in surveys.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
       relays: relays,
+      hubs: hubs,
       relaySurveys: {for (final e in relaySurveys.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
       policyActs: {for (final f in fleets) f.id: ?policyActs[f.id]?.toList()},
       battles: {for (final b in battles.values) b.sector: b},
@@ -713,6 +726,7 @@ class StateMapper {
       cargoBlocked: f.cargoBlocked,
       holdCapacity: f.cargoCapacity,
       refine: f.refine,
+      refuel: f.refuel,
       flight: f.flight,
       fleeing: f.fleeing,
       pursuedBy: f.pursuedBy,

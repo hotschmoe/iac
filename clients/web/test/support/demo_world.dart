@@ -4452,6 +4452,13 @@ class DemoWorld {
         return _load(fleetId, resource, amount);
       case RefineCommand(:final fleetId):
         return _refine(fleetId);
+      case RefuelCommand(:final fleetId):
+        final f = _find(fleetId);
+        if (f == null) return [_err(ErrorCode.fleetNotFound, 'fleet $fleetId not found (or it has no ships left)')];
+        return [
+          _err(ErrorCode.notInSector,
+              'fleet $fleetId is at ${f.location}; no hub that refuels is known to you; a roaming hub stands in the Wandering and is learnt of by having eyes on its sector'),
+        ];
       case FoundRelayCommand(:final fleetId):
         return _foundRelay(fleetId);
       case RelaySurveyCommand(:final fleetId, :final sector):

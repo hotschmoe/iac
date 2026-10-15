@@ -1,3 +1,3 @@
 [
-{"canonical":{"fleet_id":67,"kind":"ResourceHarvested","resources":{"crystal":69.25,"deuterium":70.25,"metal":68.25},"tick":4,"ticks":71,"type":"event"},"input":{"fleet_id":67,"kind":"ResourceHarvested","resources":{"crystal":69.25,"deuterium":70.25,"metal":68.25},"tick":4,"ticks":71,"type":"event"}}
+{"canonical":{"fleet_id":3,"kind":"ResourceHarvested","resources":{"crystal":5.25,"deuterium":6.25,"metal":4.25},"tick":37,"ticks":7,"type":"event"},"input":{"fleet_id":3,"kind":"ResourceHarvested","resources":{"crystal":5.25,"deuterium":6.25,"metal":4.25},"tick":37,"ticks":7,"type":"event"}}
 ]

@@ -117,7 +117,13 @@
       "RELAY_BASE_MAX": 1,
       "RELAY_LEVELS_PER_STEP": 2,
       "RELAY_STORE": 1000.0,
-      "RELAY_DECAY_TICKS": 172800
+      "RELAY_DECAY_TICKS": 172800,
+      "HUB_COUNT": 4,
+      "HUB_FIRST_RING": 22,
+      "HUB_BAND_RINGS": 10,
+      "HUB_PERIOD_TICKS": 86400,
+      "HUB_WARN_TICKS": 3456,
+      "HUB_ATTEMPTS": 64
     },
     "satellite_energy": 30,
     "synthesizer_factor": 1.2,
@@ -1506,6 +1512,11 @@
       {"ring": 60, "pace": 1.0, "cost": [3050.0, 1525.0, 610.0], "decay_ticks": 172800},
       {"ring": 60, "pace": 10.0, "cost": [3050.0, 1525.0, 610.0], "decay_ticks": 30729},
       {"ring": 60, "pace": 600.0, "cost": [3050.0, 1525.0, 610.0], "decay_ticks": 1426}
+    ],
+    "hubs": [
+      {"pace": 1.0, "period_ticks": 86400, "warn_ticks": 3456},
+      {"pace": 10.0, "period_ticks": 15365, "warn_ticks": 615},
+      {"pace": 600.0, "period_ticks": 713, "warn_ticks": 29}
     ]
   }
 }

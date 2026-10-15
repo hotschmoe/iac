@@ -211,6 +211,8 @@ final helpLines = [
   '        at your outpost load takes from its store and unload puts the whole hold into it, as far as it has room',
   '        refine    turn the deuterium in the hold into fuel, anywhere, until the tank is full or the deuterium is gone:',
   '                  $refineLossPct% less fuel than a dock gives for it, and not in a fight or while a jump charges',
+  '        refuel <metal|crystal|deut> [amount]  at a roaming hub: turn that much of the hold into fuel, deuterium at the dock\'s rate,',
+  '                  the rest through the exchange at your meter\'s fee; no amount = as much as fills the tank',
   'outpost: survey [q r]  what an outpost would be worth in a sector (its ore only if it is on your chart), and why it cannot be founded now; none = where the fleet stands',
   '        found     the active fleet founds your outpost where it stands, in rings $outpostMinRing to $outpostMaxRing, paid from its hold',
   '        outpost upgrade  build the next level, paid from the outpost\'s own store     outpost abandon  give it up; nothing is refunded',
@@ -253,6 +255,7 @@ const _foundUsage ='found: takes no argument (the active fleet founds your outpo
 const _surveyUsage = 'survey: [q r]  (what an outpost would be worth in a sector, its ore only if it is on your chart; none = where the active fleet stands)';
 
 const _outpostUsage = 'outpost: upgrade|abandon';
+const _refuelUsage = 'refuel: <metal|crystal|deut> [amount]  (at a roaming hub, from the hold of the active fleet)';
 const _relayUsage = 'relay: found | survey [q r]  (a depot of deuterium of yours on a sector of ring 9 or deeper)';
 
 const _policies = {
@@ -501,6 +504,17 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
     case 'refine':
       if (args.isNotEmpty) return const ParsedError(_refineUsage);
       return needFleet((id) => RefineCommand(fleetId: id));
+
+    case 'refuel':
+      if (args.isEmpty || args.length > 2) return const ParsedError(_refuelUsage);
+      final resource = _resources[args[0]];
+      if (resource == null) return const ParsedError(_refuelUsage);
+      double? amount;
+      if (args.length == 2 && args[1] != 'all') {
+        amount = double.tryParse(args[1]);
+        if (amount == null || amount <= 0) return const ParsedError(_refuelUsage);
+      }
+      return needFleet((id) => RefuelCommand(fleetId: id, give: resource, amount: amount));
 
     case 'found':
       if (args.isNotEmpty) return const ParsedError(_foundUsage);

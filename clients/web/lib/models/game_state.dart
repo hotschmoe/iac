@@ -335,6 +335,9 @@ class GameState {
   /// The player's relays and how many they may keep.
   final proto.RelaysState relays;
 
+  /// The roaming hubs the player knows, each as the server last told it.
+  final List<proto.HubState> hubs;
+
   /// The server's latest `relay_survey` per (fleet id, sector).
   final Map<(int, proto.Hex), RelaySurveyEntry> relaySurveys;
 
@@ -381,6 +384,7 @@ class GameState {
     this.outpost,
     this.surveys = const {},
     this.relays = const proto.RelaysState(),
+    this.hubs = const [],
     this.relaySurveys = const {},
     this.policyActs = const {},
     this.battles = const {},
@@ -445,8 +449,13 @@ class GameState {
     return fleet.policy != null && last != null && last.isHold ? last : null;
   }
 
+  /// The roaming hub the player knows to stand at [at] now.
+  proto.HubState? hubAt(proto.Hex at) => hubs.where((h) => !h.stale && h.sector == at).firstOrNull;
+
   /// Whether [at] is a hub sector that offers the exchange.
-  bool exchangeAt(proto.Hex at) => world?.servicesAt(at).contains(proto.HubService.exchange) ?? false;
+  bool exchangeAt(proto.Hex at) =>
+      (world?.servicesAt(at).contains(proto.HubService.exchange) ?? false) ||
+      (hubAt(at)?.services.contains(proto.HubService.exchange) ?? false);
 
   /// The quote for a trade if it is recent enough to show.
   proto.ExchangeQuote? quoteFor(int fleetId, proto.ResourceKind give, proto.ResourceKind want) {
@@ -536,6 +545,7 @@ class GameState {
     proto.OutpostState? outpost,
     Map<(int, proto.Hex), SurveyEntry>? surveys,
     proto.RelaysState? relays,
+    List<proto.HubState>? hubs,
     Map<(int, proto.Hex), RelaySurveyEntry>? relaySurveys,
     Map<int, List<PolicyAct>>? policyActs,
     Map<proto.Hex, Battle>? battles,
@@ -572,6 +582,7 @@ class GameState {
         outpost: outpost ?? this.outpost,
         surveys: surveys ?? this.surveys,
         relays: relays ?? this.relays,
+        hubs: hubs ?? this.hubs,
         relaySurveys: relaySurveys ?? this.relaySurveys,
         policyActs: policyActs ?? this.policyActs,
         battles: battles ?? this.battles,

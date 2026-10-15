@@ -1419,9 +1419,38 @@ class _ExchangePanelState extends State<ExchangePanel> {
               reason: why),
         ),
         if (why != null) WhyText(why, key: const Key('ex-why')),
+        if (fleet.refuel case final quote?) ..._refuel(fleet, quote),
       ]),
     );
   }
+
+  /// The refuel offers of the hub the fleet stands at, each as the server
+  /// quoted it, and the server's sentence when none would be accepted.
+  List<Widget> _refuel(ui.FleetState fleet, proto.RefuelQuote quote) => [
+        const SizedBox(height: 12),
+        Lbl('Refuel from the hold - tank lacks ${quote.missing.round()}'),
+        const SizedBox(height: 4),
+        for (final offer in quote.offers)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Row(children: [
+              Expanded(
+                child: Text(
+                  '${offer.amount.round()} ${_resAbbr[offer.give]} BUYS ${offer.fuel.round()} FUEL'
+                  '${offer.fee > 0 ? ' - FEE ${(offer.fee * 100).round()}%' : ''}',
+                  key: Key('refuel-offer-${offer.give.name}'),
+                  style: T.mono(size: 11, color: C.text2),
+                ),
+              ),
+              ConsoleButton('Refuel',
+                  key: ValueKey('refuel-${offer.give.name}'),
+                  small: true,
+                  primary: true,
+                  onPressed: () => c.refuel(fleet.id, offer.give)),
+            ]),
+          ),
+        if (quote.refusal case final why?) WhyText(why, key: const Key('refuel-why')),
+      ];
 
   /// "4185 PER 4:16:04 - EMPTY IN 38:41".
   static String _recovery(proto.ExchangeMeter m) {

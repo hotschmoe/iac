@@ -148,6 +148,7 @@ sealed class Command {
       'load' => LoadCommand.fromJson(json),
       'unload' => UnloadCommand.fromJson(json),
       'refine' => RefineCommand.fromJson(json),
+      'refuel' => RefuelCommand.fromJson(json),
       'found_outpost' => FoundOutpostCommand.fromJson(json),
       'outpost_survey' => OutpostSurveyCommand.fromJson(json),
       'upgrade_outpost' => const UpgradeOutpostCommand(),
@@ -531,7 +532,8 @@ class MergeCommand extends Command {
 /// Sell `amount` units of `give` from the hold of `fleet_id` to the hub's
 /// exchange and take `want` into the hold; without `amount`, all of
 /// `give` the fleet carries. The fleet must stand idle on a hub sector
-/// that offers the exchange (`WorldInfo.hub`). The answer is an
+/// that offers the exchange (`WorldInfo.hub`, or a roaming hub of
+/// `GameState.hubs`). The answer is an
 /// `Exchanged` event; see `ExchangeTerms` for the rate. Refused, with
 /// nothing changed, when the fleet is elsewhere (`NotInSector`) or busy
 /// (`OnCooldown`), holds less than `amount` or none (`NoResources`),
@@ -679,6 +681,40 @@ class RefineCommand extends Command {
 
   @override
   Json toJson() => {'action': 'refine', 'fleet_id': fleetId};
+}
+
+/// Turn what is in the hold of `fleet_id` into fuel at a roaming hub
+/// (`HubState.services` has `refuel`), until the tank is full: deuterium
+/// at the dock's rate with no loss, any other resource first through the
+/// exchange, at the player's meter and its fee, so the hub never returns
+/// more than it takes. `amount` of `give` at most; without it, as much
+/// as fills the tank or the hold holds. Only the hold pays, never the
+/// stockpile. `FleetState.refuel` says beforehand what each resource in
+/// the hold would buy. The answer is an `Alert` (info) event, and an
+/// `Exchanged` event when the exchange was used. Refused, with nothing
+/// changed, when the fleet is not at a hub that refuels (`NotInSector`),
+/// moving, in combat or busy (`OnCooldown`), when the hold has less than
+/// `amount` or none of `give` (`NoResources`), or its tank is full, the
+/// `amount` is not positive or would return less than one unit of
+/// deuterium (`InvalidCommand`).
+class RefuelCommand extends Command {
+  final int fleetId;
+  final ResourceKind give;
+  final double? amount;
+
+  const RefuelCommand({required this.fleetId, required this.give, this.amount});
+
+  factory RefuelCommand.fromJson(Object? json) {
+    final m = _obj(json);
+    return RefuelCommand(
+      fleetId: _int(m['fleet_id']),
+      give: ResourceKind.fromJson(m['give']),
+      amount: _opt(m['amount'], _double),
+    );
+  }
+
+  @override
+  Json toJson() => {'action': 'refuel', 'fleet_id': fleetId, 'give': give.toJson(), 'amount': ?amount};
 }
 
 /// Found the player's outpost in the sector `fleet_id` stands in, paid
@@ -1206,6 +1242,116 @@ class RelaysState {
     'level': level,
     'relays': relays.map((e) => e.toJson()).toList(),
   };
+}
+
+/// A roaming hub the player knows (`docs/design/deep-space.md`, 3.3): a
+/// neutral post in the Wandering, learnt of by having eyes on its sector, that
+/// leaves for another sector at `departs_at`. The centre hub is always
+/// known and is `WorldInfo.hub`, not listed here.
+class HubState {
+  final int id;
+  final Hex sector;
+  final int ring;
+  final List<HubService> services;
+
+  /// The tick the hub leaves `sector`, as known from the stay the player
+  /// saw; in the past when `stale`.
+  final int departsAt;
+
+  /// The hub is within its warning: it leaves in a few ticks.
+  final bool departing;
+
+  /// The hub has left `sector` since the player saw it there; where it
+  /// stands now is not known until someone has eyes on it again.
+  final bool stale;
+
+  const HubState({
+    required this.id,
+    required this.sector,
+    required this.ring,
+    required this.services,
+    required this.departsAt,
+    required this.departing,
+    required this.stale,
+  });
+
+  factory HubState.fromJson(Object? json) {
+    final m = _obj(json);
+    return HubState(
+      id: _int(m['id']),
+      sector: Hex.fromJson(m['sector']),
+      ring: _int(m['ring']),
+      services: _list(m['services'], HubService.fromJson),
+      departsAt: _int(m['departs_at']),
+      departing: _bool(m['departing']),
+      stale: _bool(m['stale']),
+    );
+  }
+
+  Json toJson() => {
+    'id': id,
+    'sector': sector.toJson(),
+    'ring': ring,
+    'services': services.map((e) => e.toJson()).toList(),
+    'departs_at': departsAt,
+    'departing': departing,
+    'stale': stale,
+  };
+}
+
+/// What one resource in a fleet's hold would buy at a hub that refuels, as
+/// `refuel` with that `give` and no `amount` would do it now.
+class RefuelOffer {
+  final ResourceKind give;
+
+  /// How much of `give` leaves the hold.
+  final double amount;
+
+  /// The fuel the tank gains.
+  final double fuel;
+
+  /// The share of `give`'s value the exchange keeps; 0 for deuterium,
+  /// which is not exchanged.
+  final double fee;
+
+  const RefuelOffer({required this.give, required this.amount, required this.fuel, required this.fee});
+
+  factory RefuelOffer.fromJson(Object? json) {
+    final m = _obj(json);
+    return RefuelOffer(
+      give: ResourceKind.fromJson(m['give']),
+      amount: _double(m['amount']),
+      fuel: _double(m['fuel']),
+      fee: _double(m['fee']),
+    );
+  }
+
+  Json toJson() => {'give': give.toJson(), 'amount': amount, 'fuel': fuel, 'fee': fee};
+}
+
+/// What `refuel` would do for a fleet standing at a hub that refuels.
+class RefuelQuote {
+  /// Fuel the tank lacks.
+  final double missing;
+
+  /// One offer for each resource the hold carries that would be accepted.
+  final List<RefuelOffer> offers;
+
+  /// Why `refuel` would be refused now, absent when it would not.
+  final String? refusal;
+
+  const RefuelQuote({required this.missing, required this.offers, this.refusal});
+
+  factory RefuelQuote.fromJson(Object? json) {
+    final m = _obj(json);
+    return RefuelQuote(
+      missing: _double(m['missing']),
+      offers: _list(m['offers'], RefuelOffer.fromJson),
+      refusal: _opt(m['refusal'], _string),
+    );
+  }
+
+  Json toJson() => {'missing': missing, 'offers': offers.map((e) => e.toJson()).toList(), 'refusal': ?refusal};
 }
 
 /// Answer to `outpost_survey`: what an outpost in `sector` would cost, make
@@ -1977,6 +2123,10 @@ class TickUpdate extends ServerMessage {
   /// The player's relays and their limit, whole, every tick.
   final RelaysState relays;
 
+  /// The roaming hubs the player knows, whole, every tick; left out when
+  /// there are none, and a client replaces its list with this one.
+  final List<HubState> hubs;
+
   /// Every fight under way that the player has a fleet in or is present
   /// at, whole, every tick, as in `GameState.battles` but without
   /// `last_round`: the round fought this tick is the `BattleRound` event
@@ -1993,6 +2143,7 @@ class TickUpdate extends ServerMessage {
     this.homeworldUpdate,
     this.outpost,
     this.relays = const RelaysState(),
+    this.hubs = const [],
     this.battles = const [],
     this.events,
   });
@@ -2007,6 +2158,7 @@ class TickUpdate extends ServerMessage {
       homeworldUpdate: _opt(m['homeworld_update'], HomeworldState.fromJson),
       outpost: _opt(m['outpost'], OutpostState.fromJson),
       relays: _opt(m['relays'], RelaysState.fromJson) ?? const RelaysState(),
+      hubs: _opt(m['hubs'], (v) => _list(v, HubState.fromJson)) ?? const [],
       battles: _opt(m['battles'], (v) => _list(v, BattleState.fromJson)) ?? const [],
       events: _opt(m['events'], (v) => _list(v, GameEvent.fromJson)),
     );
@@ -2022,6 +2174,7 @@ class TickUpdate extends ServerMessage {
     'homeworld_update': ?homeworldUpdate?.toJson(),
     'outpost': ?outpost?.toJson(),
     'relays': relays.toJson(),
+    if (hubs.isNotEmpty) 'hubs': hubs.map((e) => e.toJson()).toList(),
     if (battles.isNotEmpty) 'battles': battles.map((e) => e.toJson()).toList(),
     'events': ?events?.map((e) => e.toJson()).toList(),
   };
@@ -2042,6 +2195,9 @@ class GameState extends ServerMessage {
   /// The player's outpost; absent when they have none.
   final OutpostState? outpost;
   final RelaysState relays;
+
+  /// The roaming hubs the player knows; left out when there are none.
+  final List<HubState> hubs;
   final List<SectorState> knownSectors;
 
   /// The fights under way that the player has a fleet in or is present
@@ -2059,6 +2215,7 @@ class GameState extends ServerMessage {
     required this.homeworld,
     this.outpost,
     this.relays = const RelaysState(),
+    this.hubs = const [],
     required this.knownSectors,
     this.battles = const [],
     required this.world,
@@ -2073,6 +2230,7 @@ class GameState extends ServerMessage {
       homeworld: HomeworldState.fromJson(m['homeworld']),
       outpost: _opt(m['outpost'], OutpostState.fromJson),
       relays: _opt(m['relays'], RelaysState.fromJson) ?? const RelaysState(),
+      hubs: _opt(m['hubs'], (v) => _list(v, HubState.fromJson)) ?? const [],
       knownSectors: _list(m['known_sectors'], SectorState.fromJson),
       battles: _opt(m['battles'], (v) => _list(v, BattleState.fromJson)) ?? const [],
       world: WorldInfo.fromJson(m['world']),
@@ -2088,6 +2246,7 @@ class GameState extends ServerMessage {
     'homeworld': homeworld.toJson(),
     'outpost': ?outpost?.toJson(),
     'relays': relays.toJson(),
+    if (hubs.isNotEmpty) 'hubs': hubs.map((e) => e.toJson()).toList(),
     'known_sectors': knownSectors.map((e) => e.toJson()).toList(),
     if (battles.isNotEmpty) 'battles': battles.map((e) => e.toJson()).toList(),
     'world': world.toJson(),
@@ -2789,6 +2948,11 @@ class FleetState {
   /// refused.
   final Refining? refine;
 
+  /// What `refuel` would buy right now with each resource in the hold.
+  /// Present while the fleet stands in a sector of a roaming hub that
+  /// refuels, `refusal` saying why an order would be refused.
+  final RefuelQuote? refuel;
+
   /// Standing orders currently flying this fleet, if any: the doctrine
   /// with its settings, so the two cannot be told apart or disagree.
   final StandingOrders? policy;
@@ -2827,6 +2991,7 @@ class FleetState {
     this.atRelay = false,
     this.outpostFuel,
     this.refine,
+    this.refuel,
     this.policy,
   });
 
@@ -2866,6 +3031,7 @@ class FleetState {
       atRelay: _opt(m['at_relay'], _bool) ?? false,
       outpostFuel: _opt(m['outpost_fuel'], _double),
       refine: _opt(m['refine'], Refining.fromJson),
+      refuel: _opt(m['refuel'], RefuelQuote.fromJson),
       policy: _opt(m['policy'], StandingOrders.fromJson),
     );
   }
@@ -2904,6 +3070,7 @@ class FleetState {
     'at_relay': atRelay,
     'outpost_fuel': ?outpostFuel,
     'refine': ?refine?.toJson(),
+    'refuel': ?refuel?.toJson(),
     'policy': ?policy?.toJson(),
   };
 }
@@ -4868,6 +5035,8 @@ sealed class EventKind {
       'OutpostCompleted' => OutpostCompletedEvent.fromJson(json),
       'RelayFounded' => RelayFoundedEvent.fromJson(json),
       'RelayDecayed' => RelayDecayedEvent.fromJson(json),
+      'HubArrived' => HubArrivedEvent.fromJson(json),
+      'HubDeparting' => HubDepartingEvent.fromJson(json),
       final tag => throw FormatException('unknown EventKind kind "$tag"'),
     };
   }
@@ -4884,6 +5053,75 @@ class BattleRoundKind extends EventKind {
 
   @override
   Json toJson() => {'kind': 'BattleRound', ...battleRound.toJson()};
+}
+
+/// The player has eyes on a roaming hub they did not know the stay of: it
+/// has just arrived in range, or something now sees it.
+class HubArrivedEvent extends EventKind {
+  final int playerId;
+  final int id;
+  final Hex sector;
+  final int ring;
+  final int departsAt;
+
+  const HubArrivedEvent({
+    required this.playerId,
+    required this.id,
+    required this.sector,
+    required this.ring,
+    required this.departsAt,
+  });
+
+  factory HubArrivedEvent.fromJson(Object? json) {
+    final m = _obj(json);
+    return HubArrivedEvent(
+      playerId: _int(m['player_id']),
+      id: _int(m['id']),
+      sector: Hex.fromJson(m['sector']),
+      ring: _int(m['ring']),
+      departsAt: _int(m['departs_at']),
+    );
+  }
+
+  @override
+  Json toJson() => {
+    'kind': 'HubArrived',
+    'player_id': playerId,
+    'id': id,
+    'sector': sector.toJson(),
+    'ring': ring,
+    'departs_at': departsAt,
+  };
+}
+
+/// A roaming hub the player knows the whereabouts of leaves `sector` at
+/// `departs_at`, the end of its warning.
+class HubDepartingEvent extends EventKind {
+  final int playerId;
+  final int id;
+  final Hex sector;
+  final int departsAt;
+
+  const HubDepartingEvent({required this.playerId, required this.id, required this.sector, required this.departsAt});
+
+  factory HubDepartingEvent.fromJson(Object? json) {
+    final m = _obj(json);
+    return HubDepartingEvent(
+      playerId: _int(m['player_id']),
+      id: _int(m['id']),
+      sector: Hex.fromJson(m['sector']),
+      departsAt: _int(m['departs_at']),
+    );
+  }
+
+  @override
+  Json toJson() => {
+    'kind': 'HubDeparting',
+    'player_id': playerId,
+    'id': id,
+    'sector': sector.toJson(),
+    'departs_at': departsAt,
+  };
 }
 
 /// A relay of the player's was founded.
@@ -7167,7 +7405,11 @@ enum RatioLabel {
 /// What a sector of the hub offers.
 enum HubService {
   /// The NPC exchange: a fleet here trades one resource in its hold for another.
-  exchange('exchange');
+  exchange('exchange'),
+
+  /// A fleet here turns what is in its hold into fuel at the exchange's
+  /// value, less its fee.
+  refuel('refuel');
 
   const HubService(this.wire);
 

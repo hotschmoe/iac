@@ -7,15 +7,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use iac_shared::constants::{ECONOMY_VERSION, WORLDGEN_VERSION};
+use iac_shared::constants::{ECONOMY_VERSION, HUB_COUNT, WORLDGEN_VERSION};
 use iac_shared::hex::Hex;
 use iac_shared::pace::Pace;
 use iac_shared::protocol::{GameEvent, SectorState};
+use iac_shared::scaling::hub_epoch;
+use iac_shared::world::WorldGen;
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::bot::BotRecord;
-use crate::engine::{Combat, Fleet, FleetPolicy, HarvestReport, NpcFleet, Outpost, Player, RaidState, Relay, SectorOverride};
+use crate::engine::{
+    Combat, Fleet, FleetPolicy, HarvestReport, HubSighting, HubStanding, NpcFleet, Outpost, Player, RaidState, Relay,
+    SectorOverride,
+};
 
 /// Settings fixed when a world is created.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -57,6 +62,10 @@ pub struct Snapshot {
     pub outposts: BTreeMap<u64, Outpost>,
     /// Relays by owner, in the order they were founded.
     pub relays: BTreeMap<u64, Vec<Relay>>,
+    /// The roaming hubs, by id.
+    pub hubs: Vec<HubStanding>,
+    /// Per player and hub id: the stay last seen.
+    pub hub_sightings: BTreeMap<u64, BTreeMap<u8, HubSighting>>,
     pub pending_events: Vec<GameEvent>,
     pub explored: BTreeSet<(u64, u32)>,
     /// (player, sector key): charts delivered and paid for.
@@ -67,6 +76,7 @@ pub struct Snapshot {
 impl Snapshot {
     /// An empty world at tick 0.
     pub fn new(world_seed: u64, pace: Pace) -> Snapshot {
+        let world_gen = WorldGen::init(world_seed);
         Snapshot {
             world_seed,
             meta: WorldMeta { pace, economy_version: ECONOMY_VERSION, worldgen_version: WORLDGEN_VERSION },
@@ -86,6 +96,13 @@ impl Snapshot {
             bots: BTreeMap::new(),
             outposts: BTreeMap::new(),
             relays: BTreeMap::new(),
+            hubs: (0..HUB_COUNT)
+                .map(|id| {
+                    let epoch = hub_epoch(id, 0, &pace);
+                    HubStanding { id, epoch, sector: world_gen.hub_site(id, epoch) }
+                })
+                .collect(),
+            hub_sightings: BTreeMap::new(),
             pending_events: Vec::new(),
             explored: BTreeSet::new(),
             charted: BTreeSet::new(),

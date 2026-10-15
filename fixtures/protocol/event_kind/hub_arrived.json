@@ -1,0 +1,12 @@
+{
+  "departs_at": 61000,
+  "id": 2,
+  "kind": "HubArrived",
+  "player_id": 42,
+  "ring": 30,
+  "sector": {
+    "q": -30,
+    "r": 14
+  },
+  "tick": 1234
+}

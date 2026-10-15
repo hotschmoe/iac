@@ -1,6 +1,6 @@
 import '../protocol/hex.dart';
 import '../protocol/protocol.dart' as proto
-    show Fleeing, FlightQuote, Pursuit, Refining, Refit, RepairQuote, ShipGroupState, StandingOrders, scanBaseRange;
+    show Fleeing, FlightQuote, Pursuit, Refining, RefuelQuote, Refit, RepairQuote, ShipGroupState, StandingOrders, scanBaseRange;
 
 enum FleetStatus {
   docked('DOCKED'),
@@ -120,6 +120,10 @@ class FleetState {
   /// server would refuse it.
   final proto.Refining? refine;
 
+  /// What a refuel would buy with each resource in the hold; non-null only
+  /// while the fleet stands at a hub that refuels.
+  final proto.RefuelQuote? refuel;
+
   /// What a jump out of the fight it is in would cost now, and who would
   /// follow; null unless it stands in a fight and fires.
   final proto.FlightQuote? flight;
@@ -172,6 +176,7 @@ class FleetState {
     this.cargoBlocked = false,
     this.holdCapacity = 0,
     this.refine,
+    this.refuel,
     this.flight,
     this.fleeing,
     this.pursuedBy,
