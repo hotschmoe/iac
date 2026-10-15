@@ -72,9 +72,24 @@ A fleet harvests it (`harvest_power`: Recycler 5, cargo 1, others 0.5), refines 
 hold into fuel at the usual 15% loss, and sits still in a sector that a pirate
 pack of the ring guards. A cloud buys a few jumps and not a crossing.
 
-- `WORLDGEN_VERSION` is bumped; no stored state is added.
-- Constants `CLOUD_CELL`, `CLOUD_PCT`, `CLOUD_RADIUS_BASE`, `CLOUD_RADIUS_PER_RING`,
-  `CLOUD_DEUT_DENSITY` in `shared/src/constants.rs` or `world.rs`.
+- *Built.* `WORLDGEN_VERSION` is 6; no stored state is added. The map is cut in
+  `CLOUD_CELL` 8 by 8 cells; a cell holds a cloud with `CLOUD_PCT` 25 percent, its
+  centre at a hashed offset. A cloud reaches `CLOUD_RADIUS_BASE` 20 +
+  `CLOUD_RADIUS_PER_RING` 7 x the centre's ring, in hundredths of a hex, at most
+  `CLOUD_RADIUS_MAX` 300. No cloud touches a sector nearer the hub than
+  `CLOUD_MIN_DIST` 2 or a home seat's ground. A sector's deuterium is the peak of
+  `CLOUD_DEUT_PEAK` for the centre's ring (Sparse to ring 8, Moderate beyond),
+  one level thinner each hex out, never below Sparse. Constants are in
+  `shared/src/constants.rs`; `WorldGen::cloud_depth` in `shared/src/world.rs`.
+- Cloud size by ring: rings up to 11 one sector, 12 to 25 seven, 26 to 39
+  nineteen, 40 and beyond thirty-seven. Share of sectors in a cloud on seed 42:
+  rings 2-8 0%, 9-20 1%, 21-30 5.8%, 31-45 10%, 46-60 11%.
+- A cloud sector's yield is the ore the density has at its ring (`ore_regen_per_tick`
+  refills it as ore refills). One Sparse sector is under a jump of fuel for a
+  fleet of ten; Moderate is a few. `sim/tests/reach_probe.rs` measures it: with
+  clouds, ten Light Fighters gain about 1.2 times the ring at Energy, Impulse and
+  Tank level 10 and 13 and nothing below it on that seed; a ten-ship Cruiser fleet
+  gains nothing, because its tank is larger than the deposits.
 - Pace: the ore regenerates as ore does now (`ore_regen_per_tick`); the fuel it
   makes is real time.
 
