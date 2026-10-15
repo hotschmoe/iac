@@ -153,6 +153,7 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<StandingOr
         cargo_blocked: false,
         laden: false,
         at_outpost: false,
+        at_relay: false,
         outpost_fuel: None,
         refine: None,
         policy,
@@ -531,6 +532,37 @@ fn outpost_sector(brief: OutpostBrief) -> SectorState {
         outpost: Some(brief),
         threat: ThreatInfo { rating: 0, est_power: 0.0, basis: ThreatBasis::Observed },
         ..rich_sector()
+    }
+}
+
+fn sample_relays() -> RelaysState {
+    RelaysState {
+        limit: 3,
+        technology: ResearchType::HyperspaceTechnology,
+        level: 4,
+        relays: vec![RelayState {
+            sector: h(12, -3),
+            ring: 12,
+            store: 640.0,
+            store_cap: 1000.0,
+            decay_in: 150_000,
+            founded_tick: 900,
+        }],
+    }
+}
+
+fn sample_relay_survey() -> RelaySurvey {
+    RelaySurvey {
+        fleet_id: 7,
+        sector: h(12, -3),
+        ring: 12,
+        cost: res(650.0, 325.0, 130.0),
+        store_cap: 1000.0,
+        decay_ticks: 15_361,
+        count: 1,
+        limit: 3,
+        technology: ResearchType::HyperspaceTechnology,
+        refusal: None,
     }
 }
 
@@ -962,6 +994,8 @@ fn command_name(c: &Command) -> &'static str {
         Command::OutpostSurvey { .. } => "outpost_survey",
         Command::UpgradeOutpost => "upgrade_outpost",
         Command::AbandonOutpost => "abandon_outpost",
+        Command::FoundRelay { .. } => "found_relay",
+        Command::RelaySurvey { .. } => "relay_survey",
     }
 }
 
@@ -977,6 +1011,7 @@ fn server_message_name(m: &ServerMessage) -> &'static str {
         ServerMessage::Leaderboard(_) => "leaderboard",
         ServerMessage::ExchangeQuote(_) => "exchange_quote",
         ServerMessage::OutpostSurvey(_) => "outpost_survey",
+        ServerMessage::RelaySurvey(_) => "relay_survey",
     }
 }
 
@@ -1012,6 +1047,8 @@ fn event_kind_name(k: &EventKind) -> &'static str {
         EventKind::Queue(_) => "queue",
         EventKind::Exchanged(_) => "exchanged",
         EventKind::OutpostCompleted(_) => "outpost_completed",
+        EventKind::RelayFounded(_) => "relay_founded",
+        EventKind::RelayDecayed(_) => "relay_decayed",
     }
 }
 
@@ -1133,6 +1170,9 @@ fn commands() -> Vec<(&'static str, Command)> {
         ("own_sector", Command::OutpostSurvey { fleet_id: 7, sector: None }),
         ("", Command::UpgradeOutpost),
         ("", Command::AbandonOutpost),
+        ("", Command::FoundRelay { fleet_id: 7 }),
+        ("", Command::RelaySurvey { fleet_id: 7, sector: Some(h(12, -3)) }),
+        ("own_sector", Command::RelaySurvey { fleet_id: 7, sector: None }),
     ]
 }
 
@@ -1259,6 +1299,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 ],
                 sector_updates: Some(vec![rich_sector(), bare_sector()]),
                 homeworld_update: Some(sample_homeworld()),
+                relays: sample_relays(),
                 outpost: None,
                 battles: vec![BattleState {
                     sector: h(-5, 7),
@@ -1324,6 +1365,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     },
                     ..sample_homeworld()
                 }),
+                relays: sample_relays(),
                 outpost: None,
                 battles: vec![BattleState {
                     sector: h(4, -2),
@@ -1351,6 +1393,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 fleets: vec![],
                 sector_updates: None,
                 homeworld_update: None,
+                relays: sample_relays(),
                 outpost: None,
                 battles: vec![],
                 events: None,
@@ -1364,6 +1407,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 fleets: vec![],
                 sector_updates: Some(vec![]),
                 homeworld_update: Some(idle_homeworld()),
+                relays: sample_relays(),
                 outpost: None,
                 battles: vec![],
                 events: Some(vec![]),
@@ -1376,6 +1420,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 player: None,
                 fleets: vec![FleetState {
                     at_outpost: true,
+                    at_relay: false,
                     home_fuel: 220.5,
                     ..sample_fleet(7, h(10, -2), FleetStatus::Idle, None)
                 }],
@@ -1386,6 +1431,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     mine: true,
                 })]),
                 homeworld_update: None,
+                relays: sample_relays(),
                 outpost: Some(breached_outpost()),
                 battles: vec![],
                 events: Some(vec![GameEvent {
@@ -1426,6 +1472,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 fleets: vec![],
                 sector_updates: None,
                 homeworld_update: None,
+                relays: sample_relays(),
                 outpost: Some(OutpostState {
                     work: None,
                     store: res(9486.833, 96.0, 180.25),
@@ -1516,6 +1563,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     },
                 ],
                 homeworld: sample_homeworld(),
+                relays: sample_relays(),
                 outpost: None,
                 known_sectors: vec![rich_sector(), bare_sector(), anomaly_sector(), stale_pins_sector()],
                 battles: vec![BattleState {
@@ -1536,6 +1584,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 fleets: vec![
                     FleetState {
                         at_outpost: true,
+                        at_relay: false,
                         outpost_fuel: Some(0.0),
                         home_fuel: 220.5,
                         ..sample_fleet(7, h(10, -2), FleetStatus::Idle, None)
@@ -1543,6 +1592,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     FleetState { outpost_fuel: Some(220.5), ..sample_fleet(2, h(4, -2), FleetStatus::Docked, None) },
                 ],
                 homeworld: idle_homeworld(),
+                relays: sample_relays(),
                 outpost: Some(sample_outpost()),
                 known_sectors: vec![
                     outpost_sector(OutpostBrief { owner: "Admiral".into(), level: 1, breached: false, mine: true }),
@@ -1571,6 +1621,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                 },
                 fleets: vec![],
                 homeworld: idle_homeworld(),
+                relays: sample_relays(),
                 outpost: None,
                 known_sectors: vec![],
                 battles: vec![],
@@ -1749,6 +1800,17 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
         }),
     ));
     v.push(("".into(), ServerMessage::OutpostSurvey(sample_survey())));
+    v.push(("".into(), ServerMessage::RelaySurvey(sample_relay_survey())));
+    v.push((
+        "refused".into(),
+        ServerMessage::RelaySurvey(RelaySurvey {
+            refusal: Some(
+                "you keep 1 relay, the most Hyperspace Technology level 0 allows (1); every 2 levels of it add one"
+                    .into(),
+            ),
+            ..sample_relay_survey()
+        }),
+    ));
     v.push((
         "refused".into(),
         ServerMessage::OutpostSurvey(OutpostSurvey {
@@ -2071,6 +2133,8 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             ships_lost: 0,
         })),
         ("", EventKind::OutpostCompleted(OutpostCompletedEvent { player_id: 42, sector: h(10, -2), level: 1 })),
+        ("", EventKind::RelayFounded(RelayFoundedEvent { player_id: 42, sector: h(12, -3), ring: 12 })),
+        ("", EventKind::RelayDecayed(RelayDecayedEvent { player_id: 42, sector: h(12, -3), lost: 640.0 })),
         ("", EventKind::RaidResolved(RaidResolvedEvent {
             player_id: 42,
             outpost: None,

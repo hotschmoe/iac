@@ -1,5 +1,23 @@
 {
   "fleets": [],
+  "relays": {
+    "level": 4,
+    "limit": 3,
+    "relays": [
+      {
+        "decay_in": 150000,
+        "founded_tick": 900,
+        "ring": 12,
+        "sector": {
+          "q": 12,
+          "r": -3
+        },
+        "store": 640.0,
+        "store_cap": 1000.0
+      }
+    ],
+    "technology": "HyperspaceTechnology"
+  },
   "tick": 1,
   "type": "tick_update"
 }

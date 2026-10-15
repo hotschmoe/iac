@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 17;
+pub const ECONOMY_VERSION: u32 = 18;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 6;
 
@@ -841,6 +841,26 @@ pub const OUTPOST_RAID_FACTOR: f32 = 2.0;
 pub const OUTPOST_RAID_LOSS: f64 = 0.25;
 /// A repair costs the par value of this share of the level's cost and takes this share of its build time.
 pub const OUTPOST_REPAIR_SHARE: f64 = 0.25;
+
+/// Relays (`docs/design/deep-space.md`, 3.2). A relay is a depot of deuterium
+/// on a sector of ring `RELAY_MIN_RING` or deeper, owner-only, with no
+/// extractor, platform, repair or raid. Every number here is provisional.
+pub const RELAY_MIN_RING: u16 = 9;
+/// Founding cost at ring `RELAY_MIN_RING`, carried in the founding fleet's
+/// hold; it does not scale with pace.
+pub const RELAY_COST_BASE: Resources = Resources { metal: 500.0, crystal: 250.0, deuterium: 100.0 };
+/// Each ring beyond `RELAY_MIN_RING` adds this share of the base cost.
+pub const RELAY_COST_GROWTH: f64 = 0.1;
+/// Relays an empire may keep with no Hyperspace Technology.
+pub const RELAY_BASE_MAX: u32 = 1;
+/// Levels of Hyperspace Technology that add one relay to the limit.
+pub const RELAY_LEVELS_PER_STEP: u32 = 2;
+/// Deuterium a relay holds. Not scaled by pace: it is a small depot, about
+/// four jumps for ten Cruisers.
+pub const RELAY_STORE: f64 = 1_000.0;
+/// Pace-1 ticks a relay stands with no fleet of its owner in its sector
+/// before it is gone with its store (attention class).
+pub const RELAY_DECAY_TICKS: u64 = 172_800;
 
 /// WebSocket server defaults.
 pub const DEFAULT_PORT: u16 = 7777;

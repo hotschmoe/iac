@@ -1,6 +1,12 @@
 {
   "canonical": {
     "fleets": [],
+    "relays": {
+      "level": 0,
+      "limit": 0,
+      "relays": [],
+      "technology": "HyperspaceTechnology"
+    },
     "sector_updates": [
       {
         "connections": [],

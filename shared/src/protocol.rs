@@ -315,6 +315,35 @@ pub enum Command {
     /// is an `Alert` (info) event. `InvalidCommand` with no outpost.
     #[serde(rename = "abandon_outpost")]
     AbandonOutpost,
+    /// Found a relay in the sector `fleet_id` stands in, paid from its hold
+    /// (`RelaySurvey.cost`). The fleet must stand idle there and fly no
+    /// standing orders; the sector must lie in ring 9 or deeper, be no
+    /// Anomaly, and hold no hub, lair, derelict, group, outpost or relay;
+    /// the player may keep `RelaysState.limit` relays. The answer is an
+    /// `Alert` (info) event and `RelayFounded`. Refused, with nothing
+    /// changed and the sentence `relay_survey` gives as `refusal`:
+    /// `InvalidTarget` for a sector that does not qualify,
+    /// `InvalidCommand` at the limit or under standing orders,
+    /// `NoResources` naming what the hold lacks, `OnCooldown` for a fleet
+    /// that is moving, fighting or busy.
+    ///
+    /// A relay is a depot: `load` and `unload` of a fleet standing there
+    /// move deuterium to and from its store (`RelayState.store`), and a
+    /// fleet flown by hand that stands there has its tank filled from it.
+    /// It makes nothing, mends nothing and no raid comes. It is gone, with
+    /// its store, once no fleet of its owner has stood there for
+    /// `RelayState.decay_in` ticks.
+    #[serde(rename = "found_relay")]
+    FoundRelay { fleet_id: u64 },
+    /// Ask what a relay in `sector` would cost, without founding: the sector
+    /// `fleet_id` stands in when none is named. The reply is a
+    /// `relay_survey` message.
+    #[serde(rename = "relay_survey")]
+    RelaySurvey {
+        fleet_id: u64,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        sector: Option<Hex>,
+    },
 }
 
 fn default_ship_count() -> u16 {
@@ -489,6 +518,69 @@ pub enum ServerMessage {
     ExchangeQuote(ExchangeQuote),
     #[serde(rename = "outpost_survey")]
     OutpostSurvey(OutpostSurvey),
+    #[serde(rename = "relay_survey")]
+    RelaySurvey(RelaySurvey),
+}
+
+/// Answer to `relay_survey`: what a relay in `sector` would cost and hold,
+/// and why it cannot be founded now. `refusal` depends on the asking fleet
+/// and on the moment; the rest follows from the sector's ring and the
+/// player's research.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RelaySurvey {
+    pub fleet_id: u64,
+    pub sector: Hex,
+    /// Hexes from the centre of the map.
+    pub ring: u16,
+    /// What founding takes from the hold.
+    pub cost: Resources,
+    /// Deuterium the store holds.
+    pub store_cap: f64,
+    /// Ticks the relay stands with no fleet of its owner in its sector
+    /// before it is gone.
+    pub decay_ticks: u64,
+    /// Relays the player has now.
+    pub count: u32,
+    /// Relays the player may keep, and the technology that raises it.
+    pub limit: u32,
+    pub technology: ResearchType,
+    /// Why `found_relay` would be refused right now; absent when the fleet
+    /// could found here this tick.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub refusal: Option<String>,
+}
+
+/// A relay of the player's: a depot of deuterium, owner-only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RelayState {
+    pub sector: Hex,
+    /// Hexes from the centre of the map.
+    pub ring: u16,
+    /// Deuterium in the store.
+    pub store: f64,
+    pub store_cap: f64,
+    /// Ticks until the relay is gone unless a fleet of the owner stands in
+    /// its sector: a visit sets it back to the full span, and it stays there
+    /// while a fleet stands in the sector.
+    pub decay_in: u64,
+    pub founded_tick: u64,
+}
+
+/// The player's relays and how many they may keep. `limit` is the base
+/// plus a step for each `levels_per_step` levels of `technology`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RelaysState {
+    pub limit: u32,
+    pub technology: ResearchType,
+    /// The player's level of `technology`.
+    pub level: u8,
+    pub relays: Vec<RelayState>,
+}
+
+impl Default for RelaysState {
+    fn default() -> RelaysState {
+        RelaysState { limit: 0, technology: ResearchType::HyperspaceTechnology, level: 0, relays: Vec::new() }
+    }
 }
 
 /// Answer to `outpost_survey`: what an outpost in `sector` would cost, make
@@ -897,6 +989,9 @@ pub struct TickUpdate {
     /// they have none: a client drops the one it held.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub outpost: Option<OutpostState>,
+    /// The player's relays and their limit, whole, every tick.
+    #[serde(default)]
+    pub relays: RelaysState,
     /// Every fight under way that the player has a fleet in or is present
     /// at, whole, every tick, as in `GameState.battles` but without
     /// `last_round`: the round fought this tick is the `BattleRound` event
@@ -923,6 +1018,8 @@ pub struct GameState {
     /// The player's outpost; absent when they have none.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub outpost: Option<OutpostState>,
+    #[serde(default)]
+    pub relays: RelaysState,
     pub known_sectors: Vec<SectorState>,
     /// The fights under way that the player has a fleet in or is present
     /// at, each with its last round: what a client that arrives in the
@@ -1306,6 +1403,11 @@ pub struct FleetState {
     /// here, and a raid on it finds the fleet in its fight.
     #[serde(default)]
     pub at_outpost: bool,
+    /// The fleet is in the sector of one of its owner's relays: `load` and
+    /// `unload` use the relay's deuterium store here, and a fleet flown by
+    /// hand has its tank filled from it.
+    #[serde(default)]
+    pub at_relay: bool,
     /// Fuel the way to the owner's outpost costs: the fewest lane hops
     /// there times `jump_fuel`, 0 at the outpost. Present while that
     /// outpost is in service, which is when it fills a tank.
@@ -2506,6 +2608,25 @@ pub enum EventKind {
     Queue(QueueEvent),
     Exchanged(ExchangedEvent),
     OutpostCompleted(OutpostCompletedEvent),
+    RelayFounded(RelayFoundedEvent),
+    RelayDecayed(RelayDecayedEvent),
+}
+
+/// A relay of the player's was founded.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayFoundedEvent {
+    pub player_id: u64,
+    pub sector: Hex,
+    pub ring: u16,
+}
+
+/// A relay of the player's stood unvisited for its whole span and is gone,
+/// with the deuterium that was in its store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayDecayedEvent {
+    pub player_id: u64,
+    pub sector: Hex,
+    pub lost: f64,
 }
 
 /// A level of the player's outpost is finished. Level 1 opens it: the

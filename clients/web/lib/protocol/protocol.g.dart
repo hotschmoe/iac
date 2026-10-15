@@ -152,6 +152,8 @@ sealed class Command {
       'outpost_survey' => OutpostSurveyCommand.fromJson(json),
       'upgrade_outpost' => const UpgradeOutpostCommand(),
       'abandon_outpost' => const AbandonOutpostCommand(),
+      'found_relay' => FoundRelayCommand.fromJson(json),
+      'relay_survey' => RelaySurveyCommand.fromJson(json),
       final tag => throw FormatException('unknown Command action "$tag"'),
     };
   }
@@ -746,6 +748,56 @@ class AbandonOutpostCommand extends Command {
   Json toJson() => {'action': 'abandon_outpost'};
 }
 
+/// Found a relay in the sector `fleet_id` stands in, paid from its hold
+/// (`RelaySurvey.cost`). The fleet must stand idle there and fly no
+/// standing orders; the sector must lie in ring 9 or deeper, be no
+/// Anomaly, and hold no hub, lair, derelict, group, outpost or relay;
+/// the player may keep `RelaysState.limit` relays. The answer is an
+/// `Alert` (info) event and `RelayFounded`. Refused, with nothing
+/// changed and the sentence `relay_survey` gives as `refusal`:
+/// `InvalidTarget` for a sector that does not qualify,
+/// `InvalidCommand` at the limit or under standing orders,
+/// `NoResources` naming what the hold lacks, `OnCooldown` for a fleet
+/// that is moving, fighting or busy.
+///
+/// A relay is a depot: `load` and `unload` of a fleet standing there
+/// move deuterium to and from its store (`RelayState.store`), and a
+/// fleet flown by hand that stands there has its tank filled from it.
+/// It makes nothing, mends nothing and no raid comes. It is gone, with
+/// its store, once no fleet of its owner has stood there for
+/// `RelayState.decay_in` ticks.
+class FoundRelayCommand extends Command {
+  final int fleetId;
+
+  const FoundRelayCommand({required this.fleetId});
+
+  factory FoundRelayCommand.fromJson(Object? json) {
+    final m = _obj(json);
+    return FoundRelayCommand(fleetId: _int(m['fleet_id']));
+  }
+
+  @override
+  Json toJson() => {'action': 'found_relay', 'fleet_id': fleetId};
+}
+
+/// Ask what a relay in `sector` would cost, without founding: the sector
+/// `fleet_id` stands in when none is named. The reply is a
+/// `relay_survey` message.
+class RelaySurveyCommand extends Command {
+  final int fleetId;
+  final Hex? sector;
+
+  const RelaySurveyCommand({required this.fleetId, this.sector});
+
+  factory RelaySurveyCommand.fromJson(Object? json) {
+    final m = _obj(json);
+    return RelaySurveyCommand(fleetId: _int(m['fleet_id']), sector: _opt(m['sector'], Hex.fromJson));
+  }
+
+  @override
+  Json toJson() => {'action': 'relay_survey', 'fleet_id': fleetId, 'sector': ?sector?.toJson()};
+}
+
 /// Which resource a harvest order mines. `Auto` takes everything the sector
 /// has, metal then crystal then deuterium, until the hold is full; a specific
 /// resource mines only that one and is rejected with
@@ -973,6 +1025,7 @@ sealed class ServerMessage {
       'leaderboard' => LeaderboardReply.fromJson(json),
       'exchange_quote' => ExchangeQuote.fromJson(json),
       'outpost_survey' => OutpostSurvey.fromJson(json),
+      'relay_survey' => RelaySurvey.fromJson(json),
       final tag => throw FormatException('unknown ServerMessage type "$tag"'),
     };
   }
@@ -993,6 +1046,166 @@ class EventMessage extends ServerMessage {
 
   @override
   Json toJson() => {'type': 'event', ...event.toJson()};
+}
+
+/// Answer to `relay_survey`: what a relay in `sector` would cost and hold,
+/// and why it cannot be founded now. `refusal` depends on the asking fleet
+/// and on the moment; the rest follows from the sector's ring and the
+/// player's research.
+class RelaySurvey extends ServerMessage {
+  final int fleetId;
+  final Hex sector;
+
+  /// Hexes from the centre of the map.
+  final int ring;
+
+  /// What founding takes from the hold.
+  final Resources cost;
+
+  /// Deuterium the store holds.
+  final double storeCap;
+
+  /// Ticks the relay stands with no fleet of its owner in its sector
+  /// before it is gone.
+  final int decayTicks;
+
+  /// Relays the player has now.
+  final int count;
+
+  /// Relays the player may keep, and the technology that raises it.
+  final int limit;
+  final ResearchType technology;
+
+  /// Why `found_relay` would be refused right now; absent when the fleet
+  /// could found here this tick.
+  final String? refusal;
+
+  const RelaySurvey({
+    required this.fleetId,
+    required this.sector,
+    required this.ring,
+    required this.cost,
+    required this.storeCap,
+    required this.decayTicks,
+    required this.count,
+    required this.limit,
+    required this.technology,
+    this.refusal,
+  });
+
+  factory RelaySurvey.fromJson(Object? json) {
+    final m = _obj(json);
+    return RelaySurvey(
+      fleetId: _int(m['fleet_id']),
+      sector: Hex.fromJson(m['sector']),
+      ring: _int(m['ring']),
+      cost: Resources.fromJson(m['cost']),
+      storeCap: _double(m['store_cap']),
+      decayTicks: _int(m['decay_ticks']),
+      count: _int(m['count']),
+      limit: _int(m['limit']),
+      technology: ResearchType.fromJson(m['technology']),
+      refusal: _opt(m['refusal'], _string),
+    );
+  }
+
+  @override
+  Json toJson() => {
+    'type': 'relay_survey',
+    'fleet_id': fleetId,
+    'sector': sector.toJson(),
+    'ring': ring,
+    'cost': cost.toJson(),
+    'store_cap': storeCap,
+    'decay_ticks': decayTicks,
+    'count': count,
+    'limit': limit,
+    'technology': technology.toJson(),
+    'refusal': ?refusal,
+  };
+}
+
+/// A relay of the player's: a depot of deuterium, owner-only.
+class RelayState {
+  final Hex sector;
+
+  /// Hexes from the centre of the map.
+  final int ring;
+
+  /// Deuterium in the store.
+  final double store;
+  final double storeCap;
+
+  /// Ticks until the relay is gone unless a fleet of the owner stands in
+  /// its sector: a visit sets it back to the full span, and it stays there
+  /// while a fleet stands in the sector.
+  final int decayIn;
+  final int foundedTick;
+
+  const RelayState({
+    required this.sector,
+    required this.ring,
+    required this.store,
+    required this.storeCap,
+    required this.decayIn,
+    required this.foundedTick,
+  });
+
+  factory RelayState.fromJson(Object? json) {
+    final m = _obj(json);
+    return RelayState(
+      sector: Hex.fromJson(m['sector']),
+      ring: _int(m['ring']),
+      store: _double(m['store']),
+      storeCap: _double(m['store_cap']),
+      decayIn: _int(m['decay_in']),
+      foundedTick: _int(m['founded_tick']),
+    );
+  }
+
+  Json toJson() => {
+    'sector': sector.toJson(),
+    'ring': ring,
+    'store': store,
+    'store_cap': storeCap,
+    'decay_in': decayIn,
+    'founded_tick': foundedTick,
+  };
+}
+
+/// The player's relays and how many they may keep. `limit` is the base
+/// plus a step for each `levels_per_step` levels of `technology`.
+class RelaysState {
+  final int limit;
+  final ResearchType technology;
+
+  /// The player's level of `technology`.
+  final int level;
+  final List<RelayState> relays;
+
+  const RelaysState({
+    this.limit = 0,
+    this.technology = ResearchType.hyperspaceTechnology,
+    this.level = 0,
+    this.relays = const [],
+  });
+
+  factory RelaysState.fromJson(Object? json) {
+    final m = _obj(json);
+    return RelaysState(
+      limit: _int(m['limit']),
+      technology: ResearchType.fromJson(m['technology']),
+      level: _int(m['level']),
+      relays: _list(m['relays'], RelayState.fromJson),
+    );
+  }
+
+  Json toJson() => {
+    'limit': limit,
+    'technology': technology.toJson(),
+    'level': level,
+    'relays': relays.map((e) => e.toJson()).toList(),
+  };
 }
 
 /// Answer to `outpost_survey`: what an outpost in `sector` would cost, make
@@ -1761,6 +1974,9 @@ class TickUpdate extends ServerMessage {
   /// they have none: a client drops the one it held.
   final OutpostState? outpost;
 
+  /// The player's relays and their limit, whole, every tick.
+  final RelaysState relays;
+
   /// Every fight under way that the player has a fleet in or is present
   /// at, whole, every tick, as in `GameState.battles` but without
   /// `last_round`: the round fought this tick is the `BattleRound` event
@@ -1776,6 +1992,7 @@ class TickUpdate extends ServerMessage {
     this.sectorUpdates,
     this.homeworldUpdate,
     this.outpost,
+    this.relays = const RelaysState(),
     this.battles = const [],
     this.events,
   });
@@ -1789,6 +2006,7 @@ class TickUpdate extends ServerMessage {
       sectorUpdates: _opt(m['sector_updates'], (v) => _list(v, SectorState.fromJson)),
       homeworldUpdate: _opt(m['homeworld_update'], HomeworldState.fromJson),
       outpost: _opt(m['outpost'], OutpostState.fromJson),
+      relays: _opt(m['relays'], RelaysState.fromJson) ?? const RelaysState(),
       battles: _opt(m['battles'], (v) => _list(v, BattleState.fromJson)) ?? const [],
       events: _opt(m['events'], (v) => _list(v, GameEvent.fromJson)),
     );
@@ -1803,6 +2021,7 @@ class TickUpdate extends ServerMessage {
     'sector_updates': ?sectorUpdates?.map((e) => e.toJson()).toList(),
     'homeworld_update': ?homeworldUpdate?.toJson(),
     'outpost': ?outpost?.toJson(),
+    'relays': relays.toJson(),
     if (battles.isNotEmpty) 'battles': battles.map((e) => e.toJson()).toList(),
     'events': ?events?.map((e) => e.toJson()).toList(),
   };
@@ -1822,6 +2041,7 @@ class GameState extends ServerMessage {
 
   /// The player's outpost; absent when they have none.
   final OutpostState? outpost;
+  final RelaysState relays;
   final List<SectorState> knownSectors;
 
   /// The fights under way that the player has a fleet in or is present
@@ -1838,6 +2058,7 @@ class GameState extends ServerMessage {
     required this.fleets,
     required this.homeworld,
     this.outpost,
+    this.relays = const RelaysState(),
     required this.knownSectors,
     this.battles = const [],
     required this.world,
@@ -1851,6 +2072,7 @@ class GameState extends ServerMessage {
       fleets: _list(m['fleets'], FleetState.fromJson),
       homeworld: HomeworldState.fromJson(m['homeworld']),
       outpost: _opt(m['outpost'], OutpostState.fromJson),
+      relays: _opt(m['relays'], RelaysState.fromJson) ?? const RelaysState(),
       knownSectors: _list(m['known_sectors'], SectorState.fromJson),
       battles: _opt(m['battles'], (v) => _list(v, BattleState.fromJson)) ?? const [],
       world: WorldInfo.fromJson(m['world']),
@@ -1865,6 +2087,7 @@ class GameState extends ServerMessage {
     'fleets': fleets.map((e) => e.toJson()).toList(),
     'homeworld': homeworld.toJson(),
     'outpost': ?outpost?.toJson(),
+    'relays': relays.toJson(),
     'known_sectors': knownSectors.map((e) => e.toJson()).toList(),
     if (battles.isNotEmpty) 'battles': battles.map((e) => e.toJson()).toList(),
     'world': world.toJson(),
@@ -2552,6 +2775,11 @@ class FleetState {
   /// here, and a raid on it finds the fleet in its fight.
   final bool atOutpost;
 
+  /// The fleet is in the sector of one of its owner's relays: `load` and
+  /// `unload` use the relay's deuterium store here, and a fleet flown by
+  /// hand has its tank filled from it.
+  final bool atRelay;
+
   /// Fuel the way to the owner's outpost costs: the fewest lane hops
   /// there times `jump_fuel`, 0 at the outpost. Present while that
   /// outpost is in service, which is when it fills a tank.
@@ -2596,6 +2824,7 @@ class FleetState {
     this.cargoBlocked = false,
     this.laden = false,
     this.atOutpost = false,
+    this.atRelay = false,
     this.outpostFuel,
     this.refine,
     this.policy,
@@ -2634,6 +2863,7 @@ class FleetState {
       cargoBlocked: _opt(m['cargo_blocked'], _bool) ?? false,
       laden: _opt(m['laden'], _bool) ?? false,
       atOutpost: _opt(m['at_outpost'], _bool) ?? false,
+      atRelay: _opt(m['at_relay'], _bool) ?? false,
       outpostFuel: _opt(m['outpost_fuel'], _double),
       refine: _opt(m['refine'], Refining.fromJson),
       policy: _opt(m['policy'], StandingOrders.fromJson),
@@ -2671,6 +2901,7 @@ class FleetState {
     'cargo_blocked': cargoBlocked,
     'laden': laden,
     'at_outpost': atOutpost,
+    'at_relay': atRelay,
     'outpost_fuel': ?outpostFuel,
     'refine': ?refine?.toJson(),
     'policy': ?policy?.toJson(),
@@ -4635,6 +4866,8 @@ sealed class EventKind {
       'Queue' => QueueEvent.fromJson(json),
       'Exchanged' => ExchangedEvent.fromJson(json),
       'OutpostCompleted' => OutpostCompletedEvent.fromJson(json),
+      'RelayFounded' => RelayFoundedEvent.fromJson(json),
+      'RelayDecayed' => RelayDecayedEvent.fromJson(json),
       final tag => throw FormatException('unknown EventKind kind "$tag"'),
     };
   }
@@ -4651,6 +4884,45 @@ class BattleRoundKind extends EventKind {
 
   @override
   Json toJson() => {'kind': 'BattleRound', ...battleRound.toJson()};
+}
+
+/// A relay of the player's was founded.
+class RelayFoundedEvent extends EventKind {
+  final int playerId;
+  final Hex sector;
+  final int ring;
+
+  const RelayFoundedEvent({required this.playerId, required this.sector, required this.ring});
+
+  factory RelayFoundedEvent.fromJson(Object? json) {
+    final m = _obj(json);
+    return RelayFoundedEvent(playerId: _int(m['player_id']), sector: Hex.fromJson(m['sector']), ring: _int(m['ring']));
+  }
+
+  @override
+  Json toJson() => {'kind': 'RelayFounded', 'player_id': playerId, 'sector': sector.toJson(), 'ring': ring};
+}
+
+/// A relay of the player's stood unvisited for its whole span and is gone,
+/// with the deuterium that was in its store.
+class RelayDecayedEvent extends EventKind {
+  final int playerId;
+  final Hex sector;
+  final double lost;
+
+  const RelayDecayedEvent({required this.playerId, required this.sector, required this.lost});
+
+  factory RelayDecayedEvent.fromJson(Object? json) {
+    final m = _obj(json);
+    return RelayDecayedEvent(
+      playerId: _int(m['player_id']),
+      sector: Hex.fromJson(m['sector']),
+      lost: _double(m['lost']),
+    );
+  }
+
+  @override
+  Json toJson() => {'kind': 'RelayDecayed', 'player_id': playerId, 'sector': sector.toJson(), 'lost': lost};
 }
 
 /// A level of the player's outpost is finished. Level 1 opens it: the
@@ -6942,6 +7214,15 @@ const double ratioRisky = 0.8999999761581421;
 const outpostMinRing = 9;
 
 const outpostMaxRing = 20;
+
+/// Relays (`docs/design/deep-space.md`, 3.2). A relay is a depot of deuterium
+/// on a sector of ring `RELAY_MIN_RING` or deeper, owner-only, with no
+/// extractor, platform, repair or raid. Every number here is provisional.
+const relayMinRing = 9;
+
+/// Deuterium a relay holds. Not scaled by pace: it is a small depot, about
+/// four jumps for ten Cruisers.
+const double relayStore = 1000;
 
 /// The most characters an account name may have.
 const nameMaxLen = 24;

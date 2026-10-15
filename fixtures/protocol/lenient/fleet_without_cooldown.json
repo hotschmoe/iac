@@ -3,6 +3,7 @@
     "fleets": [
       {
         "at_outpost": false,
+        "at_relay": false,
         "attack": 0,
         "cargo": {
           "crystal": 0.0,
@@ -41,6 +42,12 @@
         "state": "Idle"
       }
     ],
+    "relays": {
+      "level": 0,
+      "limit": 0,
+      "relays": [],
+      "technology": "HyperspaceTechnology"
+    },
     "tick": 9,
     "type": "tick_update"
   },

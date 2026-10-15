@@ -39,6 +39,7 @@ class Icons24 {
     'stop': parseSvgPathData('M6 6h12v12H6z'),
     'trade': parseSvgPathData('M4 8h15M15 4l4 4-4 4M20 16H5M9 12l-4 4 4 4'),
     'outpost': parseSvgPathData('M12 6l5.2 3v6L12 18l-5.2-3V9zM12 2v4M12 18v4M3.3 7l3.5 2M17.2 15l3.5 2M20.7 7l-3.5 2M6.8 15l-3.5 2M10 12h4'),
+    'relay': parseSvgPathData('M12 3l8 9-8 9-8-9zM12 8v8M9 12h6'),
     'palette': parseSvgPathData('M4 7l5 5-5 5M12 18h8'),
   };
 

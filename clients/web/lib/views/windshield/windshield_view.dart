@@ -8,7 +8,7 @@ import 'package:flutter/services.dart';
 
 import '../../console/battle.dart' show RaidEnding, fleeingLine, flightPrice, outcomeTitle, raidRoundOf, roundsOf, stopFlightRule, ticksOf;
 import '../../console/intel.dart';
-import '../../console/outpost.dart' show inOutpostRings;
+import '../../console/outpost.dart' show inOutpostRings, inRelayRings;
 import '../../console/route_planner.dart';
 import '../../console/services.dart';
 import '../../console/threat.dart';
@@ -29,7 +29,7 @@ import '../../state/game_controller.dart' show HomeworldTab;
 import '../battle_view.dart' show BattlePanel, BattleStrip, raidLabelColor;
 import '../homeworld/economy_tabs.dart' show HoldDock, HoldPanel;
 import '../onboarding.dart';
-import '../outpost_view.dart' show FoundingPanel, OutpostPanel;
+import '../outpost_view.dart' show FoundingPanel, OutpostPanel, RelayPanel;
 import 'parts.dart';
 
 class WindshieldView extends StatefulWidget {
@@ -57,6 +57,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   bool _trade = false;
   bool _orders = false;
   bool _outpost = false;
+  bool _relay = false;
   DateTime? _armedUntil;
   DateTime? _scanAt;
 
@@ -347,7 +348,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
       case 'recall':
         return f.sector == con.state.homeworld ? 'Already at the homeworld.' : null;
       case 'load':
-        if (f.sector == con.state.homeworld || f.atOutpost) return null;
+        if (f.sector == con.state.homeworld || f.atOutpost || f.atRelay) return null;
         return con.state.outpost == null ? 'A hold is loaded from the stockpile at the homeworld only.' : 'A hold is loaded at the homeworld and at your outpost only.';
     }
     return null;
@@ -356,6 +357,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   void act(String id, {bool fromSub = false}) {
     if (id == 'outpost') {
       _toggleOutpost();
+      return;
+    }
+    if (id == 'relay') {
+      _toggleRelay();
       return;
     }
     final f = _fleet;
@@ -420,6 +425,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
             _sheet = true;
             _orders = false;
             _outpost = false;
+            _relay = false;
           }
         });
         if (_trade) _clearForSheet();
@@ -428,6 +434,8 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         if (f.sector == con.state.homeworld) {
           con.game.selectHomeworldTab(HomeworldTab.storage);
           con.go(Screen.homeworld);
+        } else if (f.atRelay) {
+          if (!_relay) _toggleRelay();
         } else if (!_outpost) {
           _toggleOutpost();
         }
@@ -459,6 +467,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         _sheet = true;
         _trade = false;
         _outpost = false;
+        _relay = false;
       }
     });
     if (_orders) _clearForSheet();
@@ -477,9 +486,27 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         _sheet = true;
         _trade = false;
         _orders = false;
+        _relay = false;
       }
     });
     if (_outpost) _clearForSheet();
+    con.play('click');
+  }
+
+  /// Open or shut the relay panel of this sector: the relay standing in it,
+  /// or the survey for founding one. A panel like the outpost's.
+  void _toggleRelay() {
+    if (_fleet == null) return;
+    setState(() {
+      _relay = !_relay;
+      if (_relay) {
+        _sheet = true;
+        _trade = false;
+        _orders = false;
+        _outpost = false;
+      }
+    });
+    if (_relay) _clearForSheet();
     con.play('click');
   }
 
@@ -520,7 +547,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
   bool _onKey(KeyEvent e) {
     final ch = e.character?.toLowerCase();
     if (e.logicalKey == LogicalKeyboardKey.escape) {
-      if (sim.target != null || _hsub || _sheet || _trade || _orders || _outpost) {
+      if (sim.target != null || _hsub || _sheet || _trade || _orders || _outpost || _relay) {
         setState(() {
           sim.target = null;
           _hsub = false;
@@ -528,6 +555,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
           _trade = false;
           _orders = false;
           _outpost = false;
+          _relay = false;
         });
         return true;
       }
@@ -545,6 +573,10 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
     }
     if (ch == 'o') {
       _toggleOutpost();
+      return true;
+    }
+    if (ch == 'y') {
+      _toggleRelay();
       return true;
     }
     if (ch == 'i') {
@@ -670,6 +702,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         da('stop', 'Stop', 'x', active: leaving != null, note: leaving == null ? null : stopFlightRule),
         da('trade', 'Trade', 't', active: _trade),
         if (mine == null ? inOutpostRings(f.sector) : atOutpost) da('outpost', mine == null ? 'Found' : 'Outpost', 'o', active: _outpost),
+        if (f.atRelay || inRelayRings(f.sector)) da('relay', 'Relay', 'y', active: _relay),
       ];
       final atExchange = st.exchangeAt(f.sector);
       final feedWidth = math.min(340.0, (size.width - dockActions.length * Dock.tileWidth) / 2 - 30);
@@ -697,6 +730,7 @@ class _WindshieldViewState extends State<WindshieldView> with TickerProviderStat
         ],
         if (_orders) ...[OrdersPanel(controller: con.game), const SizedBox(height: 8)],
         if (_trade) ...[ExchangePanel(controller: con.game), const SizedBox(height: 8)],
+        if (_relay) ...[RelayPanel(controller: con.game), const SizedBox(height: 8)],
         if (_outpost && mine == null) ...[FoundingPanel(controller: con.game), const SizedBox(height: 8)],
         if (_outpost && mine != null) ...[
           OutpostPanel(controller: con.game),

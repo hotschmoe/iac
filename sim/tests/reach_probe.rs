@@ -1,9 +1,16 @@
 // A measuring tool, not a verdict: one fleet of one class, research at one
 // level, and the farthest ring from a ring-4 home it can fly to and come back
-// from, with and without the deuterium clouds as places to refuel. The plan is
-// worked out from the lanes and the deposits (a cloud sector pays half its
-// deuterium on the way out and half on the way back), and then flown in the
-// engine, harvest, refine and every jump, to see that the fleet does come home.
+// from, with and without the deuterium clouds and the relays as places to
+// refuel. The plan is worked out from the lanes and the deposits (a cloud
+// sector pays half its deuterium on the way out and half on the way back), and
+// then flown in the engine, harvest, refine and every jump, to see that the
+// fleet does come home.
+//
+// The relays' model: the fleet founds up to the limit its Hyperspace
+// Technology allows (the level of the row) on open ground of ring 9 or deeper,
+// not in a cloud, paying the founding cost from a hold the probe tops up for
+// the purpose, and a convoy that is not counted has stocked each with its whole
+// store: half is spent on the way out and half on the way back, as a cloud's.
 
 #[allow(dead_code)]
 mod common;
@@ -11,7 +18,7 @@ mod common;
 use std::collections::{BTreeMap, VecDeque};
 
 use common::*;
-use iac_shared::constants::ShipClass;
+use iac_shared::constants::{ShipClass, TerrainType, FUEL_DEUT_PER_UNIT, RELAY_MIN_RING, RELAY_STORE};
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{Command, HarvestResource};
 use iac_shared::scaling::{refined_fuel_per_deuterium, ship_tank, tank_modifier};
@@ -25,6 +32,18 @@ const SEARCH_HOPS: u32 = 120;
 const MAP_LIMIT: u16 = 40;
 const TARGET_TRIES: usize = 8;
 const MAX_STOPS: usize = 8;
+const RELAY_TRIES: usize = 3;
+
+#[derive(Clone, Copy)]
+struct Tier {
+    clouds: bool,
+    relays: bool,
+}
+
+const OFF: Tier = Tier { clouds: false, relays: false };
+const CLOUDS: Tier = Tier { clouds: true, relays: false };
+const RELAYS: Tier = Tier { clouds: false, relays: true };
+const BOTH: Tier = Tier { clouds: true, relays: true };
 
 struct Walk {
     hops: u32,
@@ -78,6 +97,7 @@ fn half_deposit(engine: &GameEngine, at: Hex, jump_fuel: f64) -> f64 {
 
 struct Plan {
     nodes: Vec<Hex>,
+    relay: Vec<bool>,
     target: Hex,
     ring: u16,
     out_fuel: Vec<f64>,
@@ -114,45 +134,95 @@ fn simulate(legs: &[u32], last: u32, gains: &[f64], jumps: f64) -> Option<(Vec<f
 
 struct Frontier {
     chain: Vec<Hex>,
+    relay: Vec<bool>,
     legs: Vec<u32>,
     gains: Vec<f64>,
     out: f64,
 }
 
-fn plan(engine: &GameEngine, home: Hex, jump_fuel: f64, jumps: f64, use_clouds: bool) -> Plan {
+fn half_store(jump_fuel: f64) -> f64 {
+    RELAY_STORE / FUEL_DEUT_PER_UNIT / jump_fuel / 2.0
+}
+
+fn relay_ground(engine: &GameEngine, at: Hex) -> bool {
+    let template = engine.world_gen.generate_sector(at);
+    template.npc_template.is_none() && !template.has_derelict && template.terrain != TerrainType::Anomaly
+}
+
+fn plan(engine: &GameEngine, home: Hex, jump_fuel: f64, jumps: f64, tier: Tier, relay_limit: usize) -> Plan {
     let mut best = Plan {
         nodes: vec![home],
+        relay: vec![false],
         target: home,
         ring: home.dist_from_origin(),
         out_fuel: vec![jumps],
         back_fuel: vec![jumps],
     };
     let mut seen: BTreeMap<u32, f64> = BTreeMap::new();
-    let mut queue = VecDeque::from([Frontier { chain: vec![home], legs: vec![], gains: vec![0.0], out: jumps }]);
+    let mut queue = VecDeque::from([Frontier {
+        chain: vec![home],
+        relay: vec![false],
+        legs: vec![],
+        gains: vec![0.0],
+        out: jumps,
+    }]);
     while let Some(node) = queue.pop_front() {
         let here = *node.chain.last().unwrap();
         let reach = node.out.floor() as u32;
         let near = walk_from(engine, here, reach);
         let mut targets: Vec<(u16, u32, Hex)> = Vec::new();
+        let mut depots: Vec<(u16, u32, Hex)> = Vec::new();
         for (&key, walk) in &near {
             let at = Hex::from_key(key);
             let ring = at.dist_from_origin();
             if ring > best.ring && f64::from(walk.hops) * 2.0 <= node.out {
                 targets.push((ring, walk.hops, at));
             }
-            if use_clouds && ring <= MAP_LIMIT && walk.hops > 0 && node.legs.len() < MAX_STOPS && !node.chain.contains(&at) {
+            let relays_used = node.relay.iter().filter(|used| **used).count();
+            if tier.relays
+                && relays_used < relay_limit
+                && (RELAY_MIN_RING..=MAP_LIMIT).contains(&ring)
+                && walk.hops > 0
+                && f64::from(walk.hops) <= node.out
+                && node.legs.len() < MAX_STOPS
+                && !node.chain.contains(&at)
+                && !is_cloud(engine, at)
+                && relay_ground(engine, at)
+            {
+                depots.push((ring, walk.hops, at));
+            }
+            if tier.clouds && ring <= MAP_LIMIT && walk.hops > 0 && node.legs.len() < MAX_STOPS && !node.chain.contains(&at) {
                 let gain = half_deposit(engine, at, jump_fuel);
                 let leaves = (node.out - f64::from(walk.hops) + gain).min(jumps);
                 if gain > 0.0 && f64::from(walk.hops) <= node.out && seen.get(&key).is_none_or(|&known| leaves > known) {
                     seen.insert(key, leaves);
                     let mut chain = node.chain.clone();
                     chain.push(at);
+                    let mut relay = node.relay.clone();
+                    relay.push(false);
                     let mut legs = node.legs.clone();
                     legs.push(walk.hops);
                     let mut gains = node.gains.clone();
                     gains.push(gain);
-                    queue.push_back(Frontier { chain, legs, gains, out: leaves });
+                    queue.push_back(Frontier { chain, relay, legs, gains, out: leaves });
                 }
+            }
+        }
+        depots.sort_by_key(|&(ring, hops, at)| (std::cmp::Reverse(ring), hops, at.to_key()));
+        for &(_, hops, at) in depots.iter().take(RELAY_TRIES) {
+            let gain = half_store(jump_fuel);
+            let leaves = (node.out - f64::from(hops) + gain).min(jumps);
+            if seen.get(&at.to_key()).is_none_or(|&known| leaves > known) {
+                seen.insert(at.to_key(), leaves);
+                let mut chain = node.chain.clone();
+                chain.push(at);
+                let mut relay = node.relay.clone();
+                relay.push(true);
+                let mut legs = node.legs.clone();
+                legs.push(hops);
+                let mut gains = node.gains.clone();
+                gains.push(gain);
+                queue.push_back(Frontier { chain, relay, legs, gains, out: leaves });
             }
         }
         targets.sort_by_key(|&(ring, hops, at)| std::cmp::Reverse((ring, hops, at.to_key())));
@@ -161,7 +231,7 @@ fn plan(engine: &GameEngine, home: Hex, jump_fuel: f64, jumps: f64, use_clouds: 
                 break;
             }
             if let Some((out_fuel, back_fuel)) = simulate(&node.legs, hops, &node.gains, jumps) {
-                best = Plan { nodes: node.chain.clone(), target: at, ring, out_fuel, back_fuel };
+                best = Plan { nodes: node.chain.clone(), relay: node.relay.clone(), target: at, ring, out_fuel, back_fuel };
                 break;
             }
         }
@@ -223,7 +293,27 @@ fn fly(e: &mut Empire, path: &[Hex]) -> Result<(), String> {
     Ok(())
 }
 
-fn play(engine: GameEngine, pid: u64, fid: u64, chosen: &Plan, jump_fuel: f64, use_clouds: bool) -> Result<u64, String> {
+fn found_and_stock(e: &mut Empire, at: Hex) -> Result<(), String> {
+    let (pid, fid) = (e.pid, e.fid);
+    let cost = iac_shared::scaling::relay_cost(at.dist_from_origin());
+    edit(&mut e.engine, |s| {
+        let fleet = s.fleets.get_mut(&fid).expect("fleet");
+        fleet.cargo = fleet.cargo.add(cost);
+    });
+    e.order(Command::FoundRelay { fleet_id: fid }).map_err(|code| format!("founding refused: {code:?}"))?;
+    restock(e, at, pid);
+    Ok(())
+}
+
+fn restock(e: &mut Empire, at: Hex, pid: u64) {
+    edit(&mut e.engine, |s| {
+        let relay = s.relays.get_mut(&pid).and_then(|list| list.iter_mut().find(|r| r.sector == at)).expect("relay");
+        relay.store = RELAY_STORE / 2.0;
+    });
+}
+
+fn play(engine: GameEngine, pid: u64, fid: u64, chosen: &Plan, jump_fuel: f64, tier: Tier) -> Result<u64, String> {
+    let use_clouds = tier.clouds;
     let mut e = Empire { engine, pid, fid, log: Vec::new() };
     let start = e.engine.current_tick();
     let legs = chosen.nodes.len();
@@ -232,6 +322,11 @@ fn play(engine: GameEngine, pid: u64, fid: u64, chosen: &Plan, jump_fuel: f64, u
         fly(&mut e, &path)?;
         if use_clouds {
             top_up(&mut e, chosen.nodes[i], chosen.out_fuel[i] * jump_fuel);
+        }
+        if chosen.relay[i] {
+            found_and_stock(&mut e, chosen.nodes[i])?;
+            e.run(3);
+            restock(&mut e, chosen.nodes[i], pid);
         }
     }
     if chosen.target != chosen.nodes[legs - 1] {
@@ -259,7 +354,7 @@ struct Reading {
     played: Result<u64, String>,
 }
 
-fn measure(class: ShipClass, level: u8, use_clouds: bool) -> Reading {
+fn measure(class: ShipClass, level: u8, tier: Tier) -> Reading {
     let mut engine = world("season");
     let (pid, fid) = join(&mut engine, "Prober");
     let home = world::home_seats().find(|at| at.dist_from_origin() == HOME_RING).expect("a ring-4 seat");
@@ -269,6 +364,7 @@ fn measure(class: ShipClass, level: u8, use_clouds: bool) -> Reading {
         player.research.energy_technology = level;
         player.research.impulse_drive = level;
         player.buildings.deuterium_tank = level;
+        player.research.hyperspace_technology = level;
         let tank = ship_tank(class, &player.research);
         let fleet = s.fleets.get_mut(&fid).expect("fleet");
         fleet.ships = Ships::of(&[(class, FLEET_SHIPS)]);
@@ -279,27 +375,46 @@ fn measure(class: ShipClass, level: u8, use_clouds: bool) -> Reading {
     let probe = Empire { engine, pid, fid, log: Vec::new() };
     let state = probe.fleet();
     let jumps = (state.fuel_max / state.jump_fuel).floor();
-    let chosen = plan(&probe.engine, home, state.jump_fuel, jumps, use_clouds);
-    let played = play(probe.engine, pid, fid, &chosen, state.jump_fuel, use_clouds);
+    let limit = probe.engine.relay_limit(pid) as usize;
+    let chosen = plan(&probe.engine, home, state.jump_fuel, jumps, tier, limit);
+    let played = play(probe.engine, pid, fid, &chosen, state.jump_fuel, tier);
     Reading { jumps: jumps as u32, ring: chosen.ring, stops: chosen.nodes.len() - 1, played }
 }
 
 #[test]
-fn reach_with_and_without_clouds() {
-    println!("class          level  jumps  ring_off  ring_on  cloud_stops  played");
+fn reach_with_and_without_clouds_and_relays() {
+    println!("class          level  jumps  relays  ring_off  clouds  relays_on  both  (stops: clouds/relays/both)");
     for class in [ShipClass::LightFighter, ShipClass::Cruiser] {
         for level in [0u8, 3, 6, 10, 13] {
-            let off = measure(class, level, false);
-            let on = measure(class, level, true);
+            let off = measure(class, level, OFF);
+            let clouds = measure(class, level, CLOUDS);
+            let relays = measure(class, level, RELAYS);
+            let both = measure(class, level, BOTH);
             let played = |r: &Result<u64, String>| match r {
-                Ok(ticks) => format!("ok {ticks} ticks"),
+                Ok(_) => "ok".to_string(),
                 Err(why) => format!("FAILED {why}"),
             };
             println!(
-                "{:<14} {level:>5} {:>6} {:>9} {:>8} {:>12}  off: {}; on: {}",
-                class.label(), off.jumps, off.ring, on.ring, on.stops, played(&off.played), played(&on.played),
+                "{:<14} {level:>5} {:>6} {:>7} {:>9} {:>7} {:>10} {:>5}  ({}/{}/{})  off: {}; clouds: {}; relays: {}; both: {}",
+                class.label(),
+                off.jumps,
+                1 + u32::from(level) / 2,
+                off.ring,
+                clouds.ring,
+                relays.ring,
+                both.ring,
+                clouds.stops,
+                relays.stops,
+                both.stops,
+                played(&off.played),
+                played(&clouds.played),
+                played(&relays.played),
+                played(&both.played),
             );
-            assert!(on.ring >= off.ring, "clouds never shorten the reach");
+            assert!(clouds.ring >= off.ring, "clouds never shorten the reach");
+            assert!(relays.ring >= off.ring, "relays never shorten the reach");
+            assert!(both.ring >= relays.ring.max(clouds.ring), "the two together never reach less than either");
+            assert!(relays.played.is_ok(), "the relays plan is flown home: {:?}", relays.played);
         }
     }
 }

@@ -118,6 +118,12 @@ class StateMapper {
   /// `outpost_survey` answers by (fleet id, sector key).
   final Map<(int, int), SurveyEntry> surveys = {};
 
+  /// The player's relays as the server last sent them.
+  proto.RelaysState relays = const proto.RelaysState();
+
+  /// `relay_survey` answers by (fleet id, sector key).
+  final Map<(int, int), RelaySurveyEntry> relaySurveys = {};
+
   /// The last raid on the homeworld that ended while the console was open,
   /// and the last on the outpost. The raid on its way or being fought is
   /// the state's: [homeworld] and [outpost] carry it.
@@ -185,6 +191,8 @@ class StateMapper {
     leaderboard = null;
     outpost = null;
     surveys.clear();
+    relays = const proto.RelaysState();
+    relaySurveys.clear();
     lastRaid = null;
     lastOutpostRaid = null;
     sectors.clear();
@@ -229,6 +237,9 @@ class StateMapper {
       case proto.OutpostSurvey():
         surveys[(msg.fleetId, msg.sector.toKey())] = SurveyEntry(msg, tick);
         surveys.removeWhere((_, e) => tick - e.tick > 600);
+      case proto.RelaySurvey():
+        relaySurveys[(msg.fleetId, msg.sector.toKey())] = RelaySurveyEntry(msg, tick);
+        relaySurveys.removeWhere((_, e) => tick - e.tick > 600);
       case proto.AuthResult():
         break; // handled by the controller (connection state)
     }
@@ -242,6 +253,7 @@ class StateMapper {
     fleets = List.of(s.fleets);
     homeworld = s.homeworld;
     outpost = s.outpost;
+    relays = s.relays;
     world = s.world;
     sectors.clear();
     for (final sec in s.knownSectors) {
@@ -260,6 +272,7 @@ class StateMapper {
     odds.clear();
     quotes.clear();
     surveys.clear();
+    relaySurveys.clear();
     _noteFights();
     pushLog(first ? 'Uplink established. Homeworld at ${s.player.homeworld}.' : 'Uplink refreshed: the console is in step with the world again.',
         EventLevel.bright);
@@ -271,6 +284,7 @@ class StateMapper {
     fleets = List.of(u.fleets);
     if (u.homeworldUpdate != null) homeworld = u.homeworldUpdate;
     outpost = u.outpost;
+    relays = u.relays;
     for (final sec in u.sectorUpdates ?? const <proto.SectorState>[]) {
       final key = sec.location.toKey();
       sectors[key] = sec;
@@ -461,6 +475,12 @@ class StateMapper {
       case proto.OutpostCompletedEvent():
         msg = 'Outpost at ${k.sector}: level ${k.level} complete';
         level = EventLevel.bright;
+      case proto.RelayFoundedEvent():
+        msg = 'Relay founded at ${k.sector}, ring ${k.ring}';
+        level = EventLevel.bright;
+      case proto.RelayDecayedEvent():
+        msg = '! Relay at ${k.sector} stood unvisited and is gone, with ${k.lost.round()} deuterium';
+        level = EventLevel.bright;
       case proto.RaidIncomingEvent():
         final where = switch (k.outpost) { null => '', final at => ' on your outpost at $at' };
         final forecast = switch (k.odds) { null => '', final odds => ', forecast ${raidVerdict(odds)}' };
@@ -628,6 +648,8 @@ class StateMapper {
       lastOutpostRaid: lastOutpostRaid,
       outpost: outpost,
       surveys: {for (final e in surveys.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
+      relays: relays,
+      relaySurveys: {for (final e in relaySurveys.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
       policyActs: {for (final f in fleets) f.id: ?policyActs[f.id]?.toList()},
       battles: {for (final b in battles.values) b.sector: b},
       pastFights: List.of(pastFights),
@@ -682,6 +704,7 @@ class StateMapper {
       scanRange: f.scanRange,
       outpostFuel: f.outpostFuel?.round(),
       atOutpost: f.atOutpost,
+      atRelay: f.atRelay,
       cooldown: f.cooldownRemaining,
       power: f.power,
       rangeHops: f.rangeHops,

@@ -95,6 +95,9 @@ class FleetState {
 
   /// In the sector of the player's outpost, whatever state it is in.
   final bool atOutpost;
+
+  /// In the sector of one of the player's relays.
+  final bool atRelay;
   final int cooldown;
   final double power;
   final int rangeHops;
@@ -160,6 +163,7 @@ class FleetState {
     this.scanRange = proto.scanBaseRange,
     this.outpostFuel,
     this.atOutpost = false,
+    this.atRelay = false,
     this.cooldown = 0,
     this.power = 0,
     this.rangeHops = 0,

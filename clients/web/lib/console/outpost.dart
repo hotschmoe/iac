@@ -10,6 +10,35 @@ import 'intel.dart' show anHour, clockFmt, groupDigits, hopCount;
 /// console offers to found.
 bool inOutpostRings(proto.Hex h) => h.distFromOrigin >= proto.outpostMinRing && h.distFromOrigin <= proto.outpostMaxRing;
 
+/// Whether [h] lies in the rings a relay may stand in, which are the
+/// engine's. The server is the judge of a site; this only decides where the
+/// console offers to found.
+bool inRelayRings(proto.Hex h) => h.distFromOrigin >= proto.relayMinRing;
+
+/// What a relay does and does not do for a fleet standing at it.
+const relayDockVoice = 'A FLEET FLOWN BY HAND IS REFUELLED HERE FROM THE STORE, AND LOADS AND UNLOADS DEUTERIUM BY ORDER. '
+    'IT MAKES NOTHING, MENDS NOTHING AND NO RAID COMES TO IT. THE FUEL IN IT IS WHAT YOU HAULED THERE.';
+
+/// "RELAY 12,-3 STORE 640 OF 1000 GONE IN 4:10:00".
+String relayLine(proto.RelayState r) =>
+    'RELAY ${r.sector.q},${r.sector.r} STORE ${r.store.round()} OF ${r.storeCap.round()} GONE IN ${clockFmt(r.decayIn)}';
+
+/// A relay survey in its lines: the ring and the cost, the store and the
+/// span it stands unvisited, and how many the player keeps of how many the
+/// technology allows.
+List<String> relaySurveyLines(proto.RelaySurvey s) => [
+      'Relay site ${s.sector}, ring ${s.ring}: costs ${amountsOf(s.cost)} from the founding hold',
+      'It holds ${s.storeCap.round()} deuterium and is gone with it after ${clockFmt(s.decayTicks)} with none of your fleets there',
+      'You keep ${s.count} of ${s.limit} relays, raised by ${s.technology.label}',
+    ];
+
+/// A relay survey as the log prints it, ending with whether it can be
+/// founded now, in the server's sentence when it cannot.
+List<String> relaySurveyReport(proto.RelaySurvey s) => [
+      ...relaySurveyLines(s),
+      if (s.refusal case final why?) 'Cannot be founded now: $why' else 'F${s.fleetId} can found it now',
+    ];
+
 /// What the outpost does and does not do for a fleet standing at it.
 String outpostDockVoice(proto.OutpostState o) =>
     '${o.inService ? 'A FLEET FLOWN BY HAND IS REFUELLED HERE FROM THE STORE, AND' : 'NO TANK IS FILLED HERE WHILE IT IS ${o.breached ? 'BREACHED' : 'NOT YET OPEN'}. A FLEET'} '

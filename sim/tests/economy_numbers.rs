@@ -202,6 +202,8 @@ fn game() -> Json {
         OUTPOST_MIN_RING, OUTPOST_MAX_RING, OUTPOST_SPACING, OUTPOST_MAX_LEVEL,
         OUTPOST_COST, OUTPOST_GROWTH, OUTPOST_BUILD_RATE, OUTPOST_STORE_BASE, OUTPOST_YIELD_PER_HOUR,
         OUTPOST_RAID_FACTOR, OUTPOST_RAID_LOSS, OUTPOST_REPAIR_SHARE,
+        RELAY_MIN_RING, RELAY_COST_BASE, RELAY_COST_GROWTH, RELAY_BASE_MAX, RELAY_LEVELS_PER_STEP, RELAY_STORE,
+        RELAY_DECAY_TICKS,
     ];
 
     let start = BuildingLevels::default();
@@ -534,6 +536,16 @@ fn tables() -> Json {
         .map(|(ring, level, p)| outpost_yield(ring, level, p))
         .collect();
 
+    let relays: Vec<Json> = (RELAY_MIN_RING..=RINGS)
+        .flat_map(|ring| PACES.into_iter().map(move |p| (ring, p)))
+        .map(|(ring, p)| {
+            map! {
+                "ring": ring, "pace": p, "cost": relay_cost(ring),
+                "decay_ticks": pace(p).attention_ticks(RELAY_DECAY_TICKS as f64),
+            }
+        })
+        .collect();
+
     map! {
         "building_levels": building_levels,
         "research_levels": research_levels,
@@ -550,6 +562,7 @@ fn tables() -> Json {
         "find_kept": find_kept,
         "outpost_levels": outpost_levels,
         "outpost_yields": outpost_yields,
+        "relays": relays,
     }
 }
 

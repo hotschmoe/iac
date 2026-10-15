@@ -36,6 +36,7 @@ use iac_shared::constants::{
     POLICY_DISENGAGE_RATIO_X10_MIN, POLICY_DISENGAGE_RATIO_X10_MAX,
     LANE_SEARCH_HOPS,
     OUTPOST_MIN_RING, OUTPOST_MAX_RING, OUTPOST_MAX_LEVEL, OUTPOST_RAID_LOSS, OUTPOST_SPACING,
+    RELAY_DECAY_TICKS, RELAY_LEVELS_PER_STEP, RELAY_MIN_RING, RELAY_STORE,
 };
 use iac_shared::pace::Pace;
 use iac_shared::world::{self, HubService, WorldGen};
@@ -49,6 +50,7 @@ use iac_shared::protocol::{
     StockpileCause, StockpileEvent, StorageFullEvent, StorageNearCapEvent, StorageState,
     ExchangeMeter, ExchangeTerms, ExchangedEvent,
     OutpostCompletedEvent, OutpostSurvey, PowerRange, SectorResources, SurveySite,
+    RelayDecayedEvent, RelayFoundedEvent, RelaySurvey,
     BattleGroup, BattleLosses, BattleOutcome, BattleRoundEvent, BattleSide, BattleState, BattleUnits,
     RaidBattle, RaidForecast, RaidLabel, RaidOdds,
     DockRepair, RepairQuote, ShipCount, ShipGroupState, ShipsLostEvent, UnitCount,
@@ -804,6 +806,18 @@ impl Outpost {
     }
 }
 
+/// A player's relay: a depot of deuterium on one sector of ring 9 or deeper.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Relay {
+    pub sector: Hex,
+    pub store: f64,
+    pub founded_tick: u64,
+    /// The last tick a fleet of its owner stood in its sector.
+    pub visited_tick: u64,
+    /// Fleets standing here that were told the store could not fill their tank.
+    pub dry_tanks: Vec<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutpostJob {
     pub task: OutpostTask,
@@ -1339,6 +1353,8 @@ pub struct GameEngine {
     /// read the other way, for `outpost_at`, which every sector view asks.
     /// An outpost never moves, so founding and abandoning are all that change it.
     outpost_sites: KeyMap<u32, u64>,
+    /// Relays by owner, in the order they were founded.
+    pub relays: BTreeMap<u64, Vec<Relay>>,
     /// Standing orders per fleet.
     pub policies: BTreeMap<u64, FleetPolicy>,
 
@@ -1384,7 +1400,7 @@ impl GameEngine {
         let Snapshot {
             world_seed, meta, tick, next_id, players, fleets, npc_fleets, combats,
             sector_overrides, policies, scan_reveals, raid_states, storage_marks, home_salvage_warned,
-            harvest_reports, bots, outposts, pending_events, explored, charted, known,
+            harvest_reports, bots, outposts, relays, pending_events, explored, charted, known,
         } = snapshot;
 
         GameEngine {
@@ -1404,6 +1420,7 @@ impl GameEngine {
             bots,
             outpost_sites: outposts.iter().map(|(owner, outpost)| (outpost.sector.to_key(), *owner)).collect(),
             outposts,
+            relays,
             policies,
             pending_events,
             pending_arrivals: Vec::new(),
@@ -1437,6 +1454,7 @@ impl GameEngine {
             harvest_reports: self.harvest_reports.clone(),
             bots: self.bots.clone(),
             outposts: self.outposts.clone(),
+            relays: self.relays.clone(),
             pending_events: self.pending_events.clone(),
             explored: self.explored.iter().copied().collect(),
             charted: self.charted.iter().copied().collect(),
@@ -1478,6 +1496,7 @@ impl GameEngine {
         self.process_npc_behavior()?;
         self.process_homeworlds()?;
         self.process_outposts();
+        self.process_relays();
         self.process_build_queues()?;
         self.process_raids()?;
         self.process_home_salvage();
@@ -1605,6 +1624,7 @@ impl GameEngine {
         for fleet_id in arrival_ids {
             self.check_homeworld_docking(fleet_id)?;
             self.check_outpost_docking(fleet_id);
+            self.refuel_at_relay(fleet_id);
             self.announce_if_stranded(fleet_id);
             self.check_npc_encounter(fleet_id)?;
         }
@@ -3782,6 +3802,344 @@ impl GameEngine {
         player.satellites as f32 * scaling::satellite_power(&player.research)
     }
 
+    // ── Relays ────────────────────────────────────────────────────
+
+    /// The relay standing in `sector`, whoever owns it, with its owner.
+    pub fn relay_at(&self, sector: Hex) -> Option<(u64, &Relay)> {
+        self.relays.iter().find_map(|(owner, list)| {
+            list.iter().find(|relay| relay.sector == sector).map(|relay| (*owner, relay))
+        })
+    }
+
+    pub fn relay_count(&self, owner: u64) -> u32 {
+        self.relays.get(&owner).map_or(0, |list| list.len() as u32)
+    }
+
+    pub fn relay_limit(&self, owner: u64) -> u32 {
+        self.players.get(&owner).map_or(0, |p| scaling::relay_limit(&p.research))
+    }
+
+    /// Ticks a relay stands unvisited before it is gone, at this world's pace.
+    pub fn relay_decay_ticks(&self) -> u64 {
+        self.world.pace.attention_ticks(RELAY_DECAY_TICKS as f64)
+    }
+
+    fn own_relay_at(&self, owner: u64, sector: Hex) -> Option<&Relay> {
+        self.relays.get(&owner)?.iter().find(|relay| relay.sector == sector)
+    }
+
+    /// `fleet_id` of `player_id` standing in the sector of one of its owner's
+    /// relays: None for a fleet that is not, otherwise the fleet and the
+    /// relay, or why the hold cannot be handled now. `verb` words the refusal.
+    fn standing_at_relay(&self, player_id: u64, fleet_id: u64, verb: &str) -> Option<Result<(&Fleet, &Relay), Refusal>> {
+        let fleet = self.owned_fleet(player_id, fleet_id).ok()?;
+        let relay = self.own_relay_at(player_id, fleet.location)?;
+        Some(if fleet.state == FleetStatus::Moving {
+            Err(Refusal::new(ErrorCode::OnCooldown, format!(
+                "fleet {fleet_id} is in transit; it can {verb} once it stands idle at the relay",
+            )))
+        } else if !Self::fleet_is_free(fleet) {
+            Err(Refusal::new(ErrorCode::OnCooldown, format!(
+                "fleet {fleet_id} is busy; it can {verb} once it is idle",
+            )))
+        } else {
+            Ok((fleet, relay))
+        })
+    }
+
+    fn load_at_relay(
+        &self,
+        player_id: u64,
+        fleet_id: u64,
+        resource: ResourceKind,
+        amount: Option<f64>,
+    ) -> Option<Result<f64, Refusal>> {
+        Some(self.standing_at_relay(player_id, fleet_id, "load")?.and_then(|(fleet, relay)| {
+            if let Some(policy) = self.policies.get(&fleet_id) {
+                return Err(Refusal::new(ErrorCode::InvalidCommand, format!(
+                    "fleet {fleet_id} is under standing orders ({}), which do not use the relay; \
+                     set it to manual before loading its hold by hand",
+                    policy.preset.label(),
+                )));
+            }
+            if resource != ResourceKind::Deuterium {
+                return Err(Refusal::new(ErrorCode::InvalidCommand, format!(
+                    "the relay at {} holds deuterium only; it has no {} to load",
+                    relay.sector, resource.label(),
+                )));
+            }
+            self.loadable(fleet, resource, "the relay's store", relay.store, amount)
+        }))
+    }
+
+    fn board_from_relay(
+        &mut self,
+        player_id: u64,
+        fleet_id: u64,
+        resource: ResourceKind,
+        loaded: f64,
+    ) -> Result<(), ErrorCode> {
+        let sector = self.fleets.get(&fleet_id).ok_or(ErrorCode::FleetNotFound)?.location;
+        let relay = self.relays.get_mut(&player_id)
+            .and_then(|list| list.iter_mut().find(|relay| relay.sector == sector))
+            .ok_or(ErrorCode::ServerError)?;
+        relay.store = (relay.store - loaded).max(0.0);
+        let capacity = self.fleets.get(&fleet_id).map_or(0.0, |f| fleet_cargo_capacity(f, &self.world.pace));
+        let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
+        *fleet.cargo.get_mut(resource) += loaded;
+        let aboard = fleet.cargo.total();
+        self.push_alert(AlertLevel::Info, fleet_id, sector, format!(
+            "fleet {fleet_id} loaded {loaded:.0} {} from the relay's store: it carries {aboard:.0} of {capacity:.0}",
+            resource.label(),
+        ));
+        Ok(())
+    }
+
+    fn unload_into_relay(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+        let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
+        let sector = fleet.location;
+        let relay = self.relays.get_mut(&player_id)
+            .and_then(|list| list.iter_mut().find(|relay| relay.sector == sector))
+            .ok_or(ErrorCode::ServerError)?;
+        let moved = fleet.cargo.deuterium.min((RELAY_STORE - relay.store).max(0.0));
+        relay.store += moved;
+        fleet.cargo.deuterium -= moved;
+        let (stored, aboard) = (relay.store, fleet.cargo.deuterium);
+        let rest = if aboard > LOAD_SLACK {
+            format!("; {aboard:.0} deuterium stays aboard, the store is full")
+        } else {
+            String::new()
+        };
+        self.push_alert(AlertLevel::Info, fleet_id, sector, format!(
+            "fleet {fleet_id} unloaded {moved:.0} deuterium into the relay's store, which holds {stored:.0} of \
+             {RELAY_STORE:.0}{rest}",
+        ));
+        Ok(())
+    }
+
+    /// Whether `fleet` may found its owner's relay in `sector` right now.
+    /// The survey, the command and its refusal all read this.
+    pub fn relay_site(&self, player_id: u64, fleet: &Fleet, sector: Hex) -> Result<(), Refusal> {
+        let refuse = |code: ErrorCode, reason: String| Err(Refusal::new(code, reason));
+        let fleet_id = fleet.id;
+        let ring = sector.dist_from_origin();
+        if ring < RELAY_MIN_RING {
+            let subject = if fleet.location == sector { format!("fleet {fleet_id}") } else { sector.to_string() };
+            return refuse(ErrorCode::InvalidTarget, format!(
+                "{subject} is at ring {ring}; a relay stands in ring {RELAY_MIN_RING} and deeper",
+            ));
+        }
+        let template = self.world_gen.generate_sector(sector);
+        if template.terrain == iac_shared::constants::TerrainType::Anomaly {
+            return refuse(ErrorCode::InvalidTarget, format!("{sector} is an Anomaly; no relay stands in one"));
+        }
+        if template.has_derelict {
+            return refuse(ErrorCode::InvalidTarget, format!("a derelict drifts at {sector}; no relay stands beside one"));
+        }
+        if template.npc_template.is_some() {
+            return refuse(ErrorCode::InvalidTarget, format!("a pirate lair stands at {sector}; no relay stands on one"));
+        }
+        if self.outpost_at(sector).is_some() {
+            return refuse(ErrorCode::InvalidTarget, format!("an outpost stands at {sector}; a relay is its own station"));
+        }
+        if let Some((owner, _)) = self.relay_at(sector) {
+            let whose = if owner == player_id {
+                "your relay".to_string()
+            } else {
+                format!("the relay of {}", self.players.get(&owner).map_or("another empire", |p| p.name.as_str()))
+            };
+            return refuse(ErrorCode::InvalidTarget, format!("{whose} already stands at {sector}; a sector holds one"));
+        }
+        if fleet.location != sector {
+            let hexes = Hex::distance(&fleet.location, &sector);
+            return refuse(ErrorCode::NotInSector, format!(
+                "fleet {fleet_id} is at {}, {hexes} hex{} from {sector}; a relay is founded by a fleet standing in its sector",
+                fleet.location, if hexes == 1 { "" } else { "es" },
+            ));
+        }
+        match fleet.state {
+            FleetStatus::Moving => {
+                return refuse(ErrorCode::OnCooldown, format!(
+                    "fleet {fleet_id} is in transit; it can found a relay once it stands idle",
+                ));
+            }
+            FleetStatus::InCombat => {
+                return refuse(ErrorCode::OnCooldown, format!(
+                    "fleet {fleet_id} is in combat; a relay is founded on a sector its founder has won",
+                ));
+            }
+            _ if !Self::fleet_is_free(fleet) => {
+                return refuse(ErrorCode::OnCooldown, format!(
+                    "fleet {fleet_id} is busy; it can found a relay once it is idle",
+                ));
+            }
+            _ => {}
+        }
+        if let Some(group) = self.npc_fleets.values().find(|n| n.location == sector && !n.ships.is_empty()) {
+            return refuse(ErrorCode::InvalidTarget, format!(
+                "a {} holds {sector}; a relay is founded on a sector its founder has won",
+                group.label,
+            ));
+        }
+        if let Some(policy) = self.policies.get(&fleet_id) {
+            return refuse(ErrorCode::InvalidCommand, format!(
+                "fleet {fleet_id} is under standing orders ({}); set it to manual before founding a relay",
+                policy.preset.label(),
+            ));
+        }
+        let (count, limit) = (self.relay_count(player_id), self.relay_limit(player_id));
+        if count >= limit {
+            let level = self.players.get(&player_id).map_or(0, |p| p.research.hyperspace_technology);
+            return refuse(ErrorCode::InvalidCommand, format!(
+                "you keep {count} relay{}, the most {} level {level} allows ({limit}); every {RELAY_LEVELS_PER_STEP} \
+                 levels of it add one",
+                if count == 1 { "" } else { "s" },
+                ResearchType::HyperspaceTechnology.label(),
+            ));
+        }
+        let cost = scaling::relay_cost(ring);
+        let short = fleet.cargo.shortfall(cost);
+        if short.total() > 0.0 {
+            return refuse(ErrorCode::NoResources, format!(
+                "the hold of fleet {fleet_id} lacks {} of the {} a relay at ring {ring} costs; it is built from what \
+                 the founding fleet carries, loaded at home",
+                crate::commands::amount_words(short),
+                crate::commands::amount_words(cost),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Answer to `relay_survey`: what a relay in `sector` (the fleet's own
+    /// when None) would cost, and why it cannot be founded now.
+    pub fn relay_survey(&self, player_id: u64, fleet_id: u64, sector: Option<Hex>) -> Result<RelaySurvey, Refusal> {
+        let fleet = self.owned_fleet(player_id, fleet_id)
+            .map_err(|code| Refusal::new(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
+        let sector = sector.unwrap_or(fleet.location);
+        let ring = sector.dist_from_origin();
+        Ok(RelaySurvey {
+            fleet_id,
+            sector,
+            ring,
+            cost: scaling::relay_cost(ring),
+            store_cap: RELAY_STORE,
+            decay_ticks: self.relay_decay_ticks(),
+            count: self.relay_count(player_id),
+            limit: self.relay_limit(player_id),
+            technology: ResearchType::HyperspaceTechnology,
+            refusal: self.relay_site(player_id, fleet, sector).err().map(|refusal| refusal.reason),
+        })
+    }
+
+    /// Found `player_id`'s relay where `fleet_id` stands: the hold pays.
+    pub fn handle_found_relay(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
+        let fleet = self.owned_fleet(player_id, fleet_id)?;
+        let sector = fleet.location;
+        self.relay_site(player_id, fleet, sector).map_err(|refusal| refusal.code)?;
+        let ring = sector.dist_from_origin();
+        let cost = scaling::relay_cost(ring);
+        let tick = self.current_tick;
+        let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
+        fleet.cargo = fleet.cargo.sub(cost);
+        self.relays.entry(player_id).or_default().push(Relay {
+            sector,
+            store: 0.0,
+            founded_tick: tick,
+            visited_tick: tick,
+            dry_tanks: vec![fleet_id],
+        });
+        self.pending_events.push(GameEvent {
+            tick,
+            kind: EventKind::RelayFounded(RelayFoundedEvent { player_id, sector, ring }),
+        });
+        self.push_alert(AlertLevel::Info, fleet_id, sector, format!(
+            "fleet {fleet_id} founded your relay at {sector} for {}: it holds up to {RELAY_STORE:.0} deuterium, \
+             which fleets of yours standing there load, unload and refuel from. It is gone if no fleet of yours \
+             stands there for {} ticks",
+            crate::commands::amount_words(cost),
+            self.relay_decay_ticks(),
+        ));
+        Ok(())
+    }
+
+    /// A fleet standing at its owner's relay, flown by hand, has its tank
+    /// filled from the store as far as the store pays; a tank it cannot
+    /// fill is reported once per stay.
+    fn refuel_at_relay(&mut self, fleet_id: u64) {
+        if self.policies.contains_key(&fleet_id) { return; }
+        let Some(fleet) = self.fleets.get_mut(&fleet_id) else { return; };
+        if fleet.state == FleetStatus::Moving || fleet.ships.is_empty() { return; }
+        let owner = fleet.owner_id;
+        let sector = fleet.location;
+        let Some(relay) = self.relays.get_mut(&owner).and_then(|list| list.iter_mut().find(|r| r.sector == sector)) else {
+            return;
+        };
+        let missing = fleet.fuel_max - fleet.fuel;
+        if missing <= 0.0 { return; }
+        let units = missing.min(relay.store / FUEL_DEUT_PER_UNIT);
+        if units > 0.0 {
+            relay.store = (relay.store - units * FUEL_DEUT_PER_UNIT).max(0.0);
+            fleet.fuel = if units >= missing { fleet.fuel_max } else { fleet.fuel + units };
+        }
+        if units >= missing || relay.dry_tanks.contains(&fleet_id) { return; }
+        relay.dry_tanks.push(fleet_id);
+        let (fuel, fuel_max) = (fleet.fuel, fleet.fuel_max);
+        self.push_alert(AlertLevel::Warning, fleet_id, sector, format!(
+            "your relay at {sector} has no deuterium left for the tank of fleet {fleet_id}; unload some into its \
+             store: the fleet stands at {} of {} fuel",
+            fuel_words(fuel), fuel_words(fuel_max),
+        ));
+    }
+
+    /// Each relay's tick, in owner order: a visit sets the decay back and
+    /// fills the tanks of the fleets there; a relay no fleet of its owner
+    /// has stood at for the whole span is gone with its store.
+    fn process_relays(&mut self) {
+        if self.relays.is_empty() { return; }
+        let tick = self.current_tick;
+        let span = self.relay_decay_ticks();
+        let owners: Vec<u64> = self.relays.keys().copied().collect();
+        for owner in owners {
+            let sectors: Vec<Hex> = self.relays[&owner].iter().map(|relay| relay.sector).collect();
+            for sector in sectors {
+                let standing: Vec<u64> = self.fleets.values()
+                    .filter(|f| f.owner_id == owner && f.location == sector && !f.ships.is_empty())
+                    .map(|f| f.id)
+                    .collect();
+                let Some(relay) = self.relays.get_mut(&owner).and_then(|l| l.iter_mut().find(|r| r.sector == sector)) else {
+                    continue;
+                };
+                if standing.is_empty() {
+                    if tick.saturating_sub(relay.visited_tick) < span { continue; }
+                    let lost = relay.store;
+                    if let Some(list) = self.relays.get_mut(&owner) {
+                        list.retain(|relay| relay.sector != sector);
+                    }
+                    self.pending_events.push(GameEvent {
+                        tick,
+                        kind: EventKind::RelayDecayed(RelayDecayedEvent { player_id: owner, sector, lost }),
+                    });
+                    self.outpost_alert(owner, AlertLevel::Warning, sector, format!(
+                        "your relay at {sector} stood unvisited for {span} ticks and is gone, with {lost:.0} \
+                         deuterium in its store",
+                    ));
+                    continue;
+                }
+                relay.visited_tick = tick;
+                let thirsty: Vec<u64> = standing.into_iter()
+                    .filter(|id| self.fleets.get(id).is_some_and(|f| f.fuel < f.fuel_max && f.state != FleetStatus::Moving))
+                    .collect();
+                if let Some(relay) = self.relays.get_mut(&owner).and_then(|l| l.iter_mut().find(|r| r.sector == sector)) {
+                    relay.dry_tanks.retain(|id| thirsty.contains(id));
+                }
+                for fleet_id in thirsty {
+                    self.refuel_at_relay(fleet_id);
+                }
+            }
+        }
+        self.relays.retain(|_, list| !list.is_empty());
+    }
+
     // ── Outposts ──────────────────────────────────────────────────
 
     /// The outpost standing in `sector`, with its owner.
@@ -3853,6 +4211,11 @@ impl GameEngine {
         if template.has_derelict {
             return refuse(ErrorCode::InvalidTarget, format!(
                 "a derelict drifts at {sector}; no outpost stands beside one, stripped or not",
+            ));
+        }
+        if self.relay_at(sector).is_some() {
+            return refuse(ErrorCode::InvalidTarget, format!(
+                "a relay stands at {sector}; no outpost is founded on one",
             ));
         }
         let crowding = self.outposts.iter()
@@ -5353,6 +5716,9 @@ impl GameEngine {
         resource: ResourceKind,
         amount: Option<f64>,
     ) -> Result<f64, Refusal> {
+        if let Some(loaded) = self.load_at_relay(player_id, fleet_id, resource, amount) {
+            return loaded;
+        }
         self.load_at_dock(player_id, fleet_id, resource, amount).map(|(loaded, _)| loaded)
     }
 
@@ -5375,7 +5741,6 @@ impl GameEngine {
                 policy.preset.label(),
             )));
         }
-        let label = resource.label();
         let (source, stock) = match dock {
             Dock::Home => ("the stockpile", player.resources.get(resource)),
             Dock::Outpost => (
@@ -5383,13 +5748,29 @@ impl GameEngine {
                 self.outposts.get(&player_id).map_or(0.0, |o| o.store.get(resource)),
             ),
         };
+        let loaded = self.loadable(fleet, resource, source, stock, amount)?;
+        Ok((loaded, dock))
+    }
+
+    /// How much of `resource` a hold takes from a store of `stock`: `amount`,
+    /// or all there is and the hold has room for when None.
+    fn loadable(
+        &self,
+        fleet: &Fleet,
+        resource: ResourceKind,
+        source: &str,
+        stock: f64,
+        amount: Option<f64>,
+    ) -> Result<f64, Refusal> {
+        let fleet_id = fleet.id;
+        let label = resource.label();
         let capacity = fleet_cargo_capacity(fleet, &self.world.pace);
         let aboard = fleet.cargo.total();
         let room = (capacity - aboard).max(0.0);
         let full = || Refusal::new(ErrorCode::CargoFull, format!(
             "the hold of fleet {fleet_id} is full: it carries {aboard:.0} of {capacity:.0}",
         ));
-        let loaded = match amount {
+        match amount {
             Some(asked) if !(asked.is_finite() && asked > 0.0) => {
                 Err(Refusal::new(ErrorCode::InvalidCommand, "the amount to load must be a positive number".to_string()))
             }
@@ -5408,8 +5789,7 @@ impl GameEngine {
             )),
             None if room <= LOAD_SLACK => Err(full()),
             None => Ok(stock.min(room)),
-        }?;
-        Ok((loaded, dock))
+        }
     }
 
     /// Move stock into the hold of a fleet at a dock. At home the fleet is
@@ -5422,6 +5802,9 @@ impl GameEngine {
         resource: ResourceKind,
         amount: Option<f64>,
     ) -> Result<(), ErrorCode> {
+        if let Some(loaded) = self.load_at_relay(player_id, fleet_id, resource, amount) {
+            return self.board_from_relay(player_id, fleet_id, resource, loaded.map_err(|refusal| refusal.code)?);
+        }
         let (loaded, dock) = self.load_at_dock(player_id, fleet_id, resource, amount).map_err(|refusal| refusal.code)?;
         match dock {
             Dock::Home => {
@@ -5461,6 +5844,23 @@ impl GameEngine {
 
     /// Why `unload` would be refused for `fleet_id` right now, if it would.
     pub fn unload_refusal(&self, player_id: u64, fleet_id: u64) -> Option<Refusal> {
+        if let Some(standing) = self.standing_at_relay(player_id, fleet_id, "unload") {
+            return match standing {
+                Err(refusal) => Some(refusal),
+                Ok((fleet, _)) if fleet.cargo.deuterium <= LOAD_SLACK => Some(Refusal::new(
+                    ErrorCode::NoResources,
+                    format!("the hold of fleet {fleet_id} carries no deuterium; a relay's store takes nothing else"),
+                )),
+                Ok((_, relay)) if RELAY_STORE - relay.store <= LOAD_SLACK => Some(Refusal::new(
+                    ErrorCode::CargoFull,
+                    format!(
+                        "the relay at {} is full: its store holds {:.0} of {RELAY_STORE:.0} deuterium",
+                        relay.sector, relay.store,
+                    ),
+                )),
+                Ok(_) => None,
+            };
+        }
         match self.fleet_at_dock(player_id, fleet_id, "unload") {
             Err(refusal) => Some(refusal),
             Ok((fleet, _, Dock::Home)) if !fleet.laden => Some(Refusal::new(ErrorCode::InvalidCommand, format!(
@@ -5480,6 +5880,9 @@ impl GameEngine {
     pub fn handle_unload(&mut self, player_id: u64, fleet_id: u64) -> Result<(), ErrorCode> {
         if let Some(refusal) = self.unload_refusal(player_id, fleet_id) {
             return Err(refusal.code);
+        }
+        if self.standing_at_relay(player_id, fleet_id, "unload").is_some() {
+            return self.unload_into_relay(player_id, fleet_id);
         }
         let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
         let (before, sector) = (fleet.cargo, fleet.location);

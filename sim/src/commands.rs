@@ -69,6 +69,11 @@ impl GameEngine {
                 .map_err(|refusal| refusal.code),
             Command::UpgradeOutpost => self.handle_upgrade_outpost(pid),
             Command::AbandonOutpost => self.handle_abandon_outpost(pid),
+            Command::FoundRelay { fleet_id } => self.handle_found_relay(pid, fleet_id),
+            Command::RelaySurvey { fleet_id, sector } => self
+                .relay_survey(pid, fleet_id, sector)
+                .map(|survey| reply = Some(ServerMessage::RelaySurvey(survey)))
+                .map_err(|refusal| refusal.code),
         };
         let error = result.err().map(|code| (code, command_error_message(self, pid, &cmd, code)));
         CommandOutcome { reply, error }
@@ -110,6 +115,7 @@ pub fn is_query(cmd: &Command) -> bool {
             | Command::Leaderboard { .. }
             | Command::ExchangeQuote { .. }
             | Command::OutpostSurvey { .. }
+            | Command::RelaySurvey { .. }
     )
 }
 
@@ -163,6 +169,8 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::Refine { fleet_id }
         | Command::FoundOutpost { fleet_id }
         | Command::OutpostSurvey { fleet_id, .. }
+        | Command::FoundRelay { fleet_id }
+        | Command::RelaySurvey { fleet_id, .. }
         | Command::Merge { fleet_id, .. } => Some(*fleet_id),
         Command::Build { .. }
         | Command::Research { .. }
@@ -421,6 +429,15 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
             None => format!("fleet {fid} not found (or it has no ships left)"),
         },
         (_, Command::OutpostSurvey { fleet_id, sector }) => match engine.outpost_survey(player_id, *fleet_id, *sector) {
+            Err(refusal) => refusal.reason,
+            Ok(_) => format!("command rejected ({code:?})"),
+        },
+        (_, Command::FoundRelay { .. }) => match fleet.map(|f| engine.relay_site(player_id, f, f.location)) {
+            Some(Err(refusal)) => refusal.reason,
+            Some(Ok(())) => format!("command rejected ({code:?})"),
+            None => format!("fleet {fid} not found (or it has no ships left)"),
+        },
+        (_, Command::RelaySurvey { fleet_id, sector }) => match engine.relay_survey(player_id, *fleet_id, *sector) {
             Err(refusal) => refusal.reason,
             Ok(_) => format!("command rejected ({code:?})"),
         },

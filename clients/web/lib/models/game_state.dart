@@ -133,6 +133,14 @@ class SurveyEntry {
   const SurveyEntry(this.survey, this.tick);
 }
 
+/// A `relay_survey` answer and the tick it arrived: its refusal is true of
+/// that tick.
+class RelaySurveyEntry {
+  final proto.RelaySurvey survey;
+  final int tick;
+  const RelaySurveyEntry(this.survey, this.tick);
+}
+
 /// A fight the player has a fleet in or is present at, as the console
 /// follows it: what the state says of it, the rounds it was sent, and the
 /// end once it has ended. The server keeps the last round of a fight under
@@ -324,6 +332,12 @@ class GameState {
   /// The server's latest `outpost_survey` per (fleet id, sector).
   final Map<(int, proto.Hex), SurveyEntry> surveys;
 
+  /// The player's relays and how many they may keep.
+  final proto.RelaysState relays;
+
+  /// The server's latest `relay_survey` per (fleet id, sector).
+  final Map<(int, proto.Hex), RelaySurveyEntry> relaySurveys;
+
   /// What each fleet's standing orders reported lately, newest first, by
   /// fleet id.
   final Map<int, List<PolicyAct>> policyActs;
@@ -366,6 +380,8 @@ class GameState {
     this.lastOutpostRaid,
     this.outpost,
     this.surveys = const {},
+    this.relays = const proto.RelaysState(),
+    this.relaySurveys = const {},
     this.policyActs = const {},
     this.battles = const {},
     this.pastFights = const [],
@@ -411,6 +427,16 @@ class GameState {
     final e = surveys[(fleetId, sector)];
     return e == null || tick - e.tick >= previewRefreshTicks;
   }
+
+  RelaySurveyEntry? relaySurveyOf(int fleetId, proto.Hex sector) => relaySurveys[(fleetId, sector)];
+
+  bool relaySurveyNeedsRefresh(int fleetId, proto.Hex sector) {
+    final e = relaySurveys[(fleetId, sector)];
+    return e == null || tick - e.tick >= previewRefreshTicks;
+  }
+
+  /// The relay of the player's that stands in [sector].
+  proto.RelayState? relayAt(proto.Hex sector) => relays.relays.where((r) => r.sector == sector).firstOrNull;
 
   /// Why [fleet] stands still under its orders: the hold they last
   /// reported, unless they have acted since or been cleared.
@@ -509,6 +535,8 @@ class GameState {
     RaidReport? lastOutpostRaid,
     proto.OutpostState? outpost,
     Map<(int, proto.Hex), SurveyEntry>? surveys,
+    proto.RelaysState? relays,
+    Map<(int, proto.Hex), RelaySurveyEntry>? relaySurveys,
     Map<int, List<PolicyAct>>? policyActs,
     Map<proto.Hex, Battle>? battles,
     List<Battle>? pastFights,
@@ -543,6 +571,8 @@ class GameState {
         lastOutpostRaid: lastOutpostRaid ?? this.lastOutpostRaid,
         outpost: outpost ?? this.outpost,
         surveys: surveys ?? this.surveys,
+        relays: relays ?? this.relays,
+        relaySurveys: relaySurveys ?? this.relaySurveys,
         policyActs: policyActs ?? this.policyActs,
         battles: battles ?? this.battles,
         pastFights: pastFights ?? this.pastFights,

@@ -127,6 +127,7 @@ def merge_view(fs, m):
                 fs[dst] = m[k]
         fs["fleets"] = m.get("fleets", fs.get("fleets"))
         fs["outpost"] = m.get("outpost")
+        fs["relays"] = m.get("relays")
         if m.get("sector_updates"):
             idx = {(s["location"]["q"], s["location"]["r"]): i for i, s in enumerate(fs["known_sectors"])}
             for s in m["sector_updates"]:
@@ -269,6 +270,11 @@ def collapse_events(msgs, mine_only=False, errors=True):
             if not errors:
                 continue
             slot(("x", id(m)), "  " + survey_line(m))
+            continue
+        if t == "relay_survey":
+            if not errors:
+                continue
+            slot(("x", id(m)), "  " + relay_survey_line(m))
             continue
         if t in ("leaderboard", "odds"):
             continue
@@ -502,6 +508,26 @@ def survey_line(m):
             f"costs {res(m['cost'])}, built in {age(m['build_ticks'])}"
             + (f"; {home} hops from home" if home is not None else "")
             + (f"  CANNOT FOUND NOW: {m['refusal']}" if m.get("refusal") else "  CAN BE FOUNDED NOW"))
+
+
+def relay_survey_line(m):
+    """One line for a relay_survey reply: what founding costs, what the store holds and why it cannot be founded."""
+    s = m["sector"]
+    return (f"relay survey {s['q']},{s['r']} ring {m['ring']}: costs {res(m['cost'])}; a store of {m['store_cap']:g} deuterium; "
+            f"gone after {age(m['decay_ticks'])} with no fleet of yours there; you keep {m['count']} of {m['limit']} "
+            f"(raised by {m['technology']})"
+            + (f"  CANNOT FOUND NOW: {m['refusal']}" if m.get("refusal") else "  CAN BE FOUNDED NOW"))
+
+
+def relays_line(r, now):
+    """One line for the player's relays: the limit and what each holds and how long it has."""
+    if not r or (not r.get("relays") and not r.get("limit")):
+        return None
+    stands = "; ".join(f"{x['sector']['q']},{x['sector']['r']} ring {x['ring']} holds {x['store']:.0f} of {x['store_cap']:g} "
+                       f"deuterium, gone in {age(x['decay_in'])} unless a fleet of yours stands there"
+                       for x in r.get("relays") or [])
+    return (f"Relays {len(r.get('relays') or [])}/{r['limit']} ({r['technology']} level {r['level']})"
+            + (": " + stands if stands else ""))
 
 
 def raid_range(r):
@@ -1052,6 +1078,8 @@ def build_state(fs, board=None, left=None, alerts=None):
     }
     if fs.get("outpost"):
         doc["outpost"] = fs["outpost"]
+    if fs.get("relays") and fs["relays"].get("relays"):
+        doc["relays"] = fs["relays"]
     return doc
 
 
@@ -1205,6 +1233,8 @@ def cmd_status(name, brief=False):
             print("  " + queue_line(n, q))
         if fs.get("outpost"):
             print("  " + outpost_line(fs["outpost"], fs["tick"]))
+        if relays_line(fs.get("relays"), fs["tick"]):
+            print("  " + relays_line(fs["relays"], fs["tick"]))
         for f in doc["fleets"]:
             print("  " + fleet_line(f))
         for a in doc["alerts"]:
@@ -1271,6 +1301,8 @@ def summarize(fs, doc, odds):
     print("Docked ships: " + (", ".join(f"{n}x {c}" for c, n in docked.items()) or "none"))
     if fs.get("outpost"):
         print(outpost_line(fs["outpost"], fs["tick"]))
+    if relays_line(fs.get("relays"), fs["tick"]):
+        print(relays_line(fs["relays"], fs["tick"]))
     sectors = {(s["location"]["q"], s["location"]["r"]): s for s in fs.get("known_sectors") or []}
     live = sum(1 for s in sectors.values() if s.get("live"))
     print(f"Known sectors: {len(sectors)} ({live} live, {len(sectors) - live} remembered/stale)")
@@ -1724,7 +1756,7 @@ def reply_line(cmd, m):
     if m.get("type") != cmd.get("action"):
         return None
     words = {"preview_move": preview_line, "odds": odds_line, "leaderboard": leaderboard_line,
-             "exchange_quote": quote_line, "outpost_survey": survey_line}.get(m["type"])
+             "exchange_quote": quote_line, "outpost_survey": survey_line, "relay_survey": relay_survey_line}.get(m["type"])
     return words(m) if words else None
 
 

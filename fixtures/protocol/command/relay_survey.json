@@ -1,0 +1,8 @@
+{
+  "action": "relay_survey",
+  "fleet_id": 7,
+  "sector": {
+    "q": 12,
+    "r": -3
+  }
+}

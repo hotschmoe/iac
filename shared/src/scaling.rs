@@ -14,7 +14,8 @@ use crate::constants::{
     FUEL_SAVING_PER_LEVEL, HARVEST_YIELD_LEVELS, HARVEST_YIELD_PER_LEVEL, HOME_TEMPERATURE_MAX, JUMP_SPEED_REF,
     MAP_PAYS, NPC_DRIVE_FREE_RINGS, NPC_DRIVE_RINGS_PER_LEVEL, NPC_HEAL_SHARE, NPC_HEAL_STEPS, OUTPOST_BUILD_RATE,
     OUTPOST_COST, OUTPOST_GROWTH, OUTPOST_RAID_FACTOR, OUTPOST_REPAIR_SHARE, OUTPOST_STORE_BASE,
-    OUTPOST_YIELD_PER_HOUR, RECALL_SAVING_PER_LEVEL, REFINE_LOSS, SENSOR_HOPS_PER_LEVEL, TANK_PER_DEUT_TANK_LEVEL,
+    OUTPOST_YIELD_PER_HOUR, RECALL_SAVING_PER_LEVEL, REFINE_LOSS, RELAY_BASE_MAX, RELAY_COST_BASE, RELAY_COST_GROWTH,
+    RELAY_LEVELS_PER_STEP, RELAY_MIN_RING, SENSOR_HOPS_PER_LEVEL, TANK_PER_DEUT_TANK_LEVEL,
 };
 use crate::maths;
 use crate::pace::Pace;
@@ -1564,6 +1565,26 @@ pub fn outpost_repair_ticks(level: u8, pace: &Pace) -> u64 {
 /// Score points of an outpost standing at `level`: every finished level at the weight of its cost.
 pub fn outpost_points(level: u8) -> f32 {
     (1..=level).map(|l| resource_weight(&outpost_cost(l))).sum()
+}
+
+// ── Relays ───────────────────────────────────────────────────────
+
+/// What founding a relay at `ring` takes from the hold: the base cost,
+/// plus `RELAY_COST_GROWTH` of it for every ring past the first it may stand in.
+pub fn relay_cost(ring: u16) -> Resources {
+    let steps = f64::from(ring.saturating_sub(RELAY_MIN_RING));
+    let unit = |x: f64| (x * (1.0 + RELAY_COST_GROWTH * steps)).round_ties_even();
+    Resources {
+        metal: unit(RELAY_COST_BASE.metal),
+        crystal: unit(RELAY_COST_BASE.crystal),
+        deuterium: unit(RELAY_COST_BASE.deuterium),
+    }
+}
+
+/// How many relays an empire may keep: `RELAY_BASE_MAX`, and one more for
+/// every `RELAY_LEVELS_PER_STEP` levels of Hyperspace Technology.
+pub fn relay_limit(research: &ResearchLevels) -> u32 {
+    RELAY_BASE_MAX + u32::from(research.hyperspace_technology) / RELAY_LEVELS_PER_STEP
 }
 
 // ── Ore ──────────────────────────────────────────────────────────

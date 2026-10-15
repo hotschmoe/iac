@@ -398,6 +398,11 @@ class MapPainter extends CustomPainter {
         final on = still || ((t * 2 + h.q).floor() % 2 == 0);
         c.drawPath(Draw.hexPath(p, rn * 1.4), Draw.line(tc!, 1, on ? .6 : .2));
       }
+      if (data.relays.containsKey(h.toKey()) && s >= .4) {
+        final size = math.max(6.0, hr * .34);
+        final seen = live || !layers.age ? 1.0 : math.max(.45, f);
+        Draw.symbol(c, Sym.relay, p.dx, p.dy, size, color: C.own, alpha: seen, lw: 1.2, bloom: false);
+      }
       if (sec.outpost case final post? when s >= .4) {
         final size = math.max(7.0, hr * .42);
         final seen = live || !layers.age ? 1.0 : math.max(.45, f);

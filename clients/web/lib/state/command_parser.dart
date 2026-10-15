@@ -253,6 +253,7 @@ const _foundUsage ='found: takes no argument (the active fleet founds your outpo
 const _surveyUsage = 'survey: [q r]  (what an outpost would be worth in a sector, its ore only if it is on your chart; none = where the active fleet stands)';
 
 const _outpostUsage = 'outpost: upgrade|abandon';
+const _relayUsage = 'relay: found | survey [q r]  (a depot of deuterium of yours on a sector of ring 9 or deeper)';
 
 const _policies = {
   'manual': PolicyPreset.manual,
@@ -510,6 +511,18 @@ ParsedCommand parseCommand(String input, CommandContext ctx) {
       if (at.contains(null) || (at.isNotEmpty && at.length != 2)) return const ParsedError(_surveyUsage);
       final sector = at.isEmpty ? null : Hex(at[0]!, at[1]!);
       return needFleet((id) => OutpostSurveyCommand(fleetId: id, sector: sector));
+
+    case 'relay':
+      return switch (args) {
+        ['found'] => needFleet((id) => FoundRelayCommand(fleetId: id)),
+        ['survey', ...final rest] => () {
+            final at = [for (final a in rest) int.tryParse(a)];
+            if (at.contains(null) || (at.isNotEmpty && at.length != 2)) return const ParsedError(_relayUsage);
+            final sector = at.isEmpty ? null : Hex(at[0]!, at[1]!);
+            return needFleet((id) => RelaySurveyCommand(fleetId: id, sector: sector));
+          }(),
+        _ => const ParsedError(_relayUsage),
+      };
 
     case 'outpost':
       return switch (args) {
