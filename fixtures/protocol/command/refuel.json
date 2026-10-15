@@ -1,0 +1,6 @@
+{
+  "action": "refuel",
+  "amount": 120.0,
+  "fleet_id": 3,
+  "give": "metal"
+}

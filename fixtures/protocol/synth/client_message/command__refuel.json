@@ -1,0 +1,7 @@
+[
+{"canonical":{"action":"refuel","amount":38.25,"fleet_id":37,"give":"metal","type":"command"},"input":{"action":"refuel","amount":38.25,"fleet_id":37,"give":"metal","type":"command"}},
+{"canonical":{"action":"refuel","amount":38.25,"fleet_id":37,"give":"crystal","type":"command"},"input":{"action":"refuel","amount":38.25,"fleet_id":37,"give":"crystal","type":"command"}},
+{"canonical":{"action":"refuel","amount":38.25,"fleet_id":37,"give":"deuterium","type":"command"},"input":{"action":"refuel","amount":38.25,"fleet_id":37,"give":"deuterium","type":"command"}},
+{"canonical":{"action":"refuel","fleet_id":37,"give":"deuterium","type":"command"},"input":{"action":"refuel","fleet_id":37,"give":"deuterium","type":"command"}},
+{"canonical":{"action":"refuel","fleet_id":37,"give":"deuterium","type":"command"},"input":{"action":"refuel","amount":null,"fleet_id":37,"give":"deuterium","type":"command"}}
+]

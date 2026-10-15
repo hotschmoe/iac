@@ -204,6 +204,7 @@ fn game() -> Json {
         OUTPOST_RAID_FACTOR, OUTPOST_RAID_LOSS, OUTPOST_REPAIR_SHARE,
         RELAY_MIN_RING, RELAY_COST_BASE, RELAY_COST_GROWTH, RELAY_BASE_MAX, RELAY_LEVELS_PER_STEP, RELAY_STORE,
         RELAY_DECAY_TICKS,
+        HUB_COUNT, HUB_FIRST_RING, HUB_BAND_RINGS, HUB_PERIOD_TICKS, HUB_WARN_TICKS, HUB_ATTEMPTS,
     ];
 
     let start = BuildingLevels::default();
@@ -546,6 +547,13 @@ fn tables() -> Json {
         })
         .collect();
 
+    let hubs: Vec<Json> = PACES
+        .into_iter()
+        .map(|p| map! {
+            "pace": p, "period_ticks": hub_period_ticks(&pace(p)), "warn_ticks": hub_warn_ticks(&pace(p)),
+        })
+        .collect();
+
     map! {
         "building_levels": building_levels,
         "research_levels": research_levels,
@@ -563,6 +571,7 @@ fn tables() -> Json {
         "outpost_levels": outpost_levels,
         "outpost_yields": outpost_yields,
         "relays": relays,
+        "hubs": hubs,
     }
 }
 

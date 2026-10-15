@@ -199,6 +199,23 @@
         "weapons": 0
       },
       "refit_due": true,
+      "refuel": {
+        "missing": 540.0,
+        "offers": [
+          {
+            "amount": 43.0,
+            "fee": 0.0,
+            "fuel": 540.0,
+            "give": "deuterium"
+          },
+          {
+            "amount": 120.0,
+            "fee": 0.05,
+            "fuel": 540.0,
+            "give": "metal"
+          }
+        ]
+      },
       "repair": {
         "home": {
           "hull": 640,
@@ -2325,6 +2342,38 @@
     },
     "structure_power": 1769.9000244140625
   },
+  "hubs": [
+    {
+      "departing": true,
+      "departs_at": 61000,
+      "id": 2,
+      "ring": 30,
+      "sector": {
+        "q": -30,
+        "r": 14
+      },
+      "services": [
+        "exchange",
+        "refuel"
+      ],
+      "stale": false
+    },
+    {
+      "departing": false,
+      "departs_at": 40500,
+      "id": 0,
+      "ring": 26,
+      "sector": {
+        "q": 14,
+        "r": 12
+      },
+      "services": [
+        "exchange",
+        "refuel"
+      ],
+      "stale": true
+    }
+  ],
   "player": {
     "exchange": {
       "clear_in": 2322,

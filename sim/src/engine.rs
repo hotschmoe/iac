@@ -39,7 +39,7 @@ use iac_shared::constants::{
     RELAY_DECAY_TICKS, RELAY_LEVELS_PER_STEP, RELAY_MIN_RING, RELAY_STORE,
 };
 use iac_shared::pace::Pace;
-use iac_shared::world::{self, HubService, WorldGen};
+use iac_shared::world::{self, HubService, WorldGen, ROAMING_HUB};
 use iac_shared::scaling::{
     self, Arms, BuildingType, ResearchType, BuildingLevels, ResearchLevels, Refit,
     MAX_BUILDING_LEVEL, CANCEL_REFUND_FRACTION, DefenceKind, RatioLabel, ShipyardItem,
@@ -50,7 +50,7 @@ use iac_shared::protocol::{
     StockpileCause, StockpileEvent, StorageFullEvent, StorageNearCapEvent, StorageState,
     ExchangeMeter, ExchangeTerms, ExchangedEvent,
     OutpostCompletedEvent, OutpostSurvey, PowerRange, SectorResources, SurveySite,
-    RelayDecayedEvent, RelayFoundedEvent, RelaySurvey,
+    RelayDecayedEvent, RelayFoundedEvent, RelaySurvey, HubArrivedEvent, HubDepartingEvent, RefuelOffer, RefuelQuote,
     BattleGroup, BattleLosses, BattleOutcome, BattleRoundEvent, BattleSide, BattleState, BattleUnits,
     RaidBattle, RaidForecast, RaidLabel, RaidOdds,
     DockRepair, RepairQuote, ShipCount, ShipGroupState, ShipsLostEvent, UnitCount,
@@ -818,6 +818,23 @@ pub struct Relay {
     pub dry_tanks: Vec<u64>,
 }
 
+/// Where a roaming hub stands: hub `id`, in its stay `epoch`, at `sector`.
+/// The seed gives the candidates and the state of the world at the start of
+/// the stay picks one, so the place is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HubStanding {
+    pub id: u8,
+    pub epoch: u64,
+    pub sector: Hex,
+}
+
+/// The stay of a hub a player last had eyes on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HubSighting {
+    pub epoch: u64,
+    pub sector: Hex,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutpostJob {
     pub task: OutpostTask,
@@ -1301,6 +1318,27 @@ pub struct ExchangeDeal {
     pub refusal: Option<Refusal>,
 }
 
+/// A refuelling worked out at a hub; see `GameEngine::refuel_deal`.
+#[derive(Debug)]
+pub struct RefuelDeal {
+    pub give: ResourceKind,
+    /// Units of `give` that leave the hold.
+    pub amount: f64,
+    /// Fuel the tank gains.
+    pub fuel: f64,
+    /// The exchange's terms and the meter reading they leave, for anything
+    /// but deuterium.
+    pub exchange: Option<(ExchangeTerms, f64)>,
+}
+
+/// Halvings that find the least amount of a resource that fills a tank.
+const REFUEL_BISECTIONS: u32 = 48;
+
+/// "1 hex", "3 hexes".
+fn hex_words(hexes: u16) -> String {
+    format!("{hexes} hex{}", if hexes == 1 { "" } else { "es" })
+}
+
 /// Why an order is turned down: the code, and the sentence its sender reads.
 #[derive(Debug)]
 pub struct Refusal {
@@ -1355,6 +1393,10 @@ pub struct GameEngine {
     outpost_sites: KeyMap<u32, u64>,
     /// Relays by owner, in the order they were founded.
     pub relays: BTreeMap<u64, Vec<Relay>>,
+    /// The roaming hubs, by id.
+    pub hubs: Vec<HubStanding>,
+    /// Per player and hub id: the stay last seen.
+    pub hub_sightings: BTreeMap<u64, BTreeMap<u8, HubSighting>>,
     /// Standing orders per fleet.
     pub policies: BTreeMap<u64, FleetPolicy>,
 
@@ -1400,7 +1442,7 @@ impl GameEngine {
         let Snapshot {
             world_seed, meta, tick, next_id, players, fleets, npc_fleets, combats,
             sector_overrides, policies, scan_reveals, raid_states, storage_marks, home_salvage_warned,
-            harvest_reports, bots, outposts, relays, pending_events, explored, charted, known,
+            harvest_reports, bots, outposts, relays, hubs, hub_sightings, pending_events, explored, charted, known,
         } = snapshot;
 
         GameEngine {
@@ -1421,6 +1463,8 @@ impl GameEngine {
             outpost_sites: outposts.iter().map(|(owner, outpost)| (outpost.sector.to_key(), *owner)).collect(),
             outposts,
             relays,
+            hubs,
+            hub_sightings,
             policies,
             pending_events,
             pending_arrivals: Vec::new(),
@@ -1455,6 +1499,8 @@ impl GameEngine {
             bots: self.bots.clone(),
             outposts: self.outposts.clone(),
             relays: self.relays.clone(),
+            hubs: self.hubs.clone(),
+            hub_sightings: self.hub_sightings.clone(),
             pending_events: self.pending_events.clone(),
             explored: self.explored.iter().copied().collect(),
             charted: self.charted.iter().copied().collect(),
@@ -1497,6 +1543,7 @@ impl GameEngine {
         self.process_homeworlds()?;
         self.process_outposts();
         self.process_relays();
+        self.process_hubs();
         self.process_build_queues()?;
         self.process_raids()?;
         self.process_home_salvage();
@@ -2291,10 +2338,13 @@ impl GameEngine {
         }
     }
 
-    /// No group enters `sector`: home ground, the hub, or a sector an
-    /// outpost stands in. A dock is a refuge.
+    /// No group enters `sector`: home ground, a hub, or a sector an outpost
+    /// stands in. A dock is a refuge.
     fn is_refuge(&self, sector: Hex) -> bool {
-        world::is_home_ground(sector) || world::is_hub(sector) || self.outpost_at(sector).is_some()
+        world::is_home_ground(sector)
+            || world::is_hub(sector)
+            || self.hub_at(sector).is_some()
+            || self.outpost_at(sector).is_some()
     }
 
     /// Whether `group` goes after `fleet`, which has left it: Err says why
@@ -3942,6 +3992,9 @@ impl GameEngine {
         if self.outpost_at(sector).is_some() {
             return refuse(ErrorCode::InvalidTarget, format!("an outpost stands at {sector}; a relay is its own station"));
         }
+        if self.hub_at(sector).is_some() {
+            return refuse(ErrorCode::InvalidTarget, format!("a hub stands at {sector}; no relay stands in one"));
+        }
         if let Some((owner, _)) = self.relay_at(sector) {
             let whose = if owner == player_id {
                 "your relay".to_string()
@@ -4089,6 +4142,140 @@ impl GameEngine {
              store: the fleet stands at {} of {} fuel",
             fuel_words(fuel), fuel_words(fuel_max),
         ));
+    }
+
+    // ── Roaming hubs ──────────────────────────────────────────────
+
+    /// The roaming hub standing in `sector` now.
+    pub fn hub_at(&self, sector: Hex) -> Option<&HubStanding> {
+        self.hubs.iter().find(|hub| hub.sector == sector)
+    }
+
+    /// What `sector` offers as a hub, the centre's or a roaming one's.
+    pub fn hub_services_at(&self, sector: Hex) -> &'static [HubService] {
+        let centre = world::hub_services(sector);
+        if !centre.is_empty() {
+            centre
+        } else if self.hub_at(sector).is_some() {
+            ROAMING_HUB
+        } else {
+            &[]
+        }
+    }
+
+    /// The sector of the hub nearest `from` that offers `service` which
+    /// `player_id` knows of: the centre's and the roaming hubs seen and not
+    /// since left.
+    pub fn nearest_known_hub(&self, player_id: u64, from: Hex, service: HubService) -> Option<Hex> {
+        let roaming = self.hub_sightings.get(&player_id).into_iter().flat_map(|seen| seen.iter()).filter_map(|(id, seen)| {
+            let standing = self.hubs.iter().find(|hub| hub.id == *id)?;
+            ((standing.epoch, standing.sector) == (seen.epoch, seen.sector) && ROAMING_HUB.contains(&service)).then_some(seen.sector)
+        });
+        world::nearest_hub(from, service)
+            .into_iter()
+            .chain(roaming)
+            .min_by_key(|at| Hex::distance(at, &from))
+    }
+
+    /// Whether a hub may not arrive in `sector`: something of a player's or
+    /// of the pirates' stands there.
+    fn hub_blocked(&self, sector: Hex) -> bool {
+        self.relay_at(sector).is_some()
+            || self.outpost_at(sector).is_some()
+            || self.hubs.iter().any(|hub| hub.sector == sector)
+            || self.npc_fleets.values().any(|group| group.location == sector)
+            || self.active_combats.values().any(|combat| combat.sector == sector)
+    }
+
+    /// Where hub `id` goes for stay `epoch`: the first sector the seed
+    /// offers (`WorldGen::hub_sites`) that nothing stands in, or `staying`
+    /// when every one is taken.
+    fn hub_destination(&self, id: u8, epoch: u64, staying: Hex) -> Hex {
+        self.world_gen.hub_sites(id, epoch).find(|sector| !self.hub_blocked(*sector)).unwrap_or(staying)
+    }
+
+    /// Each tick: a hub whose stay is over moves, a stay about to end is
+    /// announced to those who know it, and whoever has eyes on a hub learns
+    /// of it.
+    fn process_hubs(&mut self) {
+        let (tick, pace) = (self.current_tick, self.world.pace);
+        let warn = scaling::hub_warn_ticks(&pace);
+        for index in 0..self.hubs.len() {
+            let HubStanding { id, epoch, sector } = self.hubs[index];
+            let now = scaling::hub_epoch(id, tick, &pace);
+            if now != epoch {
+                let site = self.hub_destination(id, now, sector);
+                self.hubs[index] = HubStanding { id, epoch: now, sector: site };
+            } else if tick + warn == scaling::hub_departs_at(id, epoch, &pace) {
+                let departs_at = tick + warn;
+                for (player_id, seen) in &self.hub_sightings {
+                    if seen.get(&id).is_some_and(|stay| stay.epoch == epoch) {
+                        self.pending_events.push(GameEvent {
+                            tick,
+                            kind: EventKind::HubDeparting(HubDepartingEvent {
+                                player_id: *player_id,
+                                id,
+                                sector,
+                                departs_at,
+                            }),
+                        });
+                    }
+                }
+            }
+        }
+        self.observe_hubs();
+    }
+
+    /// Record, for every player with eyes on a hub's sector (a fleet there,
+    /// a scan that has not expired, the homeworld's sensors), the stay they
+    /// see, and tell them of it when it is a stay they did not know.
+    fn observe_hubs(&mut self) {
+        let tick = self.current_tick;
+        let mut seen: Vec<(u64, u8)> = Vec::new();
+        for fleet in self.fleets.values().filter(|fleet| !fleet.ships.is_empty()) {
+            if let Some(hub) = self.hub_at(fleet.location) {
+                seen.push((fleet.owner_id, hub.id));
+            }
+        }
+        for (player_id, reveals) in &self.scan_reveals {
+            for hub in &self.hubs {
+                if reveals.get(&hub.sector.to_key()).is_some_and(|expiry| *expiry > tick) {
+                    seen.push((*player_id, hub.id));
+                }
+            }
+        }
+        for (player_id, player) in &self.players {
+            let range = scaling::sensor_range(player.research.espionage_technology);
+            if range == 0 {
+                continue;
+            }
+            for hub in &self.hubs {
+                let near = Hex::distance(&player.homeworld, &hub.sector) <= u16::from(range);
+                if near && self.world_gen.lane_hops(player.homeworld, hub.sector, range).is_some() {
+                    seen.push((*player_id, hub.id));
+                }
+            }
+        }
+        seen.sort_unstable();
+        seen.dedup();
+        for (player_id, id) in seen {
+            let Some(&HubStanding { epoch, sector, .. }) = self.hubs.iter().find(|hub| hub.id == id) else { continue };
+            let known = self.hub_sightings.entry(player_id).or_default();
+            if known.get(&id).is_some_and(|stay| stay.epoch == epoch && stay.sector == sector) {
+                continue;
+            }
+            known.insert(id, HubSighting { epoch, sector });
+            self.pending_events.push(GameEvent {
+                tick,
+                kind: EventKind::HubArrived(HubArrivedEvent {
+                    player_id,
+                    id,
+                    sector,
+                    ring: sector.dist_from_origin(),
+                    departs_at: scaling::hub_departs_at(id, epoch, &self.world.pace),
+                }),
+            });
+        }
     }
 
     /// Each relay's tick, in owner order: a visit sets the decay back and
@@ -5572,37 +5759,21 @@ impl GameEngine {
             }
         };
 
-        let (pressure, span, window) = self.exchange_standing(player);
-        let value = amount * give.weight();
-        let par = value / want.weight();
-        let receive = (scaling::exchange_return(pressure, value, span) / want.weight()).floor().max(0.0);
-        let terms = ExchangeTerms {
-            fleet_id,
-            give,
-            want,
-            amount,
-            receive,
-            par,
-            fee: 1.0 - receive / par,
-            meter: exchange_meter_at(pressure, span, window),
-            meter_after: exchange_meter_at(pressure + value, span, window),
-        };
+        let (terms, pressure_after) = self.exchange_terms(player, fleet_id, give, want, amount);
+        let receive = terms.receive;
 
         let capacity = fleet_cargo_capacity(fleet, &self.world.pace);
         let aboard = fleet.cargo.total();
         let after = aboard - amount + terms.receive;
         let refusal = if fleet.state == FleetStatus::Moving {
             Some(refuse(ErrorCode::OnCooldown, format!("fleet {fleet_id} is in transit; it can trade once it has arrived")))
-        } else if !world::hub_services(fleet.location).contains(&HubService::Exchange) {
-            Some(refuse(ErrorCode::NotInSector, match world::nearest_hub(fleet.location, HubService::Exchange) {
-                Some(hub) => {
-                    let hexes = Hex::distance(&fleet.location, &hub);
-                    format!(
-                        "fleet {fleet_id} is at {}, {hexes} hex{} from the exchange at the hub {hub}; \
-                         a fleet trades what is in its hold, on the spot",
-                        fleet.location, if hexes == 1 { "" } else { "es" },
-                    )
-                }
+        } else if !self.hub_services_at(fleet.location).contains(&HubService::Exchange) {
+            Some(refuse(ErrorCode::NotInSector, match self.nearest_known_hub(player_id, fleet.location, HubService::Exchange) {
+                Some(hub) => format!(
+                    "fleet {fleet_id} is at {}, {} from the exchange at the hub {hub}; \
+                     a fleet trades what is in its hold, on the spot",
+                    fleet.location, hex_words(Hex::distance(&fleet.location, &hub)),
+                ),
                 None => "this world has no exchange".to_string(),
             }))
         } else if !Self::fleet_is_free(fleet) {
@@ -5625,7 +5796,197 @@ impl GameEngine {
         } else {
             None
         };
-        Ok(ExchangeDeal { terms, pressure_after: pressure + value, refusal })
+        Ok(ExchangeDeal { terms, pressure_after, refusal })
+    }
+
+    /// What the exchange gives `player` for `amount` of `give`, paid in
+    /// `want`, at the meter as it stands, and the reading the trade leaves.
+    /// The one place a trade is priced: the exchange and a hub's refuel
+    /// both come here.
+    fn exchange_terms(
+        &self,
+        player: &Player,
+        fleet_id: u64,
+        give: ResourceKind,
+        want: ResourceKind,
+        amount: f64,
+    ) -> (ExchangeTerms, f64) {
+        let (pressure, span, window) = self.exchange_standing(player);
+        let value = amount * give.weight();
+        let par = value / want.weight();
+        let receive = (scaling::exchange_return(pressure, value, span) / want.weight()).floor().max(0.0);
+        let terms = ExchangeTerms {
+            fleet_id,
+            give,
+            want,
+            amount,
+            receive,
+            par,
+            fee: 1.0 - receive / par,
+            meter: exchange_meter_at(pressure, span, window),
+            meter_after: exchange_meter_at(pressure + value, span, window),
+        };
+        (terms, pressure + value)
+    }
+
+    /// What `refuel` would do for `fleet_id` with `give` (at most `amount`
+    /// of it, or the whole hold's when None): deuterium at the dock's rate,
+    /// anything else through `exchange_terms` into the deuterium the tank
+    /// wants. Nothing changes.
+    pub fn refuel_deal(
+        &self,
+        player_id: u64,
+        fleet_id: u64,
+        give: ResourceKind,
+        amount: Option<f64>,
+    ) -> Result<RefuelDeal, Refusal> {
+        let refuse = Refusal::new;
+        let fleet = self.owned_fleet(player_id, fleet_id)
+            .map_err(|code| refuse(code, format!("fleet {fleet_id} not found (or it has no ships left)")))?;
+        let player = self.players.get(&player_id)
+            .ok_or_else(|| refuse(ErrorCode::ServerError, "internal server error".to_string()))?;
+        match fleet.state {
+            FleetStatus::Moving => {
+                return Err(refuse(ErrorCode::OnCooldown, format!(
+                    "fleet {fleet_id} is in transit; it can refuel once it has arrived",
+                )));
+            }
+            FleetStatus::InCombat => {
+                return Err(refuse(ErrorCode::OnCooldown, format!("fleet {fleet_id} is in combat; nothing is refuelled in a fight")));
+            }
+            _ => {}
+        }
+        if !self.hub_services_at(fleet.location).contains(&HubService::Refuel) {
+            let known = self.nearest_known_hub(player_id, fleet.location, HubService::Refuel);
+            return Err(refuse(ErrorCode::NotInSector, match known {
+                Some(hub) => format!(
+                    "fleet {fleet_id} is at {}, {} from the hub at {hub} that refuels; a fleet refuels from its hold at \
+                     a roaming hub, on the spot",
+                    fleet.location, hex_words(Hex::distance(&fleet.location, &hub)),
+                ),
+                None => format!(
+                    "fleet {fleet_id} is at {}; no hub that refuels is known to you; a roaming hub stands in the \
+                     Wandering and is learnt of by having eyes on its sector",
+                    fleet.location,
+                ),
+            }));
+        }
+        if !Self::fleet_is_free(fleet) {
+            return Err(refuse(ErrorCode::OnCooldown, format!("fleet {fleet_id} is busy; it can refuel once it is idle")));
+        }
+        let missing = fleet.fuel_max - fleet.fuel;
+        if missing <= 0.0 {
+            return Err(refuse(ErrorCode::InvalidCommand, format!(
+                "the tank of fleet {fleet_id} is full ({} of {} fuel); refuelling would add nothing",
+                fuel_words(fleet.fuel), fuel_words(fleet.fuel_max),
+            )));
+        }
+        let held = fleet.cargo.get(give);
+        let cap = match amount {
+            Some(asked) if !asked.is_finite() || asked <= 0.0 => {
+                return Err(refuse(ErrorCode::InvalidCommand, "the amount to refuel with must be a positive number".to_string()));
+            }
+            Some(asked) if asked > held + LOAD_SLACK => {
+                return Err(refuse(ErrorCode::NoResources, format!(
+                    "fleet {fleet_id} holds {held:.1} {}; it cannot give {asked:.1}", give.label(),
+                )));
+            }
+            Some(asked) => asked.min(held),
+            None if held > 0.0 => held,
+            None => {
+                return Err(refuse(ErrorCode::NoResources, format!(
+                    "fleet {fleet_id} holds no {} to refuel with (its hold: {:.0} metal, {:.0} crystal, {:.0} deuterium); \
+                     a hub refuels from the hold, never from the stockpile",
+                    give.label(), fleet.cargo.metal, fleet.cargo.crystal, fleet.cargo.deuterium,
+                )));
+            }
+        };
+        let wanted = missing * FUEL_DEUT_PER_UNIT;
+        if give == ResourceKind::Deuterium {
+            let spend = cap.min(wanted);
+            let fuel = if spend >= wanted { missing } else { spend / FUEL_DEUT_PER_UNIT };
+            return Ok(RefuelDeal { give, amount: spend, fuel, exchange: None });
+        }
+        let want = ResourceKind::Deuterium;
+        let (mut terms, mut pressure_after) = self.exchange_terms(player, fleet_id, give, want, cap);
+        if terms.receive < 1.0 {
+            return Err(refuse(ErrorCode::InvalidCommand, format!(
+                "{cap:.1} {} is too little to refuel with: at a fee of {:.0}% it returns less than one {}",
+                give.label(), terms.meter.fee * 100.0, want.label(),
+            )));
+        }
+        if terms.receive > wanted {
+            let (mut short, mut enough) = (0.0, cap);
+            for _ in 0..REFUEL_BISECTIONS {
+                let middle = (short + enough) / 2.0;
+                if self.exchange_terms(player, fleet_id, give, want, middle).0.receive >= wanted {
+                    enough = middle;
+                } else {
+                    short = middle;
+                }
+            }
+            (terms, pressure_after) = self.exchange_terms(player, fleet_id, give, want, enough);
+        }
+        let fuel = if terms.receive >= wanted { missing } else { terms.receive / FUEL_DEUT_PER_UNIT };
+        Ok(RefuelDeal { give, amount: terms.amount, fuel, exchange: Some((terms, pressure_after)) })
+    }
+
+    /// What `refuel` would buy `fleet` with each resource in its hold; None
+    /// away from a hub that refuels.
+    pub fn refuel_quote(&self, fleet: &Fleet) -> Option<RefuelQuote> {
+        if !self.hub_services_at(fleet.location).contains(&HubService::Refuel) {
+            return None;
+        }
+        let offers: Vec<RefuelOffer> = ResourceKind::ALL
+            .into_iter()
+            .filter(|kind| fleet.cargo.get(*kind) > 0.0)
+            .filter_map(|kind| self.refuel_deal(fleet.owner_id, fleet.id, kind, None).ok())
+            .map(|deal| RefuelOffer {
+                give: deal.give,
+                amount: deal.amount,
+                fuel: deal.fuel,
+                fee: deal.exchange.map_or(0.0, |(terms, _)| terms.fee),
+            })
+            .collect();
+        let refusal = if offers.is_empty() {
+            self.refuel_deal(fleet.owner_id, fleet.id, ResourceKind::Deuterium, None).err().map(|r| r.reason)
+        } else {
+            None
+        };
+        Some(RefuelQuote { missing: fleet.fuel_max - fleet.fuel, offers, refusal })
+    }
+
+    /// Turn what is in the hold of `fleet_id` into fuel at the hub it
+    /// stands at, as `refuel_deal` quotes it.
+    pub fn handle_refuel(
+        &mut self,
+        player_id: u64,
+        fleet_id: u64,
+        give: ResourceKind,
+        amount: Option<f64>,
+    ) -> Result<(), ErrorCode> {
+        let deal = self.refuel_deal(player_id, fleet_id, give, amount).map_err(|refusal| refusal.code)?;
+        let fleet = self.fleets.get_mut(&fleet_id).ok_or(ErrorCode::FleetNotFound)?;
+        let held = fleet.cargo.get(give);
+        *fleet.cargo.get_mut(give) = if deal.amount >= held { 0.0 } else { held - deal.amount };
+        fleet.fuel = if deal.fuel >= fleet.fuel_max - fleet.fuel { fleet.fuel_max } else { fleet.fuel + deal.fuel };
+        let (sector, fuel, fuel_max) = (fleet.location, fleet.fuel, fleet.fuel_max);
+        let fee = deal.exchange.as_ref().map_or(0.0, |(terms, _)| terms.fee);
+        if let Some((terms, pressure_after)) = deal.exchange {
+            let player = self.players.get_mut(&player_id).ok_or(ErrorCode::ServerError)?;
+            player.exchange_pressure = pressure_after;
+            player.exchange_tick = self.current_tick;
+            self.pending_events.push(GameEvent {
+                tick: self.current_tick,
+                kind: EventKind::Exchanged(ExchangedEvent { sector, terms }),
+            });
+        }
+        let fee_words = if fee > 0.0 { format!(" at a fee of {:.0}%", fee * 100.0) } else { String::new() };
+        self.push_alert(AlertLevel::Info, fleet_id, sector, format!(
+            "fleet {fleet_id} refuelled at the hub: {} {} bought {} fuel{fee_words}; the tank stands at {} of {}",
+            fuel_words(deal.amount), give.label(), fuel_words(deal.fuel), fuel_words(fuel), fuel_words(fuel_max),
+        ));
+        Ok(())
     }
 
     /// Trade at the hub's exchange: the fleet's hold and its owner's meter

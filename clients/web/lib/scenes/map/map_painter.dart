@@ -477,6 +477,16 @@ class MapPainter extends CustomPainter {
         Draw.text(c, offers, o.dx, o.dy - hr * 1.3, T.cond(size: 10, color: C.a(C.a200, .8), spacing: 1), anchor: .5);
       }
     }
+    for (final roaming in data.hubs) {
+      final o = vp.toScreen(roaming.sector.q, roaming.sector.r);
+      final color = roaming.stale ? C.text3 : roaming.departing ? C.ember : C.gold;
+      Draw.symbol(c, Sym.hub, o.dx, o.dy, math.max(9, hr * .7), color: color, alpha: roaming.stale ? .5 : .95, lw: 1.2);
+      if (s > .5) {
+        final left = math.max(0, roaming.departsAt - data.tick);
+        final words = roaming.stale ? 'LEFT' : roaming.departing ? 'DEPARTS ${clockFmt(left)}' : 'LEAVES ${clockFmt(left)}';
+        Draw.text(c, 'HUB ${roaming.id + 1} $words', o.dx, o.dy - hr * 1.1, T.cond(size: 10, color: C.a(color, .85), spacing: 1), anchor: .5);
+      }
+    }
   }
 
   // ---- routes ----

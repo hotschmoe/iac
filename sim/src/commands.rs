@@ -62,6 +62,7 @@ impl GameEngine {
             Command::Load { fleet_id, resource, amount } => self.handle_load(pid, fleet_id, resource, amount),
             Command::Unload { fleet_id } => self.handle_unload(pid, fleet_id),
             Command::Refine { fleet_id } => self.handle_refine(pid, fleet_id),
+            Command::Refuel { fleet_id, give, amount } => self.handle_refuel(pid, fleet_id, give, amount),
             Command::FoundOutpost { fleet_id } => self.handle_found_outpost(pid, fleet_id),
             Command::OutpostSurvey { fleet_id, sector } => self
                 .outpost_survey(pid, fleet_id, sector)
@@ -167,6 +168,7 @@ fn command_fleet_id(cmd: &Command) -> Option<u64> {
         | Command::Load { fleet_id, .. }
         | Command::Unload { fleet_id }
         | Command::Refine { fleet_id }
+        | Command::Refuel { fleet_id, .. }
         | Command::FoundOutpost { fleet_id }
         | Command::OutpostSurvey { fleet_id, .. }
         | Command::FoundRelay { fleet_id }
@@ -423,6 +425,12 @@ pub fn command_error_message(engine: &GameEngine, player_id: u64, cmd: &Command,
             Err(refusal) => refusal.reason,
             Ok(_) => format!("command rejected ({code:?})"),
         },
+        (_, Command::Refuel { fleet_id, give, amount }) => {
+            match engine.refuel_deal(player_id, *fleet_id, *give, *amount) {
+                Err(refusal) => refusal.reason,
+                Ok(_) => format!("command rejected ({code:?})"),
+            }
+        }
         (_, Command::FoundOutpost { .. }) => match fleet.map(|f| engine.outpost_site(player_id, f, f.location)) {
             Some(Err(refusal)) => refusal.reason,
             Some(Ok(())) => format!("command rejected ({code:?})"),

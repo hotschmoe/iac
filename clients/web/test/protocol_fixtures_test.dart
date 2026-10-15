@@ -102,16 +102,16 @@ void main() {
       }
     });
 
-    test('event_kind fixtures decode to distinct kinds covering all 32 variants', () {
+    test('event_kind fixtures decode to distinct kinds covering all 34 variants', () {
       final kinds = {
         for (final f in fixtureFiles('protocol/event_kind')) GameEvent.fromJson(readJson(f)).kind.runtimeType,
       };
-      expect(kinds.length, 32);
+      expect(kinds.length, 34);
     });
 
-    test('command fixtures cover all 30 commands', () {
+    test('command fixtures cover all 31 commands', () {
       final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 30);
+      expect(kinds.length, 31);
     });
 
     test('a state with an outpost carries it, its sector mark and the fuel to it', () {

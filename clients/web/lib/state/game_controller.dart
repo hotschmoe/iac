@@ -792,6 +792,13 @@ class GameController extends ChangeNotifier {
     sendCommand(proto.RefineCommand(fleetId: fleetId));
   }
 
+  /// Turn [give] from the hold of [fleetId] into fuel at the hub it stands
+  /// at, at most [amount] of it.
+  void refuel(int fleetId, proto.ResourceKind give, {double? amount}) {
+    note('> refuel F$fleetId with ${amount == null ? 'all' : amount.round()} ${give.name}', level: EventLevel.full);
+    sendCommand(proto.RefuelCommand(fleetId: fleetId, give: give, amount: amount));
+  }
+
   final Map<(int, proto.Hex), Timer> _surveyTimers = {};
   final Map<(int, proto.Hex), int> _surveyAsked = {};
   final Set<(int, proto.Hex)> _surveyTyped = {};
