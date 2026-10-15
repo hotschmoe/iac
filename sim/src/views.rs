@@ -266,7 +266,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
             at_outpost: engine.outposts.get(&player_id).is_some_and(|o| o.sector == fleet.location),
             at_relay: engine.relays.get(&player_id).is_some_and(|list| list.iter().any(|r| r.sector == fleet.location)),
             outpost_fuel: engine.outpost_route_cost(fleet, bound_for),
-            refine: crate::engine::refining(fleet),
+            refine: engine.refining(fleet),
             refuel: engine.refuel_quote(fleet),
             policy: engine.policies.get(&fleet.id).map(|p| StandingOrders { preset: p.preset, params: p.params }),
         });
