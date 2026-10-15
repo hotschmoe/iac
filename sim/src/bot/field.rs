@@ -27,7 +27,8 @@
 // and it reads off each sector's chart mark whether a visit still pays.
 // Hull lost stays lost until the home dock mends it, so it fights only at
 // odds that cost it little, and takes a fleet whose hull has fallen below
-// `HULL_READY` home before it does anything else. A wing with no warship
+// `HULL_READY` home before it does anything else, as it does a fleet with
+// a relic aboard, which only a dock claims. A wing with no warship
 // in it picks no fight at any odds. In a fight it reads the server's odds
 // of that fight as it stands (`FleetState::flight`) and jumps out toward
 // home once they are under `LEAVE_ODDS`; with a group on its trail it
@@ -608,7 +609,7 @@ impl<'a> Admiral<'a> {
             if !self.can_return(unit) {
                 return WAIT;
             }
-        } else if unit.mauled() || fleet.pursued_by.is_some() {
+        } else if unit.mauled() || fleet.pursued_by.is_some() || fleet.relic.is_some() {
             return self.head_home(unit);
         } else {
             let hold_full = fleet.cargo_capacity > 0.0 && load >= RETURN_LOAD * fleet.cargo_capacity;
@@ -735,7 +736,10 @@ impl<'a> Admiral<'a> {
 
     /// What a derelict in `sector` holds on average.
     fn derelict(&self, sector: &SectorState) -> Resources {
-        scaling::split_loot(scaling::derelict_value(sector.location.dist_from_origin()) * self.pace.find_mult())
+        let dist = sector.location.dist_from_origin();
+        let relic = f64::from(scaling::relic_chance(scaling::threat_rating(scaling::npc_power(dist))));
+        let worth = 1.0 + relic * (scaling::RELIC_LOOT_MULT - 1.0);
+        scaling::split_loot(scaling::derelict_value(dist) * self.pace.find_mult() * worth)
     }
 
     /// The first fleet to want what lies in `sector` this turn takes it; a
