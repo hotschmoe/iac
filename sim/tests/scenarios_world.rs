@@ -1871,7 +1871,7 @@ fn a_stockpile_of_millions_grows_by_what_its_mines_make_and_is_stored_to_the_las
         s.players.get_mut(&pid).unwrap().resources = stock;
     });
     let pace = engine.pace();
-    let made = engine.players[&pid].production_per_tick(&pace);
+    let made = engine.players[&pid].production_per_tick(&iac_shared::scaling::RelicBonus::NONE, &pace);
     let cap = scaling::storage_cap(&engine.players[&pid].buildings, &pace);
     for kind in ResourceKind::ALL {
         let (held, tick) = (stock.get(kind) as f32, made.get(kind) as f32);

@@ -22,12 +22,12 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use iac_shared::Resources;
-use iac_shared::constants::{Density, ResourceKind, ShipClass, TerrainType};
+use iac_shared::constants::{Density, RelicKind, ResourceKind, ShipClass, TerrainType};
 use iac_shared::hex::{Hex, HexDirection, hex_ring, hex_spiral};
 use iac_shared::pace::{Pace, preset_named};
 use iac_shared::protocol::*;
 use iac_shared::scaling::{
-    Arms, BuildingLevels, BuildingType, DefenceKind, MAX_BUILDING_LEVEL, RatioLabel, Refit, ResearchLevels,
+    Arms, BuildingLevels, BuildingType, DefenceKind, MAX_BUILDING_LEVEL, RatioLabel, Refit, RelicBonus, RelicItem, ResearchLevels,
     ResearchType, ShipyardItem, research_max_level, ship_figures, unit_figures,
 };
 use iac_shared::world::HubService;
@@ -123,6 +123,7 @@ fn sample_fleet(id: u64, loc: Hex, state: FleetStatus, policy: Option<StandingOr
         shield: 4_140,
         refit: Refit { weapons: 0, shielding: 0, armour: 0 },
         refit_due: true,
+        relic: Some(RelicItem { kind: RelicKind::FuelBurn, pct: 0.125 }),
         repair: Some(RepairQuote {
             ships: 4,
             hull: 640,
@@ -900,6 +901,7 @@ fn sample_homeworld() -> HomeworldState {
             &[14, 0, 0, 3, 0, 0, 1, 1],
             6,
             true,
+            &RelicBonus::NONE,
             &Pace::PERSISTENT,
         ),
     }
@@ -951,6 +953,7 @@ fn idle_homeworld() -> HomeworldState {
             &[0; DefenceKind::COUNT],
             0,
             false,
+            &RelicBonus::NONE,
             &Pace::PERSISTENT,
         ),
     }
@@ -964,6 +967,10 @@ fn sample_player() -> PlayerState {
         homeworld: h(4, -2),
         ship_count: 828,
         exchange: sold_meter(),
+        relics: vec![
+            RelicState { kind: RelicKind::MetalOutput, pct: 0.1875, pct_now: 0.09375, claimed_tick: 1000, expires_at: 11_000 },
+            RelicState { kind: RelicKind::ResearchTime, pct: 0.0625, pct_now: 0.0625, claimed_tick: 5500, expires_at: 15_500 },
+        ],
     }
 }
 
@@ -1088,6 +1095,9 @@ fn event_kind_name(k: &EventKind) -> &'static str {
         EventKind::RelayDecayed(_) => "relay_decayed",
         EventKind::HubArrived(_) => "hub_arrived",
         EventKind::HubDeparting(_) => "hub_departing",
+        EventKind::RelicFound(_) => "relic_found",
+        EventKind::RelicClaimed(_) => "relic_claimed",
+        EventKind::RelicFaded(_) => "relic_faded",
     }
 }
 
@@ -1668,6 +1678,7 @@ fn server_messages() -> Vec<(String, ServerMessage)> {
                     homeworld: h(3, 0),
                     ship_count: 0,
                     exchange: ExchangeMeter { pressure: 0.0, span: 0.0, fee: 0.75, window_ticks: 5238, clear_in: Some(0) },
+                    relics: vec![],
                 },
                 fleets: vec![],
                 homeworld: idle_homeworld(),
@@ -2308,6 +2319,9 @@ fn event_kinds() -> Vec<(&'static str, EventKind)> {
             relic: true,
         })),
         ("", EventKind::ChartDelivered(ChartDeliveredEvent { fleet_id: 1, sectors: 12 })),
+        ("", EventKind::RelicFound(RelicFoundEvent { fleet_id: 1, sector: h(2, -4), relic_kind: RelicKind::CrystalOutput, pct: 0.15625, carried: true })),
+        ("", EventKind::RelicClaimed(RelicClaimedEvent { player_id: 1, fleet_id: 1, relic_kind: RelicKind::CrystalOutput, pct: 0.15625, expires_at: 90_000, applied: true })),
+        ("", EventKind::RelicFaded(RelicFadedEvent { player_id: 1, relic_kind: RelicKind::CrystalOutput })),
         ("", EventKind::Exchanged(ExchangedEvent { sector: h(0, 0), terms: sample_terms() })),
         ("started", EventKind::Queue(QueueEvent {
             player_id: Some(7),
@@ -2674,7 +2688,7 @@ fn catalog_levels(files: &mut Files) {
                 research.set(t, level.min(research_max_level(t)));
             }
             let none = [0; DefenceKind::COUNT];
-            let catalog = HomeworldCatalog::new(&buildings, &research, &none, &none, 0, true, &pace);
+            let catalog = HomeworldCatalog::new(&buildings, &research, &none, &none, 0, true, &RelicBonus::NONE, &pace);
             serde_json::to_string(&catalog).unwrap()
         })
         .collect();

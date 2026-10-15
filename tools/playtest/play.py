@@ -35,7 +35,8 @@ CHART_MARKS = {"aboard": "aboard one of your fleets; it pays when that fleet doc
                "delivered": "delivered (already paid; no need to visit again)"}
 NOTABLE = {"BuildingCompleted", "ResearchCompleted", "ShipBuilt", "DefenceBuilt", "FleetArrived", "CombatStarted",
            "CombatEnded", "ShipsLost", "FleetDestroyed", "RaidIncoming", "RaidResolved", "SiteExplored", "SiteAmbush",
-           "SalvageCollected", "ChartDelivered", "ScanCompleted", "Exchanged", "Stockpile"}
+           "SalvageCollected", "ChartDelivered", "ScanCompleted", "Exchanged", "Stockpile", "RelicFound", "RelicClaimed",
+           "RelicFaded"}
 
 
 def session():
@@ -535,6 +536,22 @@ def relays_line(r, now):
             + (": " + stands if stands else ""))
 
 
+def relic_text(kind, share):
+    """A relic's figure: "+12.5% metal output" for a kind that raises, "-8% fuel burn" for one that cuts."""
+    sign = "+" if kind.endswith("_output") else "-"
+    return f"{sign}{share * 100:.1f}% {kind.replace('_', ' ')}"
+
+
+def relics_line(player, now):
+    """One line for the relics the player holds: what each gives now and when it is gone."""
+    held = (player or {}).get("relics") or []
+    if not held:
+        return None
+    return "Relics: " + "; ".join(
+        f"{relic_text(r['kind'], r['pct_now'])} (claimed at {r['pct'] * 100:.1f}%, gone in {age(r['expires_at'] - now)})"
+        for r in held)
+
+
 def hubs_line(hubs, now):
     """One line for the roaming hubs the player knows: where each stands and when it leaves."""
     if not hubs:
@@ -955,6 +972,8 @@ def fleet_rows(fs):
             row["cargo_blocked"] = True
         if f.get("laden"):
             row["laden"] = True
+        if f.get("relic"):
+            row["relic"] = f["relic"]
         if f.get("refine"):
             row["refine"] = {k: round(v, 1) for k, v in f["refine"].items()}
         if f.get("refuel"):
@@ -1111,6 +1130,8 @@ def build_state(fs, board=None, left=None, alerts=None):
         doc["relays"] = fs["relays"]
     if fs.get("hubs"):
         doc["hubs"] = fs["hubs"]
+    if (fs.get("player") or {}).get("relics"):
+        doc["relics"] = fs["player"]["relics"]
     return doc
 
 
@@ -1214,7 +1235,8 @@ def fleet_line(f):
     cargo = sum(f["cargo"])
     return (f"fleet {f['id']} @{f['at'][0]},{f['at'][1]} {f['state']} {f['policy']} power {f['power']} fuel {f['fuel']}/{f['fuel_max']} "
             f"range {f['range_hops']} cargo {cargo}/{f['cargo_cap']} " + "+".join(f"{n}x{c}" for c, n in f["ships"].items())
-            + (" CARGO BLOCKED" if f.get("cargo_blocked") else "") + (" LADEN" if f.get("laden") else ""))
+            + (" CARGO BLOCKED" if f.get("cargo_blocked") else "") + (" LADEN" if f.get("laden") else "")
+            + (f" RELIC {relic_text(f['relic']['kind'], f['relic']['pct'])} (claimed at a dock)" if f.get("relic") else ""))
 
 
 def pick_keys(doc, keys):
@@ -1268,6 +1290,8 @@ def cmd_status(name, brief=False):
             print("  " + relays_line(fs["relays"], fs["tick"]))
         if hubs_line(fs.get("hubs"), fs["tick"]):
             print("  " + hubs_line(fs["hubs"], fs["tick"]))
+        if relics_line(fs.get("player"), fs["tick"]):
+            print("  " + relics_line(fs["player"], fs["tick"]))
         for f in doc["fleets"]:
             print("  " + fleet_line(f))
         for a in doc["alerts"]:
@@ -1338,6 +1362,8 @@ def summarize(fs, doc, odds):
         print(relays_line(fs["relays"], fs["tick"]))
     if hubs_line(fs.get("hubs"), fs["tick"]):
         print(hubs_line(fs["hubs"], fs["tick"]))
+    if relics_line(fs.get("player"), fs["tick"]):
+        print(relics_line(fs["player"], fs["tick"]))
     sectors = {(s["location"]["q"], s["location"]["r"]): s for s in fs.get("known_sectors") or []}
     live = sum(1 for s in sectors.values() if s.get("live"))
     print(f"Known sectors: {len(sectors)} ({live} live, {len(sectors) - live} remembered/stale)")

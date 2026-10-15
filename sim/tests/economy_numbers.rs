@@ -205,6 +205,7 @@ fn game() -> Json {
         RELAY_MIN_RING, RELAY_COST_BASE, RELAY_COST_GROWTH, RELAY_BASE_MAX, RELAY_LEVELS_PER_STEP, RELAY_STORE,
         DEPOT_FILL_JUMPS_BASE, DEPOT_FILL_JUMPS_PER_LEVEL, RELAY_DECAY_TICKS,
         HUB_COUNT, HUB_FIRST_RING, HUB_BAND_RINGS, HUB_PERIOD_TICKS, HUB_WARN_TICKS, HUB_ATTEMPTS,
+        RELIC_FADE_TICKS, RELIC_TOTAL_CAP, RELIC_PCT_OUTER_MAX, RELIC_PCT_DEEP_MAX, RELIC_DEEP_RING, RELIC_PCT_FLOOR_SHARE,
     ];
 
     let start = BuildingLevels::default();
@@ -292,7 +293,7 @@ fn game() -> Json {
         "storage_cap": at_levels(b_top, |l| storage_cap_at(l, &p1)),
         "storage_protected": at_levels(b_top, |l| storage_protected_at(l, &p1)),
         "tank_modifier": at_levels(b_top, tank_modifier),
-        "fuel_rate_modifier": at_levels(r_top, fuel_rate_modifier),
+        "fuel_rate_modifier": at_levels(r_top, |level| fuel_rate_modifier(level, &RelicBonus::NONE)),
         "harvest_yield": at_levels(r_top, harvest_yield),
         "recall_damage_reduction": at_levels(r_top, recall_damage_reduction),
         "sensor_range": at_levels(r_top, sensor_range),
@@ -343,9 +344,9 @@ fn tables() -> Json {
         .map(|(b, level)| {
             map! {
                 "building": format!("{b:?}"), "level": level, "cost": building_cost(b, level),
-                "ticks": building_time(b, level, &none, &p1),
-                "ticks_robotics_4": building_time(b, level, &robotics_4, &p1),
-                "ticks_robotics_10_nanite_1": building_time(b, level, &nanite_1, &p1),
+                "ticks": building_time(b, level, &none, &RelicBonus::NONE, &p1),
+                "ticks_robotics_4": building_time(b, level, &robotics_4, &RelicBonus::NONE, &p1),
+                "ticks_robotics_10_nanite_1": building_time(b, level, &nanite_1, &RelicBonus::NONE, &p1),
             }
         })
         .collect();
@@ -356,7 +357,7 @@ fn tables() -> Json {
         .map(|(t, level)| {
             map! {
                 "tech": format!("{t:?}"), "level": level, "cost": research_cost(t, level),
-                "ticks": research_time(t, level, &none, &p1), "ticks_lab_5": research_time(t, level, &lab_5, &p1),
+                "ticks": research_time(t, level, &none, &RelicBonus::NONE, &p1), "ticks_lab_5": research_time(t, level, &lab_5, &RelicBonus::NONE, &p1),
                 "energy": research_energy(t, level),
             }
         })
@@ -408,7 +409,7 @@ fn tables() -> Json {
             ]);
             let pace = pace(p);
             let power = home_power(&buildings, &researched(R::EnergyTechnology, tech), satellites, true, &pace);
-            let mined = production_per_tick(&buildings, power.fraction(), &pace);
+            let mined = production_per_tick(&buildings, power.fraction(), &RelicBonus::NONE, &pace);
             map! {
                 "pace": p, "mines": [metal, crystal, deuterium], "solar_plant": solar, "fusion_reactor": fusion,
                 "energy_technology": tech, "satellites": satellites,
@@ -458,7 +459,7 @@ fn tables() -> Json {
                 "class": format!("{class:?}"), "combustion_drive": combustion, "impulse_drive": impulse,
                 "hyperspace_drive": hyperspace, "energy_technology": energy, "deuterium_tank": tank,
                 "speed": speed, "jump_ticks": jump_ticks(speed),
-                "jump_fuel": ship_burn(class, &research) * fuel_rate_modifier(energy),
+                "jump_fuel": ship_burn(class, &research) * fuel_rate_modifier(energy, &RelicBonus::NONE),
                 "tank": ship_tank(class, &research) * tank_modifier(tank),
             }
         })
@@ -497,7 +498,7 @@ fn tables() -> Json {
         .map(|p| {
             let pace = pace(p);
             let levels = built(&[(B::MetalMine, 10), (B::CrystalMine, 9), (B::DeuteriumSynthesizer, 8)]);
-            let mines = production_per_tick(&levels, 1.0, &pace);
+            let mines = production_per_tick(&levels, 1.0, &RelicBonus::NONE, &pace);
             map! {"pace": p, "mines": [10u8, 9, 8], "window": exchange_window(&pace), "span": exchange_span(&mines, &pace)}
         })
         .collect();
@@ -554,6 +555,14 @@ fn tables() -> Json {
         })
         .collect();
 
+    let relics: Vec<Json> = PACES
+        .into_iter()
+        .map(|p| map! { "pace": p, "fade_ticks": pace(p).econ_ticks(RELIC_FADE_TICKS as f64) })
+        .collect();
+    let relic_rings: Vec<Json> = (RELAY_MIN_RING..=RELIC_DEEP_RING + 4)
+        .map(|ring| map! { "ring": ring, "ceiling": relic_ceiling(ring) })
+        .collect();
+
     map! {
         "building_levels": building_levels,
         "research_levels": research_levels,
@@ -572,6 +581,8 @@ fn tables() -> Json {
         "outpost_yields": outpost_yields,
         "relays": relays,
         "hubs": hubs,
+        "relics": relics,
+        "relic_rings": relic_rings,
     }
 }
 
@@ -595,7 +606,7 @@ fn find_worth() -> Json {
             .iter()
             .map(|&p| {
                 let pace = pace(p);
-                value(&pace) / (sum(production_per_tick(&levels, 1.0, &pace)) * 60.0)
+                value(&pace) / (sum(production_per_tick(&levels, 1.0, &RelicBonus::NONE, &pace)) * 60.0)
             })
             .collect();
         let (lo, hi) = minutes.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &m| (lo.min(m), hi.max(m)));

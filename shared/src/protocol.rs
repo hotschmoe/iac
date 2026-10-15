@@ -3,9 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{Density, Drive, ResourceKind, ShipClass, TerrainType};
+use crate::constants::{Density, Drive, RelicKind, ResourceKind, ShipClass, TerrainType};
 use crate::scaling::{
-    self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, Prereqs, RatioLabel, Refit, ResearchLevels,
+    self, BuildingLevels, BuildingType, DefenceKind, PrereqRef, Prereqs, RatioLabel, Refit, RelicItem, ResearchLevels,
     ResearchType, ShipyardItem,
 };
 use crate::hex::Hex;
@@ -1385,6 +1385,21 @@ pub struct PlayerState {
     /// Where the player's meter at the hub's exchange stands this tick.
     #[serde(default)]
     pub exchange: ExchangeMeter,
+    /// The relics the player holds, claimed and not yet faded, in the order
+    /// they were claimed.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub relics: Vec<RelicState>,
+}
+
+/// A claimed relic: the bonus it gave when claimed, what it gives this tick
+/// and when it is gone. The figures are shares (0.1 is ten percent).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RelicState {
+    pub kind: RelicKind,
+    pub pct: f64,
+    pub pct_now: f64,
+    pub claimed_tick: u64,
+    pub expires_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1428,6 +1443,10 @@ pub struct FleetState {
     /// A hostile group is following the fleet and jumping to where it stands.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pursued_by: Option<Pursuit>,
+    /// A relic aboard: claimed when the fleet docks at its owner's homeworld,
+    /// outpost or relay, lost with the fleet. At most one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub relic: Option<RelicItem>,
     pub cargo: Resources,
     /// Hold size: the most `cargo` can total, as the server enforces it.
     pub cargo_capacity: f64,
@@ -2259,7 +2278,7 @@ fn research_effects(t: ResearchType, buildings: &BuildingLevels, research: &Rese
             E::SensorHops => f64::from(scaling::sensor_range(level)),
             E::BuildSlots => f64::from(scaling::building_slots(&with)),
             E::Attack | E::Shield | E::Hull => 1.0 + 0.1 * f64::from(level),
-            E::JumpFuel => scaling::fuel_rate_modifier(level),
+            E::JumpFuel => scaling::fuel_rate_modifier(level, &scaling::RelicBonus::NONE),
             E::EnergyMade => f64::from(scaling::fusion_energy(buildings.fusion_reactor, level)),
             E::RecallRisk => f64::from(scaling::recall_damage_reduction(level)),
             E::Speed => 1.0 + drive.map_or(0.0, Drive::speed_per_level) * f64::from(level),
@@ -2395,6 +2414,7 @@ impl HomeworldCatalog {
         committed: &[u32; DefenceKind::COUNT],
         satellites: u32,
         fusion_fed: bool,
+        relics: &scaling::RelicBonus,
         pace: &Pace,
     ) -> Self {
         let energy_made = scaling::home_power(buildings, research, satellites, fusion_fed, pace).made;
@@ -2409,7 +2429,7 @@ impl HomeworldCatalog {
                     next: (level < scaling::MAX_BUILDING_LEVEL).then(|| UpgradeStep {
                         level: level + 1,
                         cost: scaling::building_cost(b, level + 1),
-                        ticks: scaling::building_time(b, level + 1, buildings, pace),
+                        ticks: scaling::building_time(b, level + 1, buildings, relics, pace),
                     }),
                     requires: building_requirements(buildings, research, b),
                     effects: building_effects(b, buildings, research, pace),
@@ -2440,7 +2460,7 @@ impl HomeworldCatalog {
                     next: (level < max_level).then(|| UpgradeStep {
                         level: level + 1,
                         cost: scaling::research_cost(t, level + 1),
-                        ticks: scaling::research_time(t, level + 1, buildings, pace),
+                        ticks: scaling::research_time(t, level + 1, buildings, relics, pace),
                     }),
                     requires: research_requirements(buildings, research, t, level.saturating_add(1), energy_made),
                     effects: research_effects(t, buildings, research),
@@ -2467,7 +2487,7 @@ impl HomeworldCatalog {
                     drive: scaling::ship_drive(c, research).map(|(drive, _, _)| drive),
                     speed,
                     jump_ticks: if c.flies() { scaling::jump_ticks(speed) } else { 0 },
-                    jump_fuel: scaling::ship_burn(c, research) * scaling::fuel_rate_modifier(research.energy_technology),
+                    jump_fuel: scaling::ship_burn(c, research) * scaling::fuel_rate_modifier(research.energy_technology, relics),
                     tank: scaling::ship_tank(c, research) * scaling::tank_modifier(buildings.deuterium_tank),
                     harvest: c.harvest_power(),
                 }
@@ -2702,6 +2722,39 @@ pub enum EventKind {
     RelayDecayed(RelayDecayedEvent),
     HubArrived(HubArrivedEvent),
     HubDeparting(HubDepartingEvent),
+    RelicFound(RelicFoundEvent),
+    RelicClaimed(RelicClaimedEvent),
+    RelicFaded(RelicFadedEvent),
+}
+
+/// A boarding found a relic. `carried` is false when the fleet already
+/// carried a stronger one and this one was left behind.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelicFoundEvent {
+    pub fleet_id: u64,
+    pub sector: Hex,
+    pub relic_kind: RelicKind,
+    pub pct: f64,
+    pub carried: bool,
+}
+
+/// A fleet docked with a relic and it was claimed. `applied` is false when
+/// the owner held a relic of the same kind that was stronger now.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelicClaimedEvent {
+    pub player_id: u64,
+    pub fleet_id: u64,
+    pub relic_kind: RelicKind,
+    pub pct: f64,
+    pub expires_at: u64,
+    pub applied: bool,
+}
+
+/// A claimed relic ran out.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelicFadedEvent {
+    pub player_id: u64,
+    pub relic_kind: RelicKind,
 }
 
 /// The player has eyes on a roaming hub they did not know the stay of: it

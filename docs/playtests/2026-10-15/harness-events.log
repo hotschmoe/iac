@@ -1,0 +1,41 @@
+2026-10-15 00:24:20 harness    session start: 60 min, pace 1200, port 7790, players: Grok-1:grok Grok-2:grok Grok-3:grok Grok-4:grok
+2026-10-15 00:24:20 harness    server pid 167032
+2026-10-15 00:24:20 harness    launched client daemon slot 0 (Grok-1) pid 167062
+2026-10-15 00:24:20 harness    launched client daemon slot 1 (Grok-2) pid 167069
+2026-10-15 00:24:20 harness    launched client daemon slot 2 (Grok-3) pid 167076
+2026-10-15 00:24:20 harness    launched client daemon slot 3 (Grok-4) pid 167083
+2026-10-15 00:24:20 harness    launched supervisor slot 0 (Grok-1, grok) pid 167088
+2026-10-15 00:24:20 harness    launched supervisor slot 1 (Grok-2, grok) pid 167111
+2026-10-15 00:24:20 harness    launched supervisor slot 2 (Grok-3, grok) pid 167144
+2026-10-15 00:24:20 harness    launched supervisor slot 3 (Grok-4, grok) pid 167167
+2026-10-15 00:24:20 sv1        supervisor up for Grok-2 (grok) pid 167111 parent 167016
+2026-10-15 00:24:20 harness    launched watchdog pid 167192
+2026-10-15 00:24:20 sv0        supervisor up for Grok-1 (grok) pid 167088 parent 167016
+2026-10-15 00:24:20 sv1        Grok-2 launch 1 (grok) budget=3840s
+2026-10-15 00:24:20 sv0        Grok-1 launch 1 (grok) budget=3840s
+2026-10-15 00:24:20 sv2        supervisor up for Grok-3 (grok) pid 167144 parent 167016
+2026-10-15 00:24:20 watchdog   watching, session ends 01:24:20
+2026-10-15 00:24:20 sv2        Grok-3 launch 1 (grok) budget=3840s
+2026-10-15 00:24:20 sv3        supervisor up for Grok-4 (grok) pid 167167 parent 167016
+2026-10-15 00:24:20 sv3        Grok-4 launch 1 (grok) budget=3840s
+2026-10-15 01:20:17 sv1        Grok-2 agent exit 0 after 3357s
+2026-10-15 01:20:22 sv1        Grok-2 launch 2 (grok) budget=478s
+2026-10-15 01:21:23 sv3        Grok-4 agent exit 0 after 3423s
+2026-10-15 01:21:28 sv3        Grok-4 launch 2 (grok) budget=412s
+2026-10-15 01:21:53 sv1        Grok-2 agent exit 0 after 91s
+2026-10-15 01:21:58 sv1        Grok-2 launch 3 (grok) budget=382s
+2026-10-15 01:22:11 sv0        Grok-1 agent exit 0 after 3470s
+2026-10-15 01:22:16 sv0        Grok-1 launch 2 (grok) budget=364s
+2026-10-15 01:22:28 sv2        Grok-3 agent exit 0 after 3488s
+2026-10-15 01:22:33 sv2        supervisor done for Grok-3 launches=1 feedback=yes
+2026-10-15 01:25:52 sv1        Grok-2 agent exit 0 after 234s
+2026-10-15 01:25:57 sv1        supervisor done for Grok-2 launches=3 feedback=yes
+2026-10-15 01:28:20 sv0        Grok-1 agent exit 124 (agent hit its time budget) after 364s
+2026-10-15 01:28:21 sv3        Grok-4 agent exit 124 (agent hit its time budget) after 413s
+2026-10-15 01:28:25 sv0        supervisor done for Grok-1 launches=2 feedback=yes
+2026-10-15 01:28:26 sv3        supervisor done for Grok-4 launches=2 feedback=yes
+2026-10-15 01:29:20 daemon client Grok-1 exited code -15; restarting
+2026-10-15 01:29:20 daemon client Grok-2 exited code -15; restarting
+2026-10-15 01:29:20 daemon client Grok-3 exited code -15; restarting
+2026-10-15 01:29:20 daemon client Grok-4 exited code -15; restarting
+2026-10-15 01:29:24 watchdog   received SIGTERM, exiting

@@ -62,6 +62,7 @@ pub const TIMER_CLASSES: &[(&str, PaceClass)] = &[
     ("HARVEST_REPORT_TICKS", PaceClass::RealTime),
     ("EXPLORE_DURATION_TICKS", PaceClass::RealTime),
     ("DERELICT_RESPAWN_TICKS", PaceClass::Finds),
+    ("RELIC_FADE_TICKS", PaceClass::Economy),
     ("POLICY_EVAL_INTERVAL", PaceClass::RealTime),
     ("EXCHANGE_WINDOW_TICKS", PaceClass::Attention),
     ("RELAY_DECAY_TICKS", PaceClass::Attention),

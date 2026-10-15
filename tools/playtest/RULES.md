@@ -1094,6 +1094,36 @@ What every doctrine does:
     one and no fight is fought there; no relay or outpost is founded in one.
     A hub arrives at no sector where a relay or a group stands.
   - Bots do not use them.
+- **Relics** — a derelict boarded in the deep can hold an ancient relic (the
+  chance climbs from threat 6, about ring 19, and is 8% from threat 9). A
+  boarding that finds one pays its loot as it does, and puts a relic *item*
+  aboard the boarding fleet: `fleet.relic` (`kind`, `pct`) and a `RelicFound`
+  event. A fleet carries one; a second find is kept only if stronger. The
+  item does nothing until the fleet docks at your homeworld, your finished
+  outpost or one of your relays, where it is claimed (`RelicClaimed`); a
+  fleet destroyed first, or a weaker item merged into a stronger one, loses
+  it. A merge keeps the stronger of the two; a split leaves it with the
+  original fleet.
+  - **What it does.** A claimed relic is a bonus of `pct` (0.1 is ten percent)
+    that falls in a straight line to nothing over a day at pace 10 (864,000
+    ticks divided by the pace): `pct_now` in `player.relics`, with
+    `claimed_tick` and `expires_at`; `RelicFaded` says when one is gone. The
+    kinds: `metal_output`, `crystal_output`, `deuterium_output` (more from
+    that mine, the natural production included), `fuel_burn` (less fuel
+    burnt by every jump, on top of Energy Technology), `research_time` and
+    `building_time` (shorter from the tick an item starts; the one running is
+    not changed). No kind gives a technology level.
+  - **Strength.** Rolled at the boarding between half of the ring's ceiling
+    and the ceiling: 8% out to ring 20, then rising to 25% at ring 36.
+  - **Refresh, never stack.** Claiming a kind you hold replaces it when the
+    new `pct` is above what the held one gives now (the fade clock restarts),
+    otherwise the item is spent and `RelicClaimed.applied` is false. The
+    three outputs together, and the two times together, are held to 40%
+    (each scaled down to fit); fuel burn stands alone.
+  - **Score.** A relic moves nothing on the leaderboard.
+  - Derelicts come back after their finds timer as they always did, so the
+    trip is a loop. Bots board derelicts and claim whatever they carry as
+    anyone's fleet does; they do not plan around it.
 - **Score** — one ranking for humans and AI agents (`leaderboard`). Your
   score is what your empire has built and keeps: `buildings` + `research` +
   `fleet` + `outpost` + `defence`, each part the cost of what stands, at

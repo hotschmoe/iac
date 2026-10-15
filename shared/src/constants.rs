@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// world would play on differently. A world stored under another economy
 /// version, a server's file or a single-player save, is refused (start a
 /// new world).
-pub const ECONOMY_VERSION: u32 = 21;
+pub const ECONOMY_VERSION: u32 = 22;
 /// Bumped when sector generation changes.
 pub const WORLDGEN_VERSION: u32 = 8;
 
@@ -766,6 +766,77 @@ pub const EXPLORE_RECYCLER_LOOT_MULTIPLIER: f64 = 2.0;
 pub const EXPLORE_RETRY_AMBUSH_BUMP: f32 = 0.10;
 /// A stripped derelict is replaced after 120 game hours, finds class.
 pub const DERELICT_RESPAWN_TICKS: u64 = 432_000;
+
+/// Fading relics (`docs/design/deep-space.md`, section 4): a boarding that
+/// finds one puts an item aboard the fleet, claimed at the owner's homeworld,
+/// outpost or relay. A claimed relic is a standing bonus of `pct` that falls
+/// in a straight line to nothing over `RELIC_FADE_TICKS` (economy class: about
+/// a day at the season preset). Within one family of kinds the bonuses added
+/// together never pass `RELIC_TOTAL_CAP`. A site's strength is rolled between
+/// `RELIC_PCT_FLOOR_SHARE` of its ceiling and the ceiling: `RELIC_PCT_OUTER_MAX`
+/// out to ring 20, then growing to `RELIC_PCT_DEEP_MAX` at `RELIC_DEEP_RING`.
+/// Provisional.
+pub const RELIC_FADE_TICKS: u64 = 864_000;
+pub const RELIC_TOTAL_CAP: f64 = 0.40;
+pub const RELIC_PCT_OUTER_MAX: f64 = 0.08;
+pub const RELIC_PCT_DEEP_MAX: f64 = 0.25;
+pub const RELIC_DEEP_RING: u16 = 36;
+pub const RELIC_PCT_FLOOR_SHARE: f64 = 0.5;
+
+/// What a relic does while it stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelicKind {
+    MetalOutput,
+    CrystalOutput,
+    DeuteriumOutput,
+    FuelBurn,
+    ResearchTime,
+    BuildingTime,
+}
+
+/// The kinds whose bonuses share `RELIC_TOTAL_CAP`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelicFamily {
+    Output,
+    Burn,
+    Time,
+}
+
+impl RelicKind {
+    pub const ALL: [RelicKind; 6] = [
+        RelicKind::MetalOutput,
+        RelicKind::CrystalOutput,
+        RelicKind::DeuteriumOutput,
+        RelicKind::FuelBurn,
+        RelicKind::ResearchTime,
+        RelicKind::BuildingTime,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RelicKind::MetalOutput => "metal output",
+            RelicKind::CrystalOutput => "crystal output",
+            RelicKind::DeuteriumOutput => "deuterium output",
+            RelicKind::FuelBurn => "fuel burn",
+            RelicKind::ResearchTime => "research time",
+            RelicKind::BuildingTime => "building time",
+        }
+    }
+
+    /// Whether the bonus raises a figure (output) or cuts one (burn, time).
+    pub fn raises(self) -> bool {
+        matches!(self, RelicKind::MetalOutput | RelicKind::CrystalOutput | RelicKind::DeuteriumOutput)
+    }
+
+    pub fn family(self) -> RelicFamily {
+        match self {
+            RelicKind::MetalOutput | RelicKind::CrystalOutput | RelicKind::DeuteriumOutput => RelicFamily::Output,
+            RelicKind::FuelBurn => RelicFamily::Burn,
+            RelicKind::ResearchTime | RelicKind::BuildingTime => RelicFamily::Time,
+        }
+    }
+}
 
 /// Fleet standing orders: how often an auto-piloted fleet re-evaluates,
 /// and the default doctrine thresholds.

@@ -1,0 +1,10 @@
+{
+  "applied": true,
+  "expires_at": 90000,
+  "fleet_id": 1,
+  "kind": "RelicClaimed",
+  "pct": 0.15625,
+  "player_id": 1,
+  "relic_kind": "crystal_output",
+  "tick": 1234
+}

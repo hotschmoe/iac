@@ -301,6 +301,9 @@ class GameState {
   /// Where the player's meter at the hub's exchange stands.
   final proto.ExchangeMeter exchange;
 
+  /// The relics the player holds, as the server last sent them.
+  final List<proto.RelicState> relics;
+
   /// Exact hold of each fleet by id (fleet cargo above is rounded for display).
   final Map<int, proto.Resources> holds;
 
@@ -373,6 +376,7 @@ class GameState {
     this.odds = const {},
     this.quotes = const {},
     this.exchange = const proto.ExchangeMeter(),
+    this.relics = const [],
     this.holds = const {},
     this.stock = const proto.Resources(),
     this.catalog,
@@ -534,6 +538,7 @@ class GameState {
     Map<(int, proto.Hex), OddsEntry>? odds,
     Map<TradeKey, QuoteEntry>? quotes,
     proto.ExchangeMeter? exchange,
+    List<proto.RelicState>? relics,
     Map<int, proto.Resources>? holds,
     proto.Resources? stock,
     proto.HomeworldCatalog? catalog,
@@ -571,6 +576,7 @@ class GameState {
         odds: odds ?? this.odds,
         quotes: quotes ?? this.quotes,
         exchange: exchange ?? this.exchange,
+        relics: relics ?? this.relics,
         holds: holds ?? this.holds,
         stock: stock ?? this.stock,
         catalog: catalog ?? this.catalog,

@@ -1,6 +1,6 @@
 import '../protocol/hex.dart';
 import '../protocol/protocol.dart' as proto
-    show Fleeing, FlightQuote, Pursuit, Refining, RefuelQuote, Refit, RepairQuote, ShipGroupState, StandingOrders, scanBaseRange;
+    show Fleeing, FlightQuote, Pursuit, Refining, RefuelQuote, Refit, RelicItem, RepairQuote, ShipGroupState, StandingOrders, scanBaseRange;
 
 enum FleetStatus {
   docked('DOCKED'),
@@ -135,6 +135,10 @@ class FleetState {
   /// The group on its trail; null with none.
   final proto.Pursuit? pursuedBy;
 
+  /// The relic aboard, claimed when it docks at home, an outpost or a relay;
+  /// null with none.
+  final proto.RelicItem? relic;
+
   /// Where it last stood in a fight, for the report of a fight it has left;
   /// null when it has been in none this console saw.
   final Hex? foughtAt;
@@ -180,6 +184,7 @@ class FleetState {
     this.flight,
     this.fleeing,
     this.pursuedBy,
+    this.relic,
     this.foughtAt,
   });
 

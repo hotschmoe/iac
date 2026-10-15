@@ -667,7 +667,7 @@ impl Headless {
             waiting: outpost.breached && outpost.job.is_none() && unpaid,
             store: outpost.store,
             rate_per_hour: hourly(scaling::outpost_yield_per_tick(ore, ring, outpost.level, &pace)),
-            home_per_hour: hourly(player.production_per_tick(&pace)),
+            home_per_hour: hourly(player.production_per_tick(&self.engine.relics_of(player.id), &pace)),
             payback_hours: (scaling::outpost_cost(1).total() / hourly(scaling::outpost_yield_per_tick(ore, ring, 1, &slow)))
                 as f32,
             next_mine_level: mine + 1,
@@ -793,7 +793,7 @@ impl Counting<'_> {
             slots.research_idle += u64::from(player.research_queue.is_none());
             slots.shipyard_idle += u64::from(player.ship_queue.is_none());
 
-            let made = player.mined_per_tick(&pace);
+            let made = player.mined_per_tick(&engine.relics_of(player.id), &pace);
             let cap = scaling::storage_cap(&player.buildings, &pace);
             let mut spilled = Resources::default();
             for kind in ResourceKind::ALL {

@@ -83,6 +83,10 @@
         "weapons": 0
       },
       "refit_due": true,
+      "relic": {
+        "kind": "fuel_burn",
+        "pct": 0.125
+      },
       "repair": {
         "home": {
           "hull": 640,

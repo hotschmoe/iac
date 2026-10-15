@@ -7,7 +7,7 @@ import '../models/game_state.dart';
 import '../models/homeworld.dart';
 import '../console/battle.dart'
     show endedLine, pursuitEventLine, raidForce, raidHeadline, raidSummary, raidVerdict, roundLine, shipsList, ticksOf;
-import '../console/intel.dart' show clockFmt, groupDigits;
+import '../console/intel.dart' show clockFmt, groupDigits, relicPct;
 import '../models/resources.dart';
 import '../protocol/protocol.dart' as proto;
 import 'command_parser.dart' show QueueIds;
@@ -493,6 +493,16 @@ class StateMapper {
       case proto.HubDepartingEvent():
         msg = '! Hub ${k.id + 1} at ${k.sector} departs in ${clockFmt(math.max(0, k.departsAt - tick))}';
         level = EventLevel.bright;
+      case proto.RelicFoundEvent():
+        msg = '${_fleet(k.fleetId)} found a ${k.relicKind.label} relic of ${relicPct(k.pct)} at ${k.sector}'
+            '${k.carried ? ': it is claimed when the fleet docks at home, an outpost or a relay' : ', and left it for the stronger relic aboard'}';
+        level = EventLevel.bright;
+      case proto.RelicClaimedEvent():
+        msg = '${_fleet(k.fleetId)} claimed a ${k.relicKind.label} relic of ${relicPct(k.pct)}'
+            '${k.applied ? ', fading by tick ${k.expiresAt}' : ': a stronger one of the kind is already held'}';
+        level = EventLevel.bright;
+      case proto.RelicFadedEvent():
+        msg = 'The ${k.relicKind.label} relic has faded';
       case proto.RaidIncomingEvent():
         final where = switch (k.outpost) { null => '', final at => ' on your outpost at $at' };
         final forecast = switch (k.odds) { null => '', final odds => ', forecast ${raidVerdict(odds)}' };
@@ -650,6 +660,7 @@ class StateMapper {
       odds: {for (final e in odds.entries) (e.key.$1, proto.Hex.fromKey(e.key.$2)): e.value},
       quotes: Map.of(quotes),
       exchange: p?.exchange ?? const proto.ExchangeMeter(),
+      relics: p?.relics ?? const [],
       holds: {for (final f in fleets) f.id: f.cargo},
       stock: res,
       catalog: hw?.catalog,
@@ -730,6 +741,7 @@ class StateMapper {
       flight: f.flight,
       fleeing: f.fleeing,
       pursuedBy: f.pursuedBy,
+      relic: f.relic,
       foughtAt: _foughtAt[f.id],
     );
   }

@@ -10395,3 +10395,28 @@ percent: clouds alone added +17 rings at level 6. `ECONOMY_VERSION` is 21 and
 `WORLDGEN_VERSION` 8; `SAVE_FORMAT` is unchanged. The probe's cloud stops now
 fill to `depot_fill_jumps`, and its flown check allows the greedy planner one
 ring of loss for the two tiers together. Results are in `deep-space.md` 3.5.
+
+## 2026-10-15: fading relics
+
+Slice 5 of the deep-space note. The derelict that already rolled an ancient
+relic now puts an item aboard the boarding fleet (`Fleet.relic`), claimed on
+the arrival at, or the recall to, the owner's homeworld, outpost or relay; the
+player holds at most one a kind (`Player.relics`), each a percentage that falls
+in a straight line over `RELIC_FADE_TICKS` (a day at the season preset) and is
+read at the tick, never stored as a figure. Six kinds: the three mines' output,
+fuel burn, research time, building time. Each is one input at the one place
+its figure is made (`scaling::production_per_tick`, `fuel_rate_modifier`,
+`research_time`, `building_time`), which therefore take a `RelicBonus`; the
+callers pass `RelicBonus::of` of the player's relics, or `NONE` where a relic
+must not reach (the exchange's span, the bots' planner, the research table of
+the catalogue). A world that claims none plays as before but for the version
+bumps: `ECONOMY_VERSION` 21, `SAVE_FORMAT` 18. `WORLDGEN_VERSION` is 7.
+
+Deliberate: the kind and strength are rolled after every draw the boarding
+already made, so no existing world's loot or recovered ship moves. A time
+bonus applies to what starts after it. The event structs name the kind
+`relic_kind`: `kind` is the tag of an event on the wire. `sim/tests/relics.rs`
+covers the boarding and the claim, the output, its half and its end, the
+stockpile, refresh and no stacking, the family cap, a fleet lost with its
+relic, merge and split, the score, fuel and research time, and a world
+stopped and started at the interesting ticks.

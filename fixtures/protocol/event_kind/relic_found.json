@@ -1,0 +1,12 @@
+{
+  "carried": true,
+  "fleet_id": 1,
+  "kind": "RelicFound",
+  "pct": 0.15625,
+  "relic_kind": "crystal_output",
+  "sector": {
+    "q": 2,
+    "r": -4
+  },
+  "tick": 1234
+}

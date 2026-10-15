@@ -51,6 +51,22 @@ class DemoController extends GameController {
     receive(world.initial());
   }
 
+  /// Put a relic aboard fleet [fleetId] of the scripted world, as a boarding
+  /// in the deep does.
+  void carryRelic(int fleetId, proto.RelicKind kind, double pct) {
+    final world = _world!;
+    world.carryRelic(fleetId, kind, pct);
+    receive(world.initial());
+  }
+
+  /// Play [ticks] ticks of the scripted world at once.
+  void advance(int ticks) {
+    final world = _world!;
+    for (var i = 0; i < ticks; i++) {
+      world.step();
+    }
+  }
+
   /// Announce a raid of [power] on the scripted world's outpost, arriving
   /// in [inTicks].
   void raidOutpost(double power, {int inTicks = 10}) => _world!.raidOutpost(power, inTicks: inTicks);

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../console/economy_view.dart';
 import '../../console/battle.dart' show fleeingLine, flightPrice, hullOf, pursuitLine, pursuitVerdict, raidKept;
-import '../../console/intel.dart' show groupDigits, hopCount;
+import '../../console/intel.dart' show clockFmt, groupDigits, hopCount, relicBonus, relicPct;
 import '../../console/prefs.dart';
 import '../../console/services.dart';
 import '../../design/draw.dart';
@@ -95,6 +95,8 @@ class _OverviewViewState extends State<OverviewView> {
           Padding(padding: EdgeInsets.only(bottom: gap), child: ResourceTiles(narrow: narrow)),
           Padding(padding: EdgeInsets.only(bottom: gap), child: QueueCards(columns: narrow ? 1 : (wide ? 4 : 2))),
           row([_FleetsPanel(con: con, avail: (wide ? (w - 2 * pad - gap) * 8 / 12 : w - 2 * pad) - 28), _RadarPanel(con: con)], [8, 4]),
+          if (con.state.relics.isNotEmpty)
+            Padding(padding: EdgeInsets.only(bottom: gap), child: _RelicsPanel(con: con)),
           row([_AlertsPanel(con: con), _LogPanel(con: con, filter: _filter, onFilter: (f) => setState(() => _filter = f))], [5, 7]),
           if (wide)
             Padding(
@@ -331,10 +333,17 @@ class _FleetCard extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(child: Text(f.name.toUpperCase(), overflow: TextOverflow.ellipsis, style: T.cond(size: 14, color: C.a200, spacing: 1.7))),
           if (f.pursuedBy != null) ...[Tag('Pursued', key: Key('fleet-pursued-tag-${f.id}'), color: C.ember), const SizedBox(width: 5)],
+          if (f.relic != null) ...[
+            Tag('Relic', key: Key('fleet-relic-${f.id}'), color: C.a200),
+            const SizedBox(width: 5),
+          ],
           Tag(f.statusLabel, key: Key('fleet-status-${f.id}'), on: status == ui.FleetStatus.harvesting, color: f.underFire ? C.ember : chipCol),
         ]),
         const SizedBox(height: 4),
         Text('${f.sector.q},${f.sector.r} - ${f.sector.zone.label.toUpperCase()} -${home == 0 ? 'AT HOME' : '$home HOP${home == 1 ? '' : 'S'} HOME'}', style: T.mono(size: 10, color: C.text3)),
+        if (f.relic case final relic?)
+          Text('CARRIES A RELIC: ${relicBonus(relic.kind, relic.pct).toUpperCase()}. CLAIMED AT HOME, AN OUTPOST OR A RELAY; LOST WITH THE FLEET.',
+              key: Key('fleet-relic-line-${f.id}'), style: T.mono(size: 10, color: C.a300, height: 1.3)),
         if (f.flight case final quote?)
           Text('IN A FIGHT, ${quote.label.label}: A JUMP OUT COSTS ${flightPrice(quote).toUpperCase()}.',
               key: Key('fleet-flight-${f.id}'), style: T.mono(size: 10, color: C.threat(6), height: 1.3)),
@@ -389,6 +398,44 @@ class _FleetCard extends StatelessWidget {
               textAlign: TextAlign.right),
         ),
       ]));
+}
+
+// ── relics ──────────────────────────────────────────────────────
+
+class _RelicsPanel extends StatelessWidget {
+  final Console con;
+  const _RelicsPanel({required this.con});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = con.state;
+    return OvPanel(
+      key: const Key('relics-panel'),
+      title: 'Relics',
+      subText: '${s.relics.length} held',
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        for (final r in s.relics)
+          Padding(
+            key: Key('relic-${r.kind.wire}'),
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Row(children: [
+                Expanded(child: Text(relicBonus(r.kind, r.pctNow).toUpperCase(), style: T.cond(size: 13, color: C.a200, spacing: 1.4))),
+                Text('FADES IN ${clockFmt(r.expiresAt - s.tick)}', key: Key('relic-left-${r.kind.wire}'), style: T.mono(size: 10, color: C.text3)),
+              ]),
+              const SizedBox(height: 4),
+              LedBar(r.expiresAt > r.claimedTick ? ((r.expiresAt - s.tick) / (r.expiresAt - r.claimedTick)).clamp(0.0, 1.0) : 0, color: C.a400, height: 6),
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text('CLAIMED AT ${relicPct(r.pct)}', style: T.mono(size: 9.5, color: C.text3)),
+              ),
+            ]),
+          ),
+        const WhyText('A relic fades in a straight line to nothing. A fleet that carries one claims it when it docks at home, an outpost or a relay.'),
+      ]),
+    );
+  }
 }
 
 // ── nearby space ────────────────────────────────────────────────
