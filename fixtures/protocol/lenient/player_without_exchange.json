@@ -21,6 +21,12 @@
       },
       "ship_count": 4
     },
+    "relays": {
+      "level": 0,
+      "limit": 0,
+      "relays": [],
+      "technology": "HyperspaceTechnology"
+    },
     "tick": 9,
     "type": "tick_update"
   },

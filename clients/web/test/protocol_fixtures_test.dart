@@ -90,6 +90,7 @@ void main() {
         'server_message/leaderboard': LeaderboardReply,
         'server_message/exchange_quote': ExchangeQuote,
         'server_message/outpost_survey': OutpostSurvey,
+        'server_message/relay_survey': RelaySurvey,
       };
       for (final e in expected.entries) {
         final dir = e.key.split('/')[0];
@@ -101,16 +102,16 @@ void main() {
       }
     });
 
-    test('event_kind fixtures decode to distinct kinds covering all 30 variants', () {
+    test('event_kind fixtures decode to distinct kinds covering all 32 variants', () {
       final kinds = {
         for (final f in fixtureFiles('protocol/event_kind')) GameEvent.fromJson(readJson(f)).kind.runtimeType,
       };
-      expect(kinds.length, 30);
+      expect(kinds.length, 32);
     });
 
-    test('command fixtures cover all 28 commands', () {
+    test('command fixtures cover all 30 commands', () {
       final kinds = {for (final f in fixtureFiles('protocol/command')) Command.fromJson(readJson(f)).runtimeType};
-      expect(kinds.length, 28);
+      expect(kinds.length, 30);
     });
 
     test('a state with an outpost carries it, its sector mark and the fuel to it', () {

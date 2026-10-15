@@ -1,0 +1,10 @@
+{
+  "kind": "RelayFounded",
+  "player_id": 42,
+  "ring": 12,
+  "sector": {
+    "q": 12,
+    "r": -3
+  },
+  "tick": 1234
+}

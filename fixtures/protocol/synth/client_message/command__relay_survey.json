@@ -1,0 +1,5 @@
+[
+{"canonical":{"action":"relay_survey","fleet_id":42,"sector":{"q":43,"r":-44},"type":"command"},"input":{"action":"relay_survey","fleet_id":42,"sector":{"q":43,"r":-44},"type":"command"}},
+{"canonical":{"action":"relay_survey","fleet_id":42,"type":"command"},"input":{"action":"relay_survey","fleet_id":42,"type":"command"}},
+{"canonical":{"action":"relay_survey","fleet_id":42,"type":"command"},"input":{"action":"relay_survey","fleet_id":42,"sector":null,"type":"command"}}
+]

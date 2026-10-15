@@ -95,23 +95,83 @@ pack of the ring guards. A cloud buys a few jumps and not a crossing.
 
 ### 3.2 Relays (slice 3)
 
-A relay is a mini outpost: a small store, `load` and `unload` of a fleet's hold
-into it, and a refuel of a fleet standing there from that store. It has no
-extractor, no platform, no repair, no raid. It is owner-only. The fuel in it is
-what its owner hauled, so reach is logistics and not a gift.
+A relay is a mini outpost: a small store of deuterium, `load` and `unload` of
+a fleet's hold into it, and a refuel of a fleet standing there from that
+store. It has no extractor, no platform, no repair, no raid and no garrison.
+It is owner-only. The fuel in it is what its owner hauled, so reach is
+logistics and not a gift.
 
-- Founded from what a fleet carries there, on any sector of ring 9 and beyond
-  (the Wandering included) that has no hub, lair or derelict.
-- Limit: `RELAY_MAX` active relays per empire, *decided* about three, raised by a
-  research level (a Hyperspace-line technology) rather than a building, so reach
-  grows with research.
-- Cost grows with the ring (`RELAY_COST_BASE`, `RELAY_COST_GROWTH`), and the
-  founding load is carried, as the outpost's is.
-- Store: `RELAY_STORE` units, not a pace-scaled cap, so a distant relay is a
-  small, deliberate depot.
-- Cheap to lose: nothing raids it, but a fleet that is not there is no defence;
-  a relay left alone for `RELAY_DECAY_TICKS` (an `Attention` timer) is gone.
-- Standing orders, bots and `recall` do not use relays.
+- *Built.* `Relay` is `{sector, store, founded_tick, visited_tick,
+  dry_tanks}`; `GameEngine::relays` and `Snapshot::relays` are a list per
+  owner in the order founded, in the one stored document (`SAVE_FORMAT` 16,
+  `ECONOMY_VERSION` 18). A world in which nobody founds one plays as it did.
+- Founded by a fleet standing on a sector of ring `RELAY_MIN_RING` 9 or deeper
+  (the Wandering included) with no hub, Anomaly, derelict, lair, group,
+  outpost or relay (`relay_site`, the one place it is refused and worded;
+  `relay_survey` quotes it, as `outpost_survey` does). The cost is carried in
+  the founding fleet's hold: `RELAY_COST_BASE` 500 metal, 250 crystal and 100
+  deuterium at ring 9, plus `RELAY_COST_GROWTH` 0.1 of it for every ring
+  deeper (`scaling::relay_cost`; 2.1 times at ring 20, 3.1 at ring 30). It
+  does not scale with pace.
+- Limit: `RELAY_BASE_MAX` 1 and one more for every `RELAY_LEVELS_PER_STEP` 2
+  levels of Hyperspace Technology (`scaling::relay_limit`), so three at level
+  4 and seven at level 12. Hyperspace Technology does nothing of its own but gate
+  the Hyperspace Drive and the heavy ships and carry `RecallRisk`, which is
+  why it carries this. The refusal names the
+  limit and the technology.
+- Store: `RELAY_STORE` 1,000 units of deuterium, not pace-scaled. A jump of
+  ten Cruisers burns 3,000 fuel, 240 deuterium at a dock's 12.5 fuel to the
+  deuterium: one relay fills about four jumps for a fleet of that size, and a
+  third of a tank. Deuterium only; `load` of anything else is refused.
+- Decay: a relay no fleet of its owner has stood at for `RELAY_DECAY_TICKS`
+  172,800 pace-1 ticks (an `Attention` timer: two days at pace 1, 4.3 hours at
+  season, 24 minutes at blitz) is gone with its store. A fleet in the sector
+  every tick holds it off; a visit sets the clock back. `RelayDecayed` and an
+  alert say so.
+- A fleet flown by hand that arrives at a relay, or stands there as its store
+  is stocked, has its tank filled from it at the dock's rate; one under
+  standing orders is left alone, and `load` is refused it. A fleet at a relay
+  still counts among the fleets away from the docks. Bots and `recall` do not
+  use relays. Pirates do not look for
+  them; a founding needs no group in the sector, and a lair is refused, so no
+  lair template can respawn into one.
+- Wire: `found_relay`, `relay_survey` (a query); `RelaySurvey`; `relays`
+  (`RelaysState`: `limit`, `technology`, `level`, and a `RelayState` each with
+  `sector`, `ring`, `store`, `store_cap`, `decay_in`) in the full state and in
+  every tick update; `FleetState.at_relay`; events `RelayFounded` and
+  `RelayDecayed`. The web client has a dock tile (Y) with the founding survey
+  and, at a relay, the store, its decay and load and unload; the map draws a
+  mark.
+- *Measured.* `sim/tests/relays.rs` hauls 600 deuterium to a relay with a cargo
+  fleet, brings ten Light Fighters to it, refuels them there and has them fly
+  to a ring they could not have returned from, and back. The probe
+  (`reach_probe.rs`, ring-4 home, ten ships, Hyperspace Technology and the
+  other three at the row's level, relays stocked with their whole store by a
+  convoy that is not counted, half spent each way, the limit of the row):
+
+```
+class          level  jumps  relays  off  clouds  relays_on  both
+Light Fighter      0     10       1    9       9         19    20
+Light Fighter      3     20       2   14      14         49    49
+Light Fighter      6     35       4   21      21         55    57
+Light Fighter     10     70       6   38      45         69    72
+Light Fighter     13     85       7   45      52         75    79
+Cruiser            0      8       1    8       8          8     8
+Cruiser            3     16       2   12      12         12    12
+Cruiser            6     28       4   18      18         18    18
+Cruiser           10     56       6   32      32         32    32
+Cruiser           13     68       7   38      38         38    38
+```
+
+  A fleet of cheap-burning ships (a Light Fighter burns 20 fuel a jump)
+  is carried deep by one depot of 1,000 deuterium, which is 62 jumps of them;
+  ten Cruisers get about two jumps of a half-store and nothing from it. That
+  is the tier doing what it says, but ten Light Fighters at Hyperspace
+  Technology 3 reaching ring 49 is the Wandering made easy by a hauler's
+  single trip: `RELAY_STORE` is the knob to turn down first (a store of 300
+  makes it 25 jumps), or the limit's step. The cruiser rows say the store is
+  too small to matter to a fleet that burns what Cruisers do; that is by
+  design for now (the haul that matters is a convoy of cargo ships).
 
 ### 3.3 Roaming neutral hubs (slice 4)
 

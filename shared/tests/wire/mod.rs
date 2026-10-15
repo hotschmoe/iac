@@ -21,14 +21,14 @@ use iac_shared::constants::{
     CHASE_MIN_RATIO, DEFENCE_REBUILD_EACH_BELOW, DEFENCE_REBUILD_PCT, DEFENCE_REBUILD_SPREAD, Density, Drive,
     EXPLODE_BELOW_PCT,
     EXPLORE_DURATION_TICKS, FLEE_FUEL_MULTIPLIER, FLEE_MIN_ROUNDS, FUEL_DEUT_PER_UNIT, LANE_SEARCH_HOPS,
-    MAX_FLEET_SHIPS, OUTPOST_MAX_RING, OUTPOST_MIN_RING, POLICY_CARGO_RETURN_PCT_MAX, POLICY_CARGO_RETURN_PCT_MIN,
+    MAX_FLEET_SHIPS, OUTPOST_MAX_RING, OUTPOST_MIN_RING, POLICY_CARGO_RETURN_PCT_MAX, RELAY_MIN_RING, RELAY_STORE, POLICY_CARGO_RETURN_PCT_MIN,
     POLICY_DISENGAGE_RATIO_X10_MAX, POLICY_DISENGAGE_RATIO_X10_MIN, POLICY_ENGAGE_RATIO_X10_MAX,
     POLICY_ENGAGE_RATIO_X10_MIN, POLICY_FUEL_UNBOUNDED_PCT, POLICY_HULL_READY, POLICY_MIN_FUEL_PCT_MAX,
     POLICY_RANGE_MAX, POLICY_RANGE_MIN, RAID_ROUNDS, REFINE_LOSS, ResourceKind, SCAN_BASE_RANGE, SCAN_COOLDOWN,
     SCAN_PROBE_RANGE, ShipClass, TerrainType, Zone,
 };
 use iac_shared::protocol::{
-    BOT_NAME_PREFIX, ClientMessage, EffectKind, ErrorCode, ExchangeMeter, MAX_ODDS_SECTORS, NAME_MAX_LEN,
+    BOT_NAME_PREFIX, ClientMessage, EffectKind, ErrorCode, ExchangeMeter, MAX_ODDS_SECTORS, NAME_MAX_LEN, RelaysState,
     PolicyParams, PolicyPreset, RaidLabel, ServerMessage, SignalKind, SiteRisk, StockpileCause,
 };
 use iac_shared::scaling::{
@@ -178,6 +178,8 @@ pub fn extras(model: &Model) -> Extras {
         RATIO_RISKY,
         OUTPOST_MIN_RING,
         OUTPOST_MAX_RING,
+        RELAY_MIN_RING,
+        RELAY_STORE,
         NAME_MAX_LEN,
         Zone::INNER_RING_RADIUS,
         Zone::OUTER_RING_RADIUS,
@@ -216,6 +218,7 @@ pub fn extras(model: &Model) -> Extras {
         rust_default::<Resources>(),
         rust_default::<PolicyParams>(),
         rust_default::<ExchangeMeter>(),
+        rust_default::<RelaysState>(),
     ]);
 
     for def in model.types.iter().filter(|def| matches!(def.body, Body::Struct(_))) {

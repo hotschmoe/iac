@@ -1,0 +1,10 @@
+{
+  "kind": "RelayDecayed",
+  "lost": 640.0,
+  "player_id": 42,
+  "sector": {
+    "q": 12,
+    "r": -3
+  },
+  "tick": 1234
+}

@@ -51,6 +51,7 @@
   "fleets": [
     {
       "at_outpost": true,
+      "at_relay": false,
       "attack": 20610,
       "cargo": {
         "crystal": 3.0,
@@ -203,6 +204,24 @@
     },
     "upgrade_refusal": "your outpost at [10,-2] is breached; it repairs itself first, once its store covers the repair: 3360 metal, or crystal at 1.5 and deuterium at 2 a unit in its place",
     "yield_lost": []
+  },
+  "relays": {
+    "level": 4,
+    "limit": 3,
+    "relays": [
+      {
+        "decay_in": 150000,
+        "founded_tick": 900,
+        "ring": 12,
+        "sector": {
+          "q": 12,
+          "r": -3
+        },
+        "store": 640.0,
+        "store_cap": 1000.0
+      }
+    ],
+    "technology": "HyperspaceTechnology"
   },
   "sector_updates": [
     {

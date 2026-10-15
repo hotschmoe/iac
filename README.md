@@ -110,7 +110,7 @@ cargo run -p iac-headless -- --name MyAgent [--token <token>]
 
 - **stdout** — every server message, one JSON object per line: `auth_result`,
   `full_state`, `tick_update` (with `events`), `error`, plus the replies to
-  `preview_move`, `odds`, `exchange_quote`, `outpost_survey` and `leaderboard`. Every `tick_update`
+  `preview_move`, `odds`, `exchange_quote`, `outpost_survey`, `relay_survey` and `leaderboard`. Every `tick_update`
   carries the complete `fleets` list: a fleet missing from it is gone, and
   `"fleets":[]` means every fleet was lost. A final
   `{"type":"connection_closed"}` is emitted if the server hangs up.
@@ -190,6 +190,8 @@ Example session:
 | `outpost_survey` | `fleet_id`, `sector:{q,r}` (optional) | do not found: reply `outpost_survey` for the named sector, or the fleet's own, with its `ring`, the `cost` and `build_ticks` of level 1, `raid_power` (`least` and `most`), `platform` (the defences level 1 stands with) and `platform_power`, `raid` (a typical raid of that ring, its `ships`, and `odds` against a level 1 platform alone), `site` (`densities`, `grade`, `production` a tick at level 1, `hops_home`) and `refusal`: the sentence `found_outpost` would be refused with right now, absent when it would be accepted. Any sector may be asked about; one the player has never seen is answered without `site` and with a `refusal` that says so |
 | `upgrade_outpost` | none | build the next level of the outpost, paid in full from the outpost's own store at that moment. Refused with `InsufficientResources` and the exact shortfall, `MaxLevelReached` at level 3, `InvalidCommand` with no outpost, while it is building or repairing, or while it is breached |
 | `abandon_outpost` | none | give up the outpost. Its store is left as wreckage in the sector for 180 ticks, its score is gone, nothing is refunded, and another may be founded. `InvalidCommand` with no outpost |
+| `found_relay` | `fleet_id` | found a relay (a depot of up to 1000 deuterium, yours alone, no extractor, platform or raid) in the sector the fleet stands in, paid from its hold (`relay_survey.cost`). Ring 9 and deeper, no Anomaly, derelict, lair, group, outpost or relay; `relays.limit` of them, raised by Hyperspace Technology. `load` and `unload` there move deuterium to and from its store, a fleet flown by hand is refuelled from it, and it is gone with its store when no fleet of yours has stood there for `decay_in` ticks |
+| `relay_survey` | `fleet_id`, `sector:{q,r}` (optional) | do not found: reply `relay_survey` with `ring`, `cost`, `store_cap`, `decay_ticks`, `count`, `limit`, `technology` and `refusal`, the sentence `found_relay` would be refused with right now |
 
 Standing orders are a separate message type (not a command):
 

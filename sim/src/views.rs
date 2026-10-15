@@ -2,12 +2,13 @@
 // views of the engine, and which events reach whom.
 
 use iac_shared::constants::{
-    ResourceKind, Resources, LANE_SEARCH_HOPS, OUTPOST_MAX_LEVEL, RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN,
+    ResourceKind, Resources, LANE_SEARCH_HOPS, OUTPOST_MAX_LEVEL, RAID_POWER_ROLL_MAX, RAID_POWER_ROLL_MIN, RELAY_STORE,
 };
 use iac_shared::hex::Hex;
 use iac_shared::protocol::{
     BattleState, BuildQueueItem, BuildingState, DefenceState, EnergyState, FleetState, GameEvent, GameState, HomeworldState,
-    OutpostLevel, OutpostState, OutpostWork, OutpostWorkState, PlayerState, QueuedBuild, QueuedResearch,
+    OutpostLevel, OutpostState, OutpostWork, OutpostWorkState, PlayerState, QueuedBuild, QueuedResearch, RelayState,
+    RelaysState,
     QueuedShip, Requirement, ResearchItem, ResearchState, ShipGroupState, ShipyardQueueItem, StandingOrders,
     TickUpdate, WorldInfo,
 };
@@ -27,6 +28,7 @@ pub fn full_state(engine: &GameEngine, player_id: u64) -> Option<GameState> {
         fleets: collect_player_fleets(engine, player_id),
         homeworld: build_homeworld_state(engine, player),
         outpost: outpost_state(engine, player),
+        relays: relays_state(engine, player_id),
         known_sectors: engine.known.chart(engine, player_id),
         battles: battles(engine, player, true),
         world: WorldInfo::new(engine.pace(), engine.world.economy_version, engine.world.worldgen_version),
@@ -52,6 +54,7 @@ pub fn tick_update(engine: &GameEngine, player_id: u64, events: &[GameEvent]) ->
         sector_updates: if sector_updates.is_empty() { None } else { Some(sector_updates) },
         homeworld_update,
         outpost: player_data.and_then(|p| outpost_state(engine, p)),
+        relays: relays_state(engine, player_id),
         battles: player_data.map(|p| battles(engine, p, false)).unwrap_or_default(),
         events: if player_events.is_empty() { None } else { Some(player_events) },
     }
@@ -77,6 +80,28 @@ fn battles(engine: &GameEngine, player: &Player, with_round: bool) -> Vec<Battle
         }
     }
     list
+}
+
+fn relays_state(engine: &GameEngine, player_id: u64) -> RelaysState {
+    let tick = engine.current_tick();
+    let span = engine.relay_decay_ticks();
+    RelaysState {
+        limit: engine.relay_limit(player_id),
+        technology: ResearchType::HyperspaceTechnology,
+        level: engine.players.get(&player_id).map_or(0, |p| p.research.hyperspace_technology),
+        relays: engine.relays.get(&player_id).map_or_else(Vec::new, |list| {
+            list.iter()
+                .map(|relay| RelayState {
+                    sector: relay.sector,
+                    ring: relay.sector.dist_from_origin(),
+                    store: relay.store,
+                    store_cap: RELAY_STORE,
+                    decay_in: span.saturating_sub(tick.saturating_sub(relay.visited_tick)),
+                    founded_tick: relay.founded_tick,
+                })
+                .collect()
+        }),
+    }
 }
 
 fn outpost_state(engine: &GameEngine, player: &Player) -> Option<OutpostState> {
@@ -212,6 +237,7 @@ fn collect_player_fleets(engine: &GameEngine, player_id: u64) -> Vec<FleetState>
                 && engine.players.get(&player_id).is_some_and(|p| p.homeworld == fleet.location),
             laden: fleet.laden,
             at_outpost: engine.outposts.get(&player_id).is_some_and(|o| o.sector == fleet.location),
+            at_relay: engine.relays.get(&player_id).is_some_and(|list| list.iter().any(|r| r.sector == fleet.location)),
             outpost_fuel: engine.outpost_route_cost(fleet, bound_for),
             refine: crate::engine::refining(fleet),
             policy: engine.policies.get(&fleet.id).map(|p| StandingOrders { preset: p.preset, params: p.params }),
@@ -459,6 +485,8 @@ pub fn event_for(event: &GameEvent, player: &Player, engine: &GameEngine) -> Opt
         K::StorageFull(e) => e.player_id.is_none_or(|p| p == player.id),
         K::Alert(e) => e.player_id.is_none_or(|p| p == player.id),
         K::OutpostCompleted(e) => e.player_id == player.id,
+        K::RelayFounded(e) => e.player_id == player.id,
+        K::RelayDecayed(e) => e.player_id == player.id,
     };
     relevant.then_some(out)
 }

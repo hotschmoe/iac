@@ -122,6 +122,7 @@ class _MapViewState extends State<MapView> with SingleTickerProviderStateMixin {
       moves: _moves,
       headings: heads,
       hub: st.world?.hub ?? const [],
+      relays: {for (final r in st.relays.relays) r.sector.toKey(): r},
     );
   }
 

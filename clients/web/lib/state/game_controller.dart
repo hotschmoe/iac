@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../console/battle.dart' show shipsList;
 import '../console/economy_view.dart' show batchCost, defenceBatch, limitReason, shortfall;
-import '../console/outpost.dart' show surveyReport;
+import '../console/outpost.dart' show relaySurveyReport, surveyReport;
 import '../models/fleet.dart';
 import '../models/game_state.dart';
 import '../models/homeworld.dart';
@@ -116,6 +116,12 @@ class GameController extends ChangeNotifier {
       case proto.OutpostSurvey(:final fleetId, :final sector):
         if (_surveyTyped.remove((fleetId, sector))) {
           for (final line in surveyReport(m).reversed) {
+            _mapper.pushLog(line, EventLevel.bright);
+          }
+        }
+      case proto.RelaySurvey(:final fleetId, :final sector):
+        if (_relaySurveyTyped.remove((fleetId, sector))) {
+          for (final line in relaySurveyReport(m).reversed) {
             _mapper.pushLog(line, EventLevel.bright);
           }
         }
@@ -789,6 +795,29 @@ class GameController extends ChangeNotifier {
   final Map<(int, proto.Hex), Timer> _surveyTimers = {};
   final Map<(int, proto.Hex), int> _surveyAsked = {};
   final Set<(int, proto.Hex)> _surveyTyped = {};
+  final Map<(int, proto.Hex), Timer> _relaySurveyTimers = {};
+  final Map<(int, proto.Hex), int> _relaySurveyAsked = {};
+  final Set<(int, proto.Hex)> _relaySurveyTyped = {};
+
+  /// Keep the relay survey of [sector] for [fleetId] fresh while a panel
+  /// shows it (`relay_survey`), as [requestSurvey] does for an outpost.
+  void requestRelaySurvey(int fleetId, proto.Hex sector) {
+    if (fleetId == 0 || !hasState || !isLive) return;
+    final key = (fleetId, sector);
+    if (_relaySurveyTimers.containsKey(key) || !state.relaySurveyNeedsRefresh(fleetId, sector)) return;
+    final asked = _relaySurveyAsked[key];
+    if (asked != null && state.tick - asked < previewRefreshTicks) return;
+    _relaySurveyTimers[key] = Timer(previewDebounce, () {
+      _relaySurveyTimers.remove(key);
+      if (_disposed || !isLive) return;
+      _relaySurveyAsked.removeWhere((_, tick) => state.tick - tick > 60);
+      _relaySurveyAsked[key] = state.tick;
+      sendCommand(proto.RelaySurveyCommand(fleetId: fleetId, sector: sector));
+    });
+  }
+
+  /// The relay orders, each the line a player would type.
+  void foundRelay() => handleCommand('relay found');
 
   /// Keep the survey of [sector] for [fleetId] fresh while a panel shows it
   /// (`outpost_survey`): its refusal is true of the tick it was asked.
@@ -885,6 +914,9 @@ class GameController extends ChangeNotifier {
           if (m case proto.CommandMessage(command: proto.LeaderboardCommand())) _boardTyped = true;
           if (m case proto.CommandMessage(command: proto.OutpostSurveyCommand s)) {
             _surveyTyped.add((s.fleetId, s.sector ?? currentFleet.sector));
+          }
+          if (m case proto.CommandMessage(command: proto.RelaySurveyCommand s)) {
+            _relaySurveyTyped.add((s.fleetId, s.sector ?? currentFleet.sector));
           }
           send(m);
         }

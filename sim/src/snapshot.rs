@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::bot::BotRecord;
-use crate::engine::{Combat, Fleet, FleetPolicy, HarvestReport, NpcFleet, Outpost, Player, RaidState, SectorOverride};
+use crate::engine::{Combat, Fleet, FleetPolicy, HarvestReport, NpcFleet, Outpost, Player, RaidState, Relay, SectorOverride};
 
 /// Settings fixed when a world is created.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -55,6 +55,8 @@ pub struct Snapshot {
     pub bots: BTreeMap<u64, BotRecord>,
     /// Outposts by owner.
     pub outposts: BTreeMap<u64, Outpost>,
+    /// Relays by owner, in the order they were founded.
+    pub relays: BTreeMap<u64, Vec<Relay>>,
     pub pending_events: Vec<GameEvent>,
     pub explored: BTreeSet<(u64, u32)>,
     /// (player, sector key): charts delivered and paid for.
@@ -83,6 +85,7 @@ impl Snapshot {
             harvest_reports: BTreeMap::new(),
             bots: BTreeMap::new(),
             outposts: BTreeMap::new(),
+            relays: BTreeMap::new(),
             pending_events: Vec::new(),
             explored: BTreeSet::new(),
             charted: BTreeSet::new(),

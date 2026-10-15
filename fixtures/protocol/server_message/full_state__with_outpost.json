@@ -2,6 +2,7 @@
   "fleets": [
     {
       "at_outpost": true,
+      "at_relay": false,
       "attack": 20610,
       "cargo": {
         "crystal": 3.0,
@@ -89,6 +90,7 @@
     },
     {
       "at_outpost": false,
+      "at_relay": false,
       "attack": 20610,
       "cargo": {
         "crystal": 3.0,
@@ -2227,6 +2229,24 @@
       "metal": 1200.5
     },
     "ship_count": 828
+  },
+  "relays": {
+    "level": 4,
+    "limit": 3,
+    "relays": [
+      {
+        "decay_in": 150000,
+        "founded_tick": 900,
+        "ring": 12,
+        "sector": {
+          "q": 12,
+          "r": -3
+        },
+        "store": 640.0,
+        "store_cap": 1000.0
+      }
+    ],
+    "technology": "HyperspaceTechnology"
   },
   "tick": 4820,
   "type": "full_state",

@@ -10297,3 +10297,28 @@ score; both had moved the versions on their own. The view comparison in
 `bots.rs` held the bots to more than 2,500 folded views in 1,500 ticks,
 which they met while a wing still charted for points; with that gone the
 run sees 2,423, and the bound is 2,000.
+
+## 2026-10-15: relays, the third tier of reach
+
+Slice 3 of `docs/design/deep-space.md`. A relay is a small depot of deuterium
+(`RELAY_STORE`, 1,000) that a fleet founds from its hold on open ground of
+ring 9 or deeper: `found_relay` and `relay_survey` on the wire, `GameEngine::
+relays` and `Snapshot::relays` in the document, `GameState.relays` and
+`FleetState.at_relay` in the state, `RelayFounded` and `RelayDecayed` among
+the events. `load` of deuterium and `unload` at one move the hold to and from
+its store, a fleet flown by hand is refuelled from it as it arrives and as it
+is stocked, and one that no fleet of its owner visits for `RELAY_DECAY_TICKS`
+is gone with its store. The limit is one and a step for every two levels of
+Hyperspace Technology, which did nothing else of its own. `ECONOMY_VERSION`
+is 18 and `SAVE_FORMAT` 16; `RELAY_*` are in `numbers.json` for the scripted
+world of the Flutter tests. `sim/tests/relays.rs` hauls, founds, stocks,
+refuels and flies a fleet past what its tank allows, refuses every founding
+rule, decays one and stops and starts the world between every moment of it;
+`reach_probe.rs` has the new column. The finding is in section 3.2: a depot
+of 1,000 deuterium is 62 jumps of Light Fighters and two of ten Cruisers, so
+the tier makes the Wandering easy for the first and does nothing for the
+second, and the store is the knob to turn.
+
+Two refusals in `solo/tests/single_player.rs` and `server/tests/smoke.rs` still
+named generator version 5 after master's clouds made it 6; they are 6 now,
+and the format refusals name 15 and 16.

@@ -1,0 +1,19 @@
+{
+  "cost": {
+    "crystal": 325.0,
+    "deuterium": 130.0,
+    "metal": 650.0
+  },
+  "count": 1,
+  "decay_ticks": 15361,
+  "fleet_id": 7,
+  "limit": 3,
+  "ring": 12,
+  "sector": {
+    "q": 12,
+    "r": -3
+  },
+  "store_cap": 1000.0,
+  "technology": "HyperspaceTechnology",
+  "type": "relay_survey"
+}
