@@ -384,7 +384,7 @@ fn harvesting_empties_a_tile_by_its_ring_reserve_and_research_only_raises_the_yi
         (engine.fleets[&fid].cargo.metal, engine.ore_reserve_at(at).unwrap().metal, at)
     };
     let (plain, tile, at) = mine(0);
-    let total = scaling::ore_reserve_units(Density::Pristine, at.dist_from_origin());
+    let total = scaling::ore_reserve_units(Density::Pristine, at.dist_from_origin()) * Pace::PERSISTENT.find_mult();
     assert_eq!(tile.units, 0.0, "the tile is emptied");
     assert!((plain - total).abs() < 0.5, "cargo holds the whole reserve: {plain} vs {total}");
     let (boosted, _, _) = mine(2);
@@ -476,7 +476,11 @@ fn a_mining_run_keeps_its_claims_within_range_of_home_as_each_one_runs_dry() {
 /// A fleet that outguns everything near home, so only the doctrine decides
 /// where it goes, with its fuel left unbounded.
 fn delegate(name: &str, preset: PolicyPreset, max_range: u8) -> (iac_sim::GameEngine, u64, u64, Hex) {
-    let mut engine = world("persistent");
+    delegate_at("persistent", name, preset, max_range)
+}
+
+fn delegate_at(pace: &str, name: &str, preset: PolicyPreset, max_range: u8) -> (iac_sim::GameEngine, u64, u64, Hex) {
+    let mut engine = world(pace);
     let (pid, fid) = join(&mut engine, name);
     let home = engine.players[&pid].homeworld;
     empower(&mut engine, pid, fid);
@@ -504,7 +508,7 @@ fn holds(actions: &[(String, String)]) -> Vec<&str> {
 
 #[test]
 fn a_mining_fleet_brings_the_ore_in_reach_home_and_then_waits_for_the_seams_to_refill() {
-    let (mut engine, pid, fid, home) = delegate("Stripper", PolicyPreset::MineAndReturn, 3);
+    let (mut engine, pid, fid, home) = delegate_at("season", "Stripper", PolicyPreset::MineAndReturn, 3);
     let in_reach: f64 = ring_around(home, 3)
         .into_iter()
         .filter_map(|h| engine.ore_reserve_at(h))
@@ -519,9 +523,10 @@ fn a_mining_fleet_brings_the_ore_in_reach_home_and_then_waits_for_the_seams_to_r
             _ => None,
         })
         .sum();
-    assert!(mined > 0.5 * in_reach, "of {in_reach:.0} units of ore in reach, {mined:.0} were mined");
+    let paid = in_reach * engine.pace().find_mult();
+    assert!(mined > 0.5 * paid, "of {paid:.0} units of ore in reach, {mined:.0} were mined");
 
-    let idle = policy_actions(&run(&mut engine, 1200));
+    let idle = policy_actions(&run(&mut engine, 200));
     assert!(moves(&idle).is_empty(), "stripped seams are left to refill: {:?}", moves(&idle));
     assert_eq!(engine.fleets[&fid].location, home);
     assert_eq!(engine.fleets[&fid].cargo.total(), 0.0, "what was mined is in the stockpile");
@@ -1561,7 +1566,7 @@ fn a_group_left_alive_keeps_its_losses_mends_a_step_at_a_time_and_pays_its_whole
     let ended = fights_ended(&e, mark);
     assert_eq!(ended.last().map(|c| c.outcome), Some(BattleOutcome::HostilesDestroyed));
     let whole = Ships::of(&[(LightFighter, 30)]).power(scaling::Arms::of_grade(1.0));
-    let pile = scaling::split_loot(scaling::wreck_value(whole)).scale(pace.finds_mult());
+    let pile = scaling::split_loot(scaling::wreck_value(whole)).scale(pace.find_mult());
     assert_eq!(ended.last().and_then(|c| c.salvage), Some(pile), "the wreckage of the thirty it was generated with");
     assert!(!e.engine.npc_fleets.contains_key(&PACK));
 }

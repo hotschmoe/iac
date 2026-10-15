@@ -717,7 +717,7 @@ impl<'a> Admiral<'a> {
         let groups = sector.hostiles.as_ref().map_or(0, |list| list.len()).max(1);
         let power = scaling::npc_group_power(sector.location.dist_from_origin());
         let heat = self.heat.get(&sector.location.to_key()).map_or(0.0, |lair| lair.at(self.state.tick, &self.pace));
-        let worth = self.pace.finds_mult() * f64::from(scaling::farm_factor(heat));
+        let worth = self.pace.find_mult() * f64::from(scaling::farm_factor(heat));
         let pile = scaling::split_loot(scaling::wreck_value(power) * groups as f64).scale(worth);
         let lost = ratio(self.odds, fleet, sector).map_or(f32::INFINITY, |ratio| worth_lost(ratio) * fleet_worth(fleet));
         self.pays(fleet, sector, hops, Self::carried(fleet, pile) - lost)
@@ -735,7 +735,7 @@ impl<'a> Admiral<'a> {
 
     /// What a derelict in `sector` holds on average.
     fn derelict(&self, sector: &SectorState) -> Resources {
-        scaling::split_loot(scaling::derelict_value(sector.location.dist_from_origin()) * self.pace.finds_mult())
+        scaling::split_loot(scaling::derelict_value(sector.location.dist_from_origin()) * self.pace.find_mult())
     }
 
     /// The first fleet to want what lies in `sector` this turn takes it; a

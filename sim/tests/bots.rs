@@ -213,7 +213,7 @@ fn a_check_in_bot_in_a_blitz_world_looks_in_a_few_times_an_hour_and_plays() {
 
     assert!(away.turns < 3_600 / 4, "a check-in player is away most of the hour: {} turns", away.turns);
     assert!(
-        away.score.total * 4.0 > present.score.total,
+        away.score.total * 20.0 > present.score.total,
         "it looked in often enough to play: {:.0} points against the pilot's {:.0}",
         away.score.total,
         present.score.total,

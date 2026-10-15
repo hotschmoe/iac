@@ -47,6 +47,10 @@
 // them fights with, a group's ships take no ids from the world's counter,
 // and every fight runs another course. Nothing was compared across that
 // change either.
+//
+// And when a find became worth the same minutes of income at every pace: a
+// harvest at blitz pays the pace's find factor, so the fleet's cargo and the
+// ore read otherwise from tick 40.
 
 #[allow(dead_code)]
 mod common;

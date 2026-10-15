@@ -22,8 +22,8 @@ pub enum PaceClass {
     Economy,
     /// Attention timers and caps: P^0.75 (storage caps, raid cadence).
     Attention,
-    /// Finds: P^0.5 (loot value, derelict respawn, a pirate group's return
-    /// and mending, raid warning).
+    /// Finds: P^0.5 (derelict respawn, a pirate group's return and mending,
+    /// raid warning, and the size of holds and stores).
     Finds,
     /// Real time: never scaled (cooldowns, combat, fuel, boarding).
     RealTime,
@@ -80,6 +80,9 @@ pub const PRESETS: &[Preset] = &[
     Preset { name: "blitz", pace: 600.0, first_cruiser_s: 3_236, endgame_s: 8_355 },
     Preset { name: "test", pace: 8000.0, first_cruiser_s: 252, endgame_s: 642 },
 ];
+
+/// The pace the map's finds are balanced at: the season preset.
+pub const FIND_ANCHOR: f64 = PRESETS[2].pace;
 
 /// A named pace with the simulation's milestone estimates for a competent
 /// player: the estimates table of `docs/design/economy/sim.py --tables`,
@@ -175,13 +178,17 @@ impl Pace {
         }
     }
 
-    /// Ship holds scale like finds (P^0.5): loot per find grows with the
-    /// pace, so the hold that carries it must too.
-    pub fn cargo_mult(&self) -> f64 {
-        self.finds_mult()
+    /// What a find is worth against the season preset, which is where the
+    /// map is balanced: loot, wreckage, derelict, chart and ore value follow
+    /// production, so a find is worth the same minutes of income at every pace.
+    pub fn find_mult(&self) -> f64 {
+        self.0 / FIND_ANCHOR
     }
 
-    pub fn finds_mult(&self) -> f64 {
+    /// Ship holds and outpost stores scale like finds' timers (P^0.5), not
+    /// like their value: a find can be worth more than a hold carries, and
+    /// what a hold cannot take drifts loose as salvage.
+    pub fn cargo_mult(&self) -> f64 {
         self.0.sqrt()
     }
 

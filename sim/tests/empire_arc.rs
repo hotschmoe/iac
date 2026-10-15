@@ -65,7 +65,7 @@ fn chart_the_neighbourhood(e: &mut Empire) {
     assert_eq!(delivered(e, mark), [1], "one sector charted");
     let rating = scaling::threat_rating(scaling::npc_power(out.dist_from_origin()));
     let paid = paid_for_charts(e, mark);
-    assert_eq!(paid, [scaling::split_loot(scaling::chart_value(rating))], "the chart pays its value in resources");
+    assert_eq!(paid, [scaling::split_loot(scaling::chart_value(rating, &e.engine.pace()))], "the chart pays its value in resources");
     assert!(e.engine.players[&e.pid].resources.metal >= stock.metal + paid[0].metal, "into the stockpile");
     assert_eq!(e.score_row().score, before.score, "and scores nothing until it is built into something");
 
@@ -444,6 +444,14 @@ fn hunt_pirates(e: &mut Empire, lair: Hex) {
             taken
         };
         let fits = Resources { metal: take(pile.metal), crystal: take(pile.crystal), deuterium: take(pile.deuterium) };
+        if fits.total() == 0.0 {
+            assert_eq!(
+                e.order(Command::CollectSalvage { fleet_id: fid }),
+                Err(ErrorCode::CargoFull),
+                "a full hold takes none of it",
+            );
+            continue;
+        }
         e.order(Command::CollectSalvage { fleet_id: fid }).expect("scoop the wreckage");
         let collected = e.since(mark, |k| match k {
             EventKind::SalvageCollected(c) => Some(c.resources),
@@ -505,7 +513,16 @@ fn withstand_a_raid(e: &mut Empire) {
         EventKind::Stockpile(s) if s.cause == StockpileCause::Wreckage => Some(s.amount),
         _ => None,
     });
-    assert_eq!(scooped, [pile], "the docked fleet scoops the wreckage into storage");
+    let player = &e.engine.players[&e.pid];
+    let cap = scaling::storage_cap(&player.buildings, &e.engine.pace());
+    let [scooped] = scooped[..] else { panic!("one scoop expected: {scooped:?}") };
+    for (taken, dropped, held, room) in [
+        (scooped.metal, pile.metal, player.resources.metal, cap.metal),
+        (scooped.crystal, pile.crystal, player.resources.crystal, cap.crystal),
+        (scooped.deuterium, pile.deuterium, player.resources.deuterium, cap.deuterium),
+    ] {
+        assert!(taken == dropped || held >= room, "the docked fleet scoops the wreckage into storage as far as it holds");
+    }
 }
 
 fn settle_the_score(e: &mut Empire) {

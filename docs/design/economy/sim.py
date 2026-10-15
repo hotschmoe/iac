@@ -79,7 +79,8 @@ RING = {row['ring']: row for row in GAME['rings']}       # the curves read at wh
 RATING = {row['rating']: row for row in GAME['ratings']} # ... and at threat ratings, T1 to T9
 PACE = GAME['presets']
 ATTENTION_EXP = GAME['pace_exponent']['Attention']       # caps, raid cadence and the exchange window: P ** 0.75
-FINDS_EXP = GAME['pace_exponent']['Finds']               # loot, holds and derelict respawn: P ** 0.5
+FINDS_EXP = GAME['pace_exponent']['Finds']               # derelict and lair respawn and mending, holds and stores: P ** 0.5
+FIND_VALUE_EXP = GAME['pace_exponent']['Economy']        # loot, wreckage, charts and ore follow production: P ** 1
 INNER_RING, OUTER_RING = GAME['zone_radius']['InnerRing'], GAME['zone_radius']['OuterRing']
 MAX_LEVEL = G['MAX_BUILDING_LEVEL']
 W_RES = tuple(GAME['resource_weight'][k] for k in ('metal', 'crystal', 'deuterium'))
@@ -157,8 +158,9 @@ def cap_mult(P):
 def storage_cap(level, P=1.0):
     return STORAGE_CAP[level] * cap_mult(P)
 
-# pilot-economy scale: ore/loot/salvage values and holds scale with P ** BETA
-BETA = FINDS_EXP
+# pilot-economy scale: ore/loot/salvage values scale with (P / FIND_ANCHOR) ** BETA, FIND_ANCHOR being the season preset
+BETA = FIND_VALUE_EXP
+FIND_ANCHOR = GAME['presets']['season']
 
 # NPC / threat
 NPC_POWER_BASE, NPC_POWER_GROWTH = G['NPC_POWER_BASE'], G['NPC_POWER_GROWTH']
@@ -886,7 +888,7 @@ class Sim:
 
     # ------------------------------------------------------------------ pilot economy
     def pilot_scale(self):
-        return self.P ** BETA
+        return (self.P / FIND_ANCHOR) ** BETA
     def fleet(self, counts):
         """A fleet of `counts`: fuel one jump burns, its tank, the hops out it can fly and come back from,
         its hold, its harvest power and the ticks one jump takes its slowest ship.  The speed is the
@@ -1285,7 +1287,7 @@ def run_all(modes=('near',), presets=None):
 
 def static_tables():
     L = []
-    L.append('### Threat, NPC power, kill loot, derelicts and ore by distance (pace-1 units; multiply loot by P^0.5 at other paces)')
+    L.append('### Threat, NPC power, kill loot, derelicts and ore by distance (season-pace units; multiply loot by P / 10 at other paces)')
     L.append('')
     L.append('| dist | zone | threat | NPC group (class x count) | NPC power | kill loot | derelict tier / loot | ore reserve per ore tile (any) | ore refill (game h) | NPC respawn (game h) |')
     L.append('|---|---|---|---|---|---|---|---|---|---|')
@@ -1357,12 +1359,12 @@ def fuel_table():
     L = ['### What a hunt and a round of derelicts pay against the deuterium they burn', '',
          'The squad is the ships of one class of the plan\'s line that outnumber the ring\'s group 3 to 1 at the least fuel, with no '
          f'research, from a homeworld at ring {HOME_DIST}. A hunt is {KILLS_PER_HUNT} kills and a round {SITES_PER_ROUND} boardings, with '
-         'a jump between each. Loot grows with P^0.5 and fuel does not, so each pays its fuel, at the score\'s weights, from the pace in '
+         'a jump between each. Loot grows with P, from its season value, and fuel does not, so each pays its fuel, at the score\'s weights, from the pace in '
          'the column after it.', '',
-         '| ring | squad | deuterium a jump | a hunt burns | its loot at pace 1 | pays from | a round burns | its loot at pace 1 | pays from |',
+         '| ring | squad | deuterium a jump | a hunt burns | its loot at season | pays from | a round burns | its loot at season | pays from |',
          '|---|---|---|---|---|---|---|---|---|']
     def pays_from(loot, deuterium):
-        pace = (wv((0.0, 0.0, deuterium)) / wv([loot * share for share in LOOT_SPLIT])) ** (1.0 / FINDS_EXP)
+        pace = (wv((0.0, 0.0, deuterium)) / wv([loot * share for share in LOOT_SPLIT])) ** (1.0 / FIND_VALUE_EXP) * FIND_ANCHOR
         return 'pace 1' if pace <= 1 else f'pace {pace:.0f}'
     for d in (4, 6, 8, 10, 12, 15, 18, 20):
         need = 3.0 * npc_group_power(d)

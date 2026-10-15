@@ -18,13 +18,16 @@ use std::fs;
 use std::path::Path;
 
 use iac_shared::constants::*;
-use iac_shared::pace::{CAP_EXPONENT_PAST_KNEE, CAP_KNEE, PRESETS, Pace, PaceClass};
+use iac_shared::pace::{CAP_EXPONENT_PAST_KNEE, CAP_KNEE, FIND_ANCHOR, PRESETS, Pace, PaceClass};
 use iac_shared::scaling::*;
 use iac_sim::score::DEFENCE_SHARE;
 
 const FILE: &str = "docs/design/economy/numbers.json";
 const RINGS: u16 = 60;
 const PACES: [f64; 3] = [1.0, 10.0, 600.0];
+const FIND_PACES: [f64; 4] = [1.0, 10.0, 600.0, 8000.0];
+const CAP_LEVELS: [u8; 3] = [0, 5, 10];
+const FIND_SPREAD_MAX: f64 = 0.03;
 const DENSITIES: [Density; 4] = [Density::Sparse, Density::Moderate, Density::Rich, Density::Pristine];
 
 // A number is kept as the text serde_json writes for its own type, so an f32
@@ -268,7 +271,7 @@ fn game() -> Json {
             map! {
                 "rating": rating, "threat_band": threat_band(rating),
                 "derelict_ambush": derelict_ambush(rating), "relic_chance": relic_chance(rating),
-                "chart_value": chart_value(rating),
+                "chart_value": chart_value(rating, &pace(FIND_ANCHOR)),
             }
         })
         .collect();
@@ -503,6 +506,9 @@ fn tables() -> Json {
         })
         .collect();
 
+    let find_worth = find_worth();
+    let find_kept = find_kept();
+
     let outpost_levels: Vec<Json> = (0..=OUTPOST_MAX_LEVEL)
         .flat_map(|level| PACES.into_iter().map(move |p| (level, p)))
         .map(|(level, p)| {
@@ -540,9 +546,70 @@ fn tables() -> Json {
         "group_healing": group_healing,
         "exchange_spans": exchange_spans,
         "exchange_returns": exchange_returns,
+        "find_worth": find_worth,
+        "find_kept": find_kept,
         "outpost_levels": outpost_levels,
         "outpost_yields": outpost_yields,
     }
+}
+
+type FindValue = Box<dyn Fn(&Pace) -> f64>;
+
+/// What a find is worth in minutes of the gross production of an empire with
+/// its mines at 10, 9 and 8, at every pace: the same, whatever the pace.
+fn find_worth() -> Json {
+    let levels = built(&[(BuildingType::MetalMine, 10), (BuildingType::CrystalMine, 9), (BuildingType::DeuteriumSynthesizer, 8)]);
+    let sum = |r: Resources| r.metal + r.crystal + r.deuterium;
+    let finds: [(&str, FindValue); 6] = [
+        ("derelict_ring_4", Box::new(|p| derelict_value(4) * p.find_mult())),
+        ("derelict_ring_12", Box::new(|p| derelict_value(12) * p.find_mult())),
+        ("derelict_ring_30", Box::new(|p| derelict_value(30) * p.find_mult())),
+        ("chart_threat_3", Box::new(|p| chart_value(3, p))),
+        ("chart_threat_7", Box::new(|p| chart_value(7, p))),
+        ("wreck_ring_12", Box::new(|p| wreck_value(npc_power(12)) * p.find_mult())),
+    ];
+    let rows = finds.iter().map(|(name, value)| {
+        let minutes: Vec<f64> = FIND_PACES
+            .iter()
+            .map(|&p| {
+                let pace = pace(p);
+                value(&pace) / (sum(production_per_tick(&levels, 1.0, &pace)) * 60.0)
+            })
+            .collect();
+        let (lo, hi) = minutes.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &m| (lo.min(m), hi.max(m)));
+        assert!((hi - lo) / hi < FIND_SPREAD_MAX, "{name} is worth {minutes:?} minutes of production");
+        (name.to_string(), Json::from(minutes))
+    });
+    map! {"paces": FIND_PACES, "minutes": Json::Map(rows.collect())}
+}
+
+/// The share of a find the stockpile takes when it arrives into an empty
+/// store, at each pace and at the storage level of all three buildings: a
+/// derelict at its mean roll and at its best, and a chart.
+fn find_kept() -> Json {
+    let kept = |value: f64, level: u8, pace: &Pace| {
+        let cap = storage_cap_at(level, pace);
+        let split = split_loot(value);
+        let taken = split.metal.min(cap) + split.crystal.min(cap) + split.deuterium.min(cap);
+        taken / value
+    };
+    let rows = FIND_PACES.iter().flat_map(|&p| {
+        let pace = pace(p);
+        let finds: [(&str, f64); 6] = [
+            ("derelict_ring_12", derelict_value(12) * pace.find_mult()),
+            ("derelict_ring_12_best_roll", derelict_value(12) * f64::from(DERELICT_ROLL_MAX) * pace.find_mult()),
+            ("derelict_ring_30", derelict_value(30) * pace.find_mult()),
+            ("derelict_ring_30_best_roll", derelict_value(30) * f64::from(DERELICT_ROLL_MAX) * pace.find_mult()),
+            ("chart_threat_3", chart_value(3, &pace)),
+            ("chart_threat_7", chart_value(7, &pace)),
+        ];
+        finds.into_iter().flat_map(move |(name, value)| {
+            CAP_LEVELS.into_iter().map(move |level| {
+                map! {"pace": p, "find": name, "storage_level": level, "units": value, "cap": storage_cap_at(level, &pace), "kept": kept(value, level, &pace)}
+            })
+        })
+    });
+    rows.collect::<Vec<Json>>().into()
 }
 
 fn render() -> String {
