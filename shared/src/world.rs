@@ -9,7 +9,7 @@ use std::sync::Arc;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::constants::{
-    CLOUD_CELL, CLOUD_DEUT_DENSITY, CLOUD_MIN_DIST, CLOUD_PCT, CLOUD_RADIUS_BASE, CLOUD_RADIUS_MAX,
+    CLOUD_CELL, CLOUD_DEUT_PEAK, CLOUD_MIN_DIST, CLOUD_PCT, CLOUD_RADIUS_BASE, CLOUD_RADIUS_MAX,
     CLOUD_RADIUS_PER_RING, Density, ShipClass, TerrainType, Zone, HOMEWORLD_MAX_DIST, HOMEWORLD_MIN_DIST};
 use crate::scaling::{
     npc_composition, npc_passive_share, npc_presence_pct, ore_density_odds, ore_reserve_units, ship_power,
@@ -146,8 +146,12 @@ impl WorldGen {
         let cloud = self.cloud_depth(coord);
         let terrain = if cloud.is_some() { TerrainType::Nebula } else { self.roll_terrain(&mut rng, zone) };
         let mut resources = self.roll_resources(&mut rng, zone, terrain, dist);
-        if let Some(depth) = cloud {
-            resources.deut = CLOUD_DEUT_DENSITY[depth.min(CLOUD_DEUT_DENSITY.len() - 1)];
+        if let Some((depth, centre_ring)) = cloud {
+            let peak = CLOUD_DEUT_PEAK.iter().find(|(ring, _)| centre_ring <= *ring).map_or(Density::Sparse, |row| row.1);
+            resources.deut = (0..depth).fold(peak, |level, _| match level.downgrade() {
+                Density::None => Density::Sparse,
+                thinner => thinner,
+            });
         }
         let npc_template = self.roll_npc_presence(&mut rng, coord);
         let has_derelict = self.roll_derelict(&mut rng, terrain, coord);
@@ -441,12 +445,12 @@ impl WorldGen {
     /// How many hexes `coord` stands from the centre of the deuterium cloud
     /// that holds it, if one does. Decided from the sector's own cell and the
     /// eight around it, so no neighbour state is read.
-    pub fn cloud_depth(&self, coord: Hex) -> Option<usize> {
+    pub fn cloud_depth(&self, coord: Hex) -> Option<(usize, u16)> {
         if coord.dist_from_origin() < CLOUD_MIN_DIST || is_home_ground(coord) {
             return None;
         }
         let (cell_q, cell_r) = (i32::from(coord.q).div_euclid(CLOUD_CELL), i32::from(coord.r).div_euclid(CLOUD_CELL));
-        let mut found: Option<usize> = None;
+        let mut found: Option<(usize, u16)> = None;
         for cq in cell_q - 1..=cell_q + 1 {
             for cr in cell_r - 1..=cell_r + 1 {
                 let Some(centre) = self.cloud_centre(cq, cr) else { continue };
@@ -454,8 +458,8 @@ impl WorldGen {
                 let radius = (CLOUD_RADIUS_BASE + CLOUD_RADIUS_PER_RING * ring).min(CLOUD_RADIUS_MAX);
                 let depth = u32::from(Hex::distance(&centre, &coord));
                 if depth * 100 <= radius {
-                    let depth = depth as usize;
-                    found = Some(found.map_or(depth, |best| best.min(depth)));
+                    let here = (depth as usize, centre.dist_from_origin());
+                    found = Some(found.map_or(here, |best| best.min(here)));
                 }
             }
         }

@@ -140,7 +140,7 @@ fn plan(engine: &GameEngine, home: Hex, jump_fuel: f64, jumps: f64, use_clouds: 
             if ring > best.ring && f64::from(walk.hops) * 2.0 <= node.out {
                 targets.push((ring, walk.hops, at));
             }
-            if use_clouds && ring <= MAP_LIMIT && walk.hops > 0 && node.legs.len() < MAX_STOPS {
+            if use_clouds && ring <= MAP_LIMIT && walk.hops > 0 && node.legs.len() < MAX_STOPS && !node.chain.contains(&at) {
                 let gain = half_deposit(engine, at, jump_fuel);
                 let leaves = (node.out - f64::from(walk.hops) + gain).min(jumps);
                 if gain > 0.0 && f64::from(walk.hops) <= node.out && seen.get(&key).is_none_or(|&known| leaves > known) {
@@ -179,6 +179,10 @@ fn top_up(e: &mut Empire, at: Hex, wanted: f64) {
             return;
         }
         let before = f.fuel;
+        e.run_until(2_000, |e| {
+            let f = &e.engine.fleets[&fid];
+            f.state == FleetStatus::Idle && f.action_cooldown == 0
+        });
         let _ = e.order(Command::Harvest { fleet_id: fid, resource: HarvestResource::Deuterium });
         for _ in 0..20_000 {
             let f = &e.engine.fleets[&fid];
@@ -284,7 +288,7 @@ fn measure(class: ShipClass, level: u8, use_clouds: bool) -> Reading {
 fn reach_with_and_without_clouds() {
     println!("class          level  jumps  ring_off  ring_on  cloud_stops  played");
     for class in [ShipClass::LightFighter, ShipClass::Cruiser] {
-        for level in [0u8, 3, 6, 10] {
+        for level in [0u8, 3, 6, 10, 13] {
             let off = measure(class, level, false);
             let on = measure(class, level, true);
             let played = |r: &Result<u64, String>| match r {

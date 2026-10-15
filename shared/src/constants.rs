@@ -725,17 +725,20 @@ pub const DERELICT_MIN_DIST: u16 = 4;
 /// `CLOUD_RADIUS_BASE + CLOUD_RADIUS_PER_RING * ring` hundredths of a hex
 /// (ring is the centre's, at most `CLOUD_RADIUS_MAX`, which stays below
 /// `CLOUD_CELL`), and a sector in it holds the deuterium of
-/// `CLOUD_DEUT_DENSITY` for its distance from the centre. No cloud touches
+/// `CLOUD_DEUT_PEAK` for its distance from the centre. No cloud touches
 /// a sector nearer the hub than `CLOUD_MIN_DIST` or a home seat's ground.
 /// Provisional.
 pub const CLOUD_CELL: i32 = 8;
-pub const CLOUD_PCT: u64 = 40;
+pub const CLOUD_PCT: u64 = 25;
 pub const CLOUD_RADIUS_BASE: u32 = 20;
 pub const CLOUD_RADIUS_PER_RING: u32 = 7;
 pub const CLOUD_RADIUS_MAX: u32 = 300;
 pub const CLOUD_MIN_DIST: u16 = 2;
-pub const CLOUD_DEUT_DENSITY: [Density; 4] =
-    [Density::Pristine, Density::Rich, Density::Moderate, Density::Sparse];
+/// The richest density at a cloud's centre, by the ring of the centre: the
+/// first row whose ring is not below it. Each hex from the centre is one
+/// level thinner, down to Sparse.
+pub const CLOUD_DEUT_PEAK: [(u16, Density); 2] =
+    [(8, Density::Sparse), (u16::MAX, Density::Moderate)];
 /// Ticks a boarding takes, at every pace.
 pub const EXPLORE_DURATION_TICKS: u16 = 20;
 /// An Espionage Probe aboard reads the hulk before breaching (ambush chance
